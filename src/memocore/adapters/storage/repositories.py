@@ -1,0 +1,602 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
+
+from memocore.adapters.storage.sqlite import Database
+from memocore.domain.models import (
+    EventLog,
+    EventType,
+    FollowUp,
+    FollowUpStatus,
+    Meeting,
+    MemoryBucket,
+    MemoryItem,
+    Note,
+    NoteStatus,
+    Person,
+    Project,
+    Reminder,
+    ReminderStatus,
+    Task,
+    utc_now,
+)
+
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+def _dt(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value)
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _loads(value: str) -> Any:
+    return json.loads(value)
+
+
+class BaseRepository:
+    def __init__(self, database: Database):
+        self.database = database
+
+    async def _execute(self, query: str, params: tuple[Any, ...]) -> None:
+        conn = await self.database.connection()
+        await conn.execute(query, params)
+        await self.database.commit_if_needed()
+
+
+class NoteRepository(BaseRepository):
+    async def create(self, note: Note) -> Note:
+        await self._execute(
+            """
+            INSERT INTO notes (
+                id, source, source_message_id, source_chat_id, raw_text, summary,
+                tags, status, metadata, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                note.id,
+                note.source,
+                note.source_message_id,
+                note.source_chat_id,
+                note.raw_text,
+                note.summary,
+                _json(note.tags),
+                note.status.value,
+                _json(note.metadata),
+                _dt(note.created_at),
+                _dt(note.updated_at),
+            ),
+        )
+        return note
+
+    async def get_by_id(self, note_id: str) -> Note | None:
+        conn = await self.database.connection()
+        row = await (await conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,))).fetchone()
+        return _note_from_row(row) if row else None
+
+    async def find_by_source_message(
+        self, source: str, source_chat_id: str | None, source_message_id: str | None
+    ) -> Note | None:
+        if source_message_id is None:
+            return None
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute(
+                """
+                SELECT * FROM notes
+                WHERE source = ? AND source_chat_id IS ? AND source_message_id = ?
+                """,
+                (source, source_chat_id, source_message_id),
+            )
+        ).fetchone()
+        return _note_from_row(row) if row else None
+
+    async def update_status(self, note_id: str, status: NoteStatus) -> None:
+        await self._execute(
+            "UPDATE notes SET status = ?, updated_at = ? WHERE id = ?",
+            (status.value, _dt(utc_now()), note_id),
+        )
+
+    async def update_processed(
+        self, note_id: str, summary: str, tags: list[str], status: NoteStatus = NoteStatus.PROCESSED
+    ) -> None:
+        await self._execute(
+            "UPDATE notes SET summary = ?, tags = ?, status = ?, updated_at = ? WHERE id = ?",
+            (summary, _json(tags), status.value, _dt(utc_now()), note_id),
+        )
+
+
+class TaskRepository(BaseRepository):
+    async def create(self, task: Task) -> Task:
+        await self._execute(
+            """
+            INSERT INTO tasks (
+                id, title, description, status, priority, due_at, project_id,
+                source_note_id, confidence, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task.id,
+                task.title,
+                task.description,
+                task.status.value,
+                task.priority,
+                _dt(task.due_at),
+                task.project_id,
+                task.source_note_id,
+                task.confidence,
+                _dt(task.created_at),
+                _dt(task.updated_at),
+            ),
+        )
+        return task
+
+    async def list_by_note(self, note_id: str) -> list[Task]:
+        conn = await self.database.connection()
+        rows = await (await conn.execute("SELECT * FROM tasks WHERE source_note_id = ?", (note_id,))).fetchall()
+        return [_task_from_row(row) for row in rows]
+
+    async def list_active(self) -> list[Task]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status IN (?, ?, ?, ?)
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                ("candidate", "open", "waiting", "blocked"),
+            )
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
+    async def update_status(self, task_id: str, status: str) -> None:
+        await self._execute(
+            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+            (status, _dt(utc_now()), task_id),
+        )
+
+
+class ReminderRepository(BaseRepository):
+    async def create(self, reminder: Reminder) -> Reminder:
+        await self._execute(
+            """
+            INSERT INTO reminders (
+                id, title, remind_at, status, task_id, source_note_id,
+                delivery_channel, confidence, attempt_count, claimed_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                reminder.id,
+                reminder.title,
+                _dt(reminder.remind_at),
+                reminder.status.value,
+                reminder.task_id,
+                reminder.source_note_id,
+                reminder.delivery_channel,
+                reminder.confidence,
+                reminder.attempt_count,
+                _dt(reminder.claimed_at),
+                _dt(reminder.created_at),
+                _dt(reminder.updated_at),
+            ),
+        )
+        return reminder
+
+    async def list_by_note(self, note_id: str) -> list[Reminder]:
+        conn = await self.database.connection()
+        rows = await (await conn.execute("SELECT * FROM reminders WHERE source_note_id = ?", (note_id,))).fetchall()
+        return [_reminder_from_row(row) for row in rows]
+
+    async def find_due(self, now: datetime) -> list[Reminder]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM reminders
+                WHERE status = ? AND remind_at IS NOT NULL AND remind_at <= ?
+                ORDER BY remind_at ASC
+                """,
+                (ReminderStatus.SCHEDULED.value, _dt(now)),
+            )
+        ).fetchall()
+        return [_reminder_from_row(row) for row in rows]
+
+    async def claim_due(self, now: datetime, lease_before: datetime) -> list[Reminder]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT id FROM reminders
+                WHERE status = ? AND remind_at IS NOT NULL AND remind_at <= ?
+                  AND (claimed_at IS NULL OR claimed_at <= ?)
+                ORDER BY remind_at ASC
+                """,
+                (ReminderStatus.SCHEDULED.value, _dt(now), _dt(lease_before)),
+            )
+        ).fetchall()
+        claimed: list[Reminder] = []
+        for row in rows:
+            result = await conn.execute(
+                """
+                UPDATE reminders
+                SET claimed_at = ?, attempt_count = attempt_count + 1, updated_at = ?
+                WHERE id = ? AND status = ?
+                  AND (claimed_at IS NULL OR claimed_at <= ?)
+                """,
+                (_dt(now), _dt(now), row["id"], ReminderStatus.SCHEDULED.value, _dt(lease_before)),
+            )
+            if result.rowcount:
+                reminder_row = await (
+                    await conn.execute("SELECT * FROM reminders WHERE id = ?", (row["id"],))
+                ).fetchone()
+                claimed.append(_reminder_from_row(reminder_row))
+        await self.database.commit_if_needed()
+        return claimed
+
+    async def update_status(self, reminder_id: str, status: ReminderStatus) -> None:
+        await self._execute(
+            "UPDATE reminders SET status = ?, updated_at = ? WHERE id = ?",
+            (status.value, _dt(utc_now()), reminder_id),
+        )
+
+
+class ProjectRepository(BaseRepository):
+    async def find_or_create(self, name: str) -> Project:
+        conn = await self.database.connection()
+        row = await (await conn.execute("SELECT * FROM projects WHERE name = ?", (name,))).fetchone()
+        if row:
+            project = _project_from_row(row)
+            now = utc_now()
+            await self._execute(
+                "UPDATE projects SET last_seen_at = ?, updated_at = ? WHERE id = ?",
+                (_dt(now), _dt(now), project.id),
+            )
+            project.last_seen_at = now
+            project.updated_at = now
+            return project
+
+        project = Project(name=name)
+        await self._execute(
+            """
+            INSERT INTO projects (
+                id, name, summary, status, tags, last_seen_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project.id,
+                project.name,
+                project.summary,
+                project.status.value,
+                _json(project.tags),
+                _dt(project.last_seen_at),
+                _dt(project.created_at),
+                _dt(project.updated_at),
+            ),
+        )
+        return project
+
+    async def list_all(self) -> list[Project]:
+        conn = await self.database.connection()
+        rows = await (await conn.execute("SELECT * FROM projects ORDER BY last_seen_at DESC")).fetchall()
+        return [_project_from_row(row) for row in rows]
+
+
+class PersonRepository(BaseRepository):
+    async def create(self, person: Person) -> Person:
+        await self._execute(
+            """
+            INSERT INTO people (
+                id, display_name, aliases, relationship, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                person.id,
+                person.display_name,
+                _json(person.aliases),
+                person.relationship,
+                person.notes,
+                _dt(person.created_at),
+                _dt(person.updated_at),
+            ),
+        )
+        return person
+
+    async def list_all(self) -> list[Person]:
+        conn = await self.database.connection()
+        rows = await (await conn.execute("SELECT * FROM people ORDER BY display_name")).fetchall()
+        return [_person_from_row(row) for row in rows]
+
+
+class MeetingRepository(BaseRepository):
+    async def create(self, meeting: Meeting) -> Meeting:
+        await self._execute(
+            """
+            INSERT INTO meetings (
+                id, title, starts_at, ends_at, project_id, source_note_id,
+                notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                meeting.id, meeting.title, _dt(meeting.starts_at), _dt(meeting.ends_at),
+                meeting.project_id, meeting.source_note_id, meeting.notes,
+                _dt(meeting.created_at), _dt(meeting.updated_at),
+            ),
+        )
+        return meeting
+
+    async def list_upcoming(self, now: datetime) -> list[Meeting]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM meetings WHERE starts_at >= ? ORDER BY starts_at",
+                (_dt(now),),
+            )
+        ).fetchall()
+        return [_meeting_from_row(row) for row in rows]
+
+
+class FollowUpRepository(BaseRepository):
+    async def create(self, followup: FollowUp) -> FollowUp:
+        await self._execute(
+            """
+            INSERT INTO followups (
+                id, title, due_at, status, person_id, project_id, source_note_id,
+                notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                followup.id, followup.title, _dt(followup.due_at), followup.status.value,
+                followup.person_id, followup.project_id, followup.source_note_id,
+                followup.notes, _dt(followup.created_at), _dt(followup.updated_at),
+            ),
+        )
+        return followup
+
+    async def list_open(self) -> list[FollowUp]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM followups WHERE status = ? ORDER BY due_at IS NULL, due_at, created_at",
+                (FollowUpStatus.OPEN.value,),
+            )
+        ).fetchall()
+        return [_followup_from_row(row) for row in rows]
+
+
+class MemoryItemRepository(BaseRepository):
+    async def create(self, item: MemoryItem) -> MemoryItem:
+        await self._execute(
+            """
+            INSERT INTO memory_items (
+                id, bucket, kind, content, source_note_id, project_id,
+                confidence, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.id,
+                item.bucket.value,
+                item.kind.value,
+                item.content,
+                item.source_note_id,
+                item.project_id,
+                item.confidence,
+                item.status.value,
+                _dt(item.created_at),
+                _dt(item.updated_at),
+            ),
+        )
+        return item
+
+    async def list_by_bucket(self, bucket: MemoryBucket) -> list[MemoryItem]:
+        conn = await self.database.connection()
+        rows = await (await conn.execute("SELECT * FROM memory_items WHERE bucket = ?", (bucket.value,))).fetchall()
+        return [_memory_from_row(row) for row in rows]
+
+    async def list_by_note(self, note_id: str) -> list[MemoryItem]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute("SELECT * FROM memory_items WHERE source_note_id = ?", (note_id,))
+        ).fetchall()
+        return [_memory_from_row(row) for row in rows]
+
+    async def list_active(self) -> list[MemoryItem]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM memory_items WHERE status IN (?, ?) ORDER BY updated_at DESC",
+                ("candidate", "active"),
+            )
+        ).fetchall()
+        return [_memory_from_row(row) for row in rows]
+
+    async def update_status(self, item_id: str, status: str) -> None:
+        await self._execute(
+            "UPDATE memory_items SET status = ?, updated_at = ? WHERE id = ?",
+            (status, _dt(utc_now()), item_id),
+        )
+
+
+class EventLogRepository(BaseRepository):
+    async def create(self, event: EventLog) -> EventLog:
+        await self._execute(
+            """
+            INSERT INTO event_logs (
+                id, event_type, entity_type, entity_id, payload, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                event.event_type.value,
+                event.entity_type,
+                event.entity_id,
+                _json(event.payload),
+                _dt(event.created_at),
+            ),
+        )
+        return event
+
+    async def list_by_entity(self, entity_type: str, entity_id: str) -> list[EventLog]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM event_logs WHERE entity_type = ? AND entity_id = ? ORDER BY created_at",
+                (entity_type, entity_id),
+            )
+        ).fetchall()
+        return [_event_from_row(row) for row in rows]
+
+
+def parse_model_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _note_from_row(row: Any) -> Note:
+    return Note(
+        id=row["id"],
+        source=row["source"],
+        source_message_id=row["source_message_id"],
+        source_chat_id=row["source_chat_id"],
+        raw_text=row["raw_text"],
+        summary=row["summary"],
+        tags=_loads(row["tags"]),
+        status=row["status"],
+        metadata=_loads(row["metadata"]),
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _task_from_row(row: Any) -> Task:
+    return Task(
+        id=row["id"],
+        title=row["title"],
+        description=row["description"],
+        status=row["status"],
+        priority=row["priority"],
+        due_at=_parse_dt(row["due_at"]),
+        project_id=row["project_id"],
+        source_note_id=row["source_note_id"],
+        confidence=row["confidence"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _reminder_from_row(row: Any) -> Reminder:
+    return Reminder(
+        id=row["id"],
+        title=row["title"],
+        remind_at=_parse_dt(row["remind_at"]),
+        status=row["status"],
+        task_id=row["task_id"],
+        source_note_id=row["source_note_id"],
+        delivery_channel=row["delivery_channel"],
+        confidence=row["confidence"],
+        attempt_count=row["attempt_count"],
+        claimed_at=_parse_dt(row["claimed_at"]),
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _project_from_row(row: Any) -> Project:
+    return Project(
+        id=row["id"],
+        name=row["name"],
+        summary=row["summary"],
+        status=row["status"],
+        tags=_loads(row["tags"]),
+        last_seen_at=_parse_dt(row["last_seen_at"]),
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _person_from_row(row: Any) -> Person:
+    return Person(
+        id=row["id"],
+        display_name=row["display_name"],
+        aliases=_loads(row["aliases"]),
+        relationship=row["relationship"],
+        notes=row["notes"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _meeting_from_row(row: Any) -> Meeting:
+    return Meeting(
+        id=row["id"],
+        title=row["title"],
+        starts_at=_parse_dt(row["starts_at"]),
+        ends_at=_parse_dt(row["ends_at"]),
+        project_id=row["project_id"],
+        source_note_id=row["source_note_id"],
+        notes=row["notes"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _followup_from_row(row: Any) -> FollowUp:
+    return FollowUp(
+        id=row["id"],
+        title=row["title"],
+        due_at=_parse_dt(row["due_at"]),
+        status=row["status"],
+        person_id=row["person_id"],
+        project_id=row["project_id"],
+        source_note_id=row["source_note_id"],
+        notes=row["notes"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _memory_from_row(row: Any) -> MemoryItem:
+    return MemoryItem(
+        id=row["id"],
+        bucket=row["bucket"],
+        kind=row["kind"],
+        content=row["content"],
+        source_note_id=row["source_note_id"],
+        project_id=row["project_id"],
+        confidence=row["confidence"],
+        status=row["status"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _event_from_row(row: Any) -> EventLog:
+    return EventLog(
+        id=row["id"],
+        event_type=EventType(row["event_type"]),
+        entity_type=row["entity_type"],
+        entity_id=row["entity_id"],
+        payload=_loads(row["payload"]),
+        created_at=_parse_dt(row["created_at"]),
+    )
