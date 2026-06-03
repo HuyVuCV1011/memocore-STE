@@ -77,7 +77,7 @@ class ExtractionService:
 
     def _validate(self, content: str) -> NoteExtraction:
         try:
-            decoded = json.loads(content)
+            decoded = _decode_json_content(content)
             if isinstance(decoded, dict) and "summary" not in decoded and (
                 "$defs" in decoded or "properties" in decoded
             ):
@@ -101,6 +101,22 @@ def _coerce_extraction(decoded: Any) -> Any:
         if isinstance(task, dict) and "priority" in task and not isinstance(task["priority"], str):
             task["priority"] = str(task["priority"])
     return decoded
+
+
+def _decode_json_content(content: str) -> Any:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as original:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(content):
+            if char not in "{[":
+                continue
+            try:
+                decoded, _ = decoder.raw_decode(content[index:])
+            except json.JSONDecodeError:
+                continue
+            return decoded
+        raise original
 
 
 def _next_weekday(current: date, weekday: int) -> date:

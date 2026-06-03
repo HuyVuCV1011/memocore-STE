@@ -7,11 +7,13 @@ from memocore.config import Settings
 def test_settings_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("USER_TIMEZONE", "Asia/Ho_Chi_Minh")
 
     settings = Settings(_env_file=None)
 
     assert settings.telegram_bot_token == "token"
     assert settings.database_path == tmp_path / "test.db"
+    assert settings.user_timezone == "Asia/Ho_Chi_Minh"
     assert settings.model.provider == "ollama"
     assert settings.model.name == "qwen3:4b"
 
@@ -39,6 +41,28 @@ def test_settings_support_model_env(monkeypatch):
     assert settings.model.name == "gpt-4.1-nano"
     assert settings.model.api_key == "key"
     assert settings.model.base_url is None
+
+
+def test_settings_uses_provider_specific_key(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("MODEL_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.model.api_key == "gemini-key"
+
+
+def test_settings_supports_cli_model_override(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-key")
+
+    settings = Settings(_env_file=None).with_model_override(provider="groq")
+
+    assert settings.model.provider == "groq"
+    assert settings.model.name == ""
+    assert settings.model.base_url is None
+    assert settings.model.api_key == "groq-key"
 
 
 def test_missing_token_fails(monkeypatch):

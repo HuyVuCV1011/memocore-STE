@@ -72,6 +72,12 @@ class MemoryStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class ClarificationStatus(StrEnum):
+    PENDING = "pending"
+    RESOLVED = "resolved"
+    CANCELLED = "cancelled"
+
+
 class EventType(StrEnum):
     NOTE_CAPTURED = "note_captured"
     NOTE_PROCESSED = "note_processed"
@@ -90,6 +96,9 @@ class EventType(StrEnum):
     MEETING_CREATED = "meeting_created"
     MEMORY_ACTIVATED = "memory_activated"
     MEMORY_SUPERSEDED = "memory_superseded"
+    CLARIFICATION_REQUESTED = "clarification_requested"
+    CLARIFICATION_RESOLVED = "clarification_resolved"
+    CLARIFICATION_FAILED = "clarification_failed"
 
 
 class TimestampedModel(BaseModel):
@@ -174,6 +183,18 @@ class MemoryItem(TimestampedModel):
     project_id: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     status: MemoryStatus = MemoryStatus.CANDIDATE
+
+
+class ClarificationRequest(TimestampedModel):
+    source_chat_id: str
+    source_message_id: str | None = None
+    entity_type: str
+    entity_id: str
+    field_name: str
+    question: str
+    status: ClarificationStatus = ClarificationStatus.PENDING
+    answer_text: str | None = None
+    resolved_at: datetime | None = None
 
 
 class EventLog(BaseModel):

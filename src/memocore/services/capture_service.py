@@ -12,6 +12,7 @@ from memocore.adapters.storage.repositories import (
 from memocore.domain.models import EventType, Note, NoteStatus, Task
 from memocore.domain.schemas import CaptureRequest, CaptureResponse
 from memocore.services.event_service import EventService
+from memocore.services.clarification_service import ClarificationService
 from memocore.services.memory_service import MemoryService
 from memocore.services.reminder_service import ReminderService
 from memocore.services.task_extraction_service import ExtractionService
@@ -27,6 +28,7 @@ class CaptureService:
         memory_service: MemoryService,
         reminder_service: ReminderService,
         event_service: EventService,
+        clarification_service: ClarificationService | None = None,
     ):
         self.note_repo = note_repo
         self.task_repo = task_repo
@@ -35,6 +37,7 @@ class CaptureService:
         self.memory_service = memory_service
         self.reminder_service = reminder_service
         self.event_service = event_service
+        self.clarification_service = clarification_service
 
     async def capture(self, request: CaptureRequest) -> CaptureResponse:
         existing = await self.note_repo.find_by_source_message(
@@ -106,9 +109,23 @@ class CaptureService:
                 tasks_created += 1
 
             reminders = await self.reminder_service.persist_candidates(extraction.reminders, note.id)
+            clarification_question: str | None = None
             for reminder in reminders:
                 if reminder.remind_at is not None and reminder.remind_at > datetime.now(UTC):
                     await self.reminder_service.schedule_reminder(reminder.id)
+                elif (
+                    reminder.remind_at is None
+                    and self.clarification_service is not None
+                    and request.source_chat_id
+                    and clarification_question is None
+                ):
+                    clarification = await self.clarification_service.request_reminder_time(
+                        source_chat_id=request.source_chat_id,
+                        source_message_id=request.source_message_id,
+                        reminder_id=reminder.id,
+                        reminder_title=reminder.title,
+                    )
+                    clarification_question = clarification.question
 
             memories = await self.memory_service.persist_candidates(
                 extraction.memories, note.id, project_id=project_id
@@ -127,6 +144,7 @@ class CaptureService:
             tasks_created=tasks_created,
             reminders_created=len(reminders),
             memories_created=len(memories),
+            clarification_question=clarification_question,
         )
 
     async def _record_quality_warnings(self, note_id: str, raw_text: str, extraction) -> None:

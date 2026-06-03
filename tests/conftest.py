@@ -12,6 +12,7 @@ from memocore.adapters.llm.base import (
     StructuredOutputMode,
 )
 from memocore.adapters.storage.repositories import (
+    ClarificationRequestRepository,
     EventLogRepository,
     FollowUpRepository,
     MemoryItemRepository,
@@ -23,6 +24,7 @@ from memocore.adapters.storage.repositories import (
 from memocore.adapters.storage.sqlite import Database
 from memocore.domain.schemas import NoteExtraction
 from memocore.services.capture_service import CaptureService
+from memocore.services.clarification_service import ClarificationService
 from memocore.services.event_service import EventService
 from memocore.services.memory_service import MemoryService
 from memocore.services.reminder_service import ReminderService
@@ -75,18 +77,27 @@ def repos(tmp_database):
         "memory": MemoryItemRepository(tmp_database),
         "events": EventLogRepository(tmp_database),
         "followups": FollowUpRepository(tmp_database),
+        "clarifications": ClarificationRequestRepository(tmp_database),
     }
 
 
 @pytest.fixture
 def capture_service(repos, fake_provider):
     event_service = EventService(repos["events"])
+    reminder_service = ReminderService(repos["reminders"], event_service)
+    clarification_service = ClarificationService(
+        repos["clarifications"],
+        repos["reminders"],
+        reminder_service,
+        event_service,
+    )
     return CaptureService(
         repos["notes"],
         repos["tasks"],
         repos["projects"],
         ExtractionService(fake_provider),
         MemoryService(repos["memory"], event_service),
-        ReminderService(repos["reminders"], event_service),
+        reminder_service,
         event_service,
+        clarification_service,
     )

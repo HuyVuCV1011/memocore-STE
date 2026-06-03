@@ -89,4 +89,5 @@ class CaptureResponse(BaseModel):
     reminders_created: int = 0
     memories_created: int = 0
     duplicate: bool = False
+    clarification_question: str | None = None
     errors: list[str] = Field(default_factory=list)

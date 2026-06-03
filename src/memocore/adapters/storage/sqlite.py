@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from importlib.resources import files
 
 import aiosqlite
 
@@ -19,8 +20,10 @@ class Database:
         conn = await self.connection()
         await conn.execute("PRAGMA foreign_keys = ON")
         await conn.execute("PRAGMA journal_mode = WAL")
+        await conn.executescript(MIGRATION_LEDGER_SCHEMA)
         await conn.executescript(SCHEMA)
         await self._upgrade_existing_schema(conn)
+        await self._apply_migrations(conn)
         await conn.commit()
 
     async def connection(self) -> aiosqlite.Connection:
@@ -41,6 +44,25 @@ class Database:
             await conn.execute("ALTER TABLE reminders ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
         if "claimed_at" not in columns:
             await conn.execute("ALTER TABLE reminders ADD COLUMN claimed_at TEXT")
+
+    async def _apply_migrations(self, conn: aiosqlite.Connection) -> None:
+        migration_dir = files("memocore.adapters.storage").joinpath("migrations/sqlite")
+        for migration in sorted(migration_dir.iterdir(), key=lambda path: path.name):
+            if not migration.name.endswith(".sql"):
+                continue
+            applied = await (
+                await conn.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = ?",
+                    (migration.name,),
+                )
+            ).fetchone()
+            if applied:
+                continue
+            await conn.executescript(migration.read_text(encoding="utf-8"))
+            await conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))",
+                (migration.name,),
+            )
 
     async def commit_if_needed(self) -> None:
         if self._transaction_depth == 0:
@@ -64,6 +86,14 @@ class Database:
             self._transaction_depth -= 1
             if outermost:
                 await conn.commit()
+
+
+MIGRATION_LEDGER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+"""
 
 
 SCHEMA = """

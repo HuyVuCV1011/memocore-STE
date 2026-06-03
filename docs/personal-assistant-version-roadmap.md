@@ -22,31 +22,53 @@ Validation-aware fallback, deterministic date context, capture idempotency, tran
 
 Waiting and blocked work, meetings, follow-ups, memory lifecycle hooks, secretary summary commands, PostgreSQL migration blueprint.
 
+## Delivery Principle
+
+Organize work around visible secretary capabilities. Build the smallest retrieval, policy, and
+audit support needed for each capability, then expand those foundations as real usage demands.
+
 ## Next
 
-### V1.6: Managed Memory
+### S1: Conversation Loop
 
-Evidence, revision history, correction workflows, structured retrieval, PostgreSQL runtime adapter, full-text search, pgvector hybrid retrieval, privacy classification.
+Natural Telegram dialogue, message intent classification, bounded recent context, answers from
+existing SQLite data, clarifying questions, and human-readable confirmations.
 
-### V2: Proactive Secretary
+### S2: Daily Secretary
 
-Daily briefing, weekly review, recurring reminders, meeting preparation, delegated-work tracking, stale-loop detection, user feedback signals.
+Automatic morning briefing, stale-loop nudges, approaching-deadline warnings, weekly review,
+optional end-of-day review, quiet hours, and feedback signals.
 
-### V2.5: Integrations
+### S3: People and Meeting Preparation
 
-Calendar, email drafts, documents, files, and voice. Writes and sends require explicit approval policies.
+Relationship-aware commitments, people and project links, meeting preparation summaries,
+structured SQLite retrieval, and memory correction workflows.
 
-### V3: Controlled Execution
+### S4: Calendar Read Access
 
-Specialist workers for research, coding, and drafting. Centralized memory ownership, audit logs, retries, approvals, and rollback plans.
+Calendar-informed briefings, schedule conflict detection, privacy classification, source
+references, and a minimal audited tool boundary for external reads.
 
-### V4: Productization
+### S5: Drafting and Approved Actions
 
-Backup, restore, import, export, privacy controls, installability, and optional multi-device deployment.
+Communication drafts, agenda preparation, explicit approvals, audit records, idempotent calendar
+writes and email sends, and bounded research workflows.
+
+### S6: Purposeful Memory and Learning
+
+Preference learning, evidence-backed revisions, pattern recognition, full-text search when
+needed, and PostgreSQL or pgvector only when measured retrieval or concurrency needs justify
+them.
+
+### S7: Productization and Trust
+
+Backup, restore, import, export, privacy controls, web and mobile-friendly views, additional
+ingestion surfaces, and reports of administrative effort saved.
 
 ## Guardrails
 
 - Do not collapse memory into raw chat history.
 - Do not grant autonomy before observability and approval boundaries exist.
 - Do not introduce graph infrastructure without retrieval evidence.
+- Do not build generalized infrastructure before a secretary workflow needs it.
 - Measure whether each milestone reduces real administrative effort.

@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from memocore.domain.schemas import CaptureRequest, CaptureResponse
 from memocore.services.capture_service import CaptureService
+from memocore.services.clarification_service import ClarificationService
 from memocore.services.secretary_service import SecretaryService
 
 
@@ -18,25 +19,40 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-    service: SecretaryService = context.application.bot_data["secretary_service"]
     command = update.message.text.split()[0].removeprefix("/").split("@")[0] if update.message.text else ""
+    if not command:
+        return
+    service: SecretaryService = context.application.bot_data["secretary_service"]
     actions = {
         "today": service.today,
         "waiting": service.waiting,
         "projects": service.projects,
         "memory": service.memories,
     }
-    await update.message.reply_text(await actions[command]())
+    action = actions.get(command)
+    if action is None:
+        return
+    await update.message.reply_text(await action())
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
+    source_chat_id = str(update.effective_chat.id) if update.effective_chat else None
+    clarification_service: ClarificationService | None = context.application.bot_data.get(
+        "clarification_service"
+    )
+    if source_chat_id and clarification_service:
+        result = await clarification_service.answer_pending(source_chat_id, update.message.text)
+        if result.handled:
+            await update.message.reply_text(result.message)
+            return
+
     capture_service: CaptureService = context.application.bot_data["capture_service"]
     request = CaptureRequest(
         source="telegram",
         source_message_id=str(update.message.message_id),
-        source_chat_id=str(update.effective_chat.id) if update.effective_chat else None,
+        source_chat_id=source_chat_id,
         raw_text=update.message.text,
     )
     response = await capture_service.capture(request)
@@ -52,14 +68,20 @@ def format_capture_response(response: CaptureResponse) -> str:
     )
     if response.errors:
         text += "\nExtraction had issues, raw note saved."
+    if response.clarification_question:
+        text += f"\n{response.clarification_question}"
     return text
 
 
 def register_handlers(
-    app: Application, capture_service: CaptureService, secretary_service: SecretaryService
+    app: Application,
+    capture_service: CaptureService,
+    secretary_service: SecretaryService,
+    clarification_service: ClarificationService | None = None,
 ) -> None:
     app.bot_data["capture_service"] = capture_service
     app.bot_data["secretary_service"] = secretary_service
+    app.bot_data["clarification_service"] = clarification_service
     app.add_handler(CommandHandler("start", start_handler))
     for command in ("today", "waiting", "projects", "memory"):
         app.add_handler(CommandHandler(command, secretary_handler))

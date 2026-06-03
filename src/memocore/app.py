@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from telegram import Bot
 from telegram.ext import Application
 
 from memocore.adapters.llm.provider_factory import create_provider_with_fallback
 from memocore.adapters.storage.repositories import (
+    ClarificationRequestRepository,
     EventLogRepository,
     FollowUpRepository,
     MemoryItemRepository,
@@ -20,8 +22,9 @@ from memocore.adapters.storage.repositories import (
 )
 from memocore.adapters.storage.sqlite import Database
 from memocore.adapters.telegram.bot import create_bot
-from memocore.config import get_settings
+from memocore.config import Settings, get_settings
 from memocore.services.capture_service import CaptureService
+from memocore.services.clarification_service import ClarificationService
 from memocore.services.event_service import EventService
 from memocore.services.memory_service import MemoryService
 from memocore.services.reminder_service import ReminderService
@@ -31,8 +34,8 @@ from memocore.services.task_extraction_service import ExtractionService
 logger = logging.getLogger(__name__)
 
 
-async def create_app() -> Application:
-    settings = get_settings()
+async def create_app(settings: Settings | None = None) -> Application:
+    settings = settings or get_settings()
     logging.basicConfig(level=settings.log_level.upper())
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -43,6 +46,7 @@ async def create_app() -> Application:
     note_repo = NoteRepository(database)
     task_repo = TaskRepository(database)
     reminder_repo = ReminderRepository(database)
+    clarification_repo = ClarificationRequestRepository(database)
     project_repo = ProjectRepository(database)
     PersonRepository(database)
     followup_repo = FollowUpRepository(database)
@@ -54,6 +58,13 @@ async def create_app() -> Application:
     extraction_service = ExtractionService(provider, temperature=settings.model.temperature)
     memory_service = MemoryService(memory_repo, event_service)
     reminder_service = ReminderService(reminder_repo, event_service)
+    clarification_service = ClarificationService(
+        clarification_repo,
+        reminder_repo,
+        reminder_service,
+        event_service,
+        default_timezone=ZoneInfo(settings.user_timezone),
+    )
     capture_service = CaptureService(
         note_repo,
         task_repo,
@@ -62,10 +73,16 @@ async def create_app() -> Application:
         memory_service,
         reminder_service,
         event_service,
+        clarification_service,
     )
     secretary_service = SecretaryService(task_repo, followup_repo, project_repo, memory_repo)
 
-    app = create_bot(settings.telegram_bot_token, capture_service, secretary_service)
+    app = create_bot(
+        settings.telegram_bot_token,
+        capture_service,
+        secretary_service,
+        clarification_service,
+    )
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(
         reminder_dispatch_loop(reminder_service, note_repo, app.bot)

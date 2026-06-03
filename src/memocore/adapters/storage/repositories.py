@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 from memocore.adapters.storage.sqlite import Database
 from memocore.domain.models import (
+    ClarificationRequest,
+    ClarificationStatus,
     EventLog,
     EventType,
     FollowUp,
@@ -253,6 +255,19 @@ class ReminderRepository(BaseRepository):
             (status.value, _dt(utc_now()), reminder_id),
         )
 
+    async def update_remind_at(self, reminder_id: str, remind_at: datetime) -> None:
+        await self._execute(
+            "UPDATE reminders SET remind_at = ?, updated_at = ? WHERE id = ?",
+            (_dt(remind_at), _dt(utc_now()), reminder_id),
+        )
+
+    async def get_by_id(self, reminder_id: str) -> Reminder | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,))
+        ).fetchone()
+        return _reminder_from_row(row) if row else None
+
 
 class ProjectRepository(BaseRepository):
     async def find_or_create(self, name: str) -> Project:
@@ -430,6 +445,75 @@ class MemoryItemRepository(BaseRepository):
         )
 
 
+class ClarificationRequestRepository(BaseRepository):
+    async def create(self, request: ClarificationRequest) -> ClarificationRequest:
+        await self._execute(
+            """
+            INSERT INTO clarification_requests (
+                id, source_chat_id, source_message_id, entity_type, entity_id,
+                field_name, question, status, answer_text, created_at, updated_at, resolved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request.id,
+                request.source_chat_id,
+                request.source_message_id,
+                request.entity_type,
+                request.entity_id,
+                request.field_name,
+                request.question,
+                request.status.value,
+                request.answer_text,
+                _dt(request.created_at),
+                _dt(request.updated_at),
+                _dt(request.resolved_at),
+            ),
+        )
+        return request
+
+    async def find_pending_for_chat(self, source_chat_id: str) -> ClarificationRequest | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute(
+                """
+                SELECT * FROM clarification_requests
+                WHERE source_chat_id = ? AND status = ?
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (source_chat_id, ClarificationStatus.PENDING.value),
+            )
+        ).fetchone()
+        return _clarification_from_row(row) if row else None
+
+    async def resolve(self, request_id: str, answer_text: str) -> None:
+        now = utc_now()
+        await self._execute(
+            """
+            UPDATE clarification_requests
+            SET status = ?, answer_text = ?, updated_at = ?, resolved_at = ?
+            WHERE id = ?
+            """,
+            (
+                ClarificationStatus.RESOLVED.value,
+                answer_text,
+                _dt(now),
+                _dt(now),
+                request_id,
+            ),
+        )
+
+    async def cancel(self, request_id: str, answer_text: str | None = None) -> None:
+        await self._execute(
+            """
+            UPDATE clarification_requests
+            SET status = ?, answer_text = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (ClarificationStatus.CANCELLED.value, answer_text, _dt(utc_now()), request_id),
+        )
+
+
 class EventLogRepository(BaseRepository):
     async def create(self, event: EventLog) -> EventLog:
         await self._execute(
@@ -588,6 +672,23 @@ def _memory_from_row(row: Any) -> MemoryItem:
         status=row["status"],
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _clarification_from_row(row: Any) -> ClarificationRequest:
+    return ClarificationRequest(
+        id=row["id"],
+        source_chat_id=row["source_chat_id"],
+        source_message_id=row["source_message_id"],
+        entity_type=row["entity_type"],
+        entity_id=row["entity_id"],
+        field_name=row["field_name"],
+        question=row["question"],
+        status=row["status"],
+        answer_text=row["answer_text"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+        resolved_at=_parse_dt(row["resolved_at"]),
     )
 
 

@@ -28,7 +28,7 @@ memocore = "memocore.cli.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-memocore = ["prompts/*.md"]
+memocore = ["prompts/*.md", "adapters/storage/migrations/sqlite/*.sql"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

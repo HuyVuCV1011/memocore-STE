@@ -104,3 +104,19 @@ def test_validate_accepts_minimal():
     assert result.reminders == []
     assert result.projects == []
     assert result.memories == []
+
+
+def test_validate_accepts_markdown_wrapped_json():
+    service = _service()
+
+    result = service._validate('```json\n{"summary":"wrapped"}\n```')
+
+    assert result.summary == "wrapped"
+
+
+def test_validate_accepts_conversational_json_wrapper():
+    service = _service()
+
+    result = service._validate('Sure, here is your data:\n{"summary":"wrapped in prose"}')
+
+    assert result.summary == "wrapped in prose"

@@ -16,14 +16,14 @@ TASK_AND_REMINDER = NoteExtraction(
             title="Call Alex about the budget",
             description="Discuss budget details with Alex.",
             priority="medium",
-            due_at="2026-06-01T09:00:00+00:00",
+            due_at="2099-06-01T09:00:00+00:00",
             confidence=0.9,
         )
     ],
     reminders=[
         ReminderCandidate(
             title="Call Alex about the budget",
-            remind_at="2026-06-01T09:00:00+00:00",
+            remind_at="2099-06-01T09:00:00+00:00",
             confidence=0.9,
         )
     ],
@@ -44,3 +44,15 @@ PROFILE_MEMORY = NoteExtraction(
 )
 
 NO_ACTION = NoteExtraction(summary="A thought about the weather.")
+
+MISSING_REMINDER_TIME = NoteExtraction(
+    summary="Call John.",
+    tags=["john"],
+    reminders=[
+        ReminderCandidate(
+            title="Call John",
+            remind_at=None,
+            confidence=0.9,
+        )
+    ],
+)

@@ -2,9 +2,14 @@
 .env
 .env.*
 !.env.example
+.envrc
 *.pem
 *.key
 *.crt
+*.p12
+*.pfx
+credentials*.json
+*service-account*.json
 secrets/
 
 # Python

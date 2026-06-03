@@ -72,7 +72,10 @@ The default local extraction model is `qwen3:4b`. Use small models only for smok
 
 ## Storage Direction
 
-SQLite remains the verified local runtime. PostgreSQL with pgvector is the planned durable backend for concurrent workers and hybrid retrieval. Do not introduce a separate graph database until ordinary relational links fail a measured retrieval need.
+SQLite remains the verified local runtime. Start with structured SQLite retrieval. Add full-text
+search, PostgreSQL, and pgvector only when measured secretary workflows demonstrate a retrieval,
+concurrency, backup, or deployment need. Do not introduce a separate graph database until
+ordinary relational links fail a measured retrieval need.
 
 ## Current Secretary Features
 
@@ -84,7 +87,15 @@ SQLite remains the verified local runtime. PostgreSQL with pgvector is the plann
 
 ## Near-Term Work
 
-The next implementation milestone is managed memory retrieval: evidence, revisions, corrections, PostgreSQL runtime support, hybrid search, and privacy classification.
+The next implementation milestone is the conversation loop: classify Telegram messages as
+capture, question, instruction, correction, or casual conversation; retain bounded recent
+context; answer simple questions from SQLite; ask clarifying questions; and replace
+extraction-count replies with useful confirmations.
+
+After the conversation loop, deliver automatic briefings and proactive nudges, then people-aware
+meeting preparation. Grow the harness alongside integrations: begin with an audited boundary for
+calendar reads, then add approvals, retries, idempotency controls, and append-only traces before
+write-capable integrations. See [agent harness direction](docs/agent-harness.md).
 
 ## Deferred Work
 
