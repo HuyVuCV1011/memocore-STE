@@ -28,10 +28,10 @@ def test_format_capture_response_includes_clarification_question():
         note_id="note-1",
         summary="Call John.",
         reminders_created=1,
-        clarification_question='When should I remind you about "Call John"?',
+        clarification_question='Khi nào bạn muốn được nhắc về "Call John"?',
     )
 
-    assert 'When should I remind you about "Call John"?' in format_capture_response(response)
+    assert 'Khi nào bạn muốn được nhắc về "Call John"?' in format_capture_response(response)
 
 
 async def test_secretary_handler_ignores_empty_command_text():

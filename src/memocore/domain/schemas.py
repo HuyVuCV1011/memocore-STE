@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -86,8 +86,33 @@ class CaptureResponse(BaseModel):
     note_id: str
     summary: str
     tasks_created: int = 0
+    tasks_completed: int = 0
     reminders_created: int = 0
     memories_created: int = 0
+    memories_deleted: int = 0
     duplicate: bool = False
     clarification_question: str | None = None
     errors: list[str] = Field(default_factory=list)
+
+
+class IntentClassification(BaseModel):
+    intent: Literal[
+        "query_today",
+        "query_memory",
+        "query_tasks",
+        "query_reminders",
+        "capture_task",
+        "capture_reminder",
+        "capture_memory",
+        "update_task",
+        "mark_task_done",
+        "delete_all_tasks",
+        "memory_delete",
+        "correction_feedback",
+        "casual_or_noop",
+        "needs_clarification",
+    ]
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    target_entity_hints: str | None = None
+    ambiguity_detected: bool = False
+    clarification_question: str | None = None

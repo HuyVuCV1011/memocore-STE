@@ -4,24 +4,22 @@
 
 Build a local-first personal secretary that captures rough notes, remembers durable context, tracks commitments, and proactively surfaces open loops. Telegram is the first interface, not the product boundary.
 
-## Delivered
+## Version Plan
 
-### V1: Capture Loop
+### V1: Capture And Memory Foundation
+
+V1 includes the original capture loop, reliability work, secretary views, and the memory-trust closeout needed before conversational behavior.
+
+Delivered foundations:
 
 - Telegram capture with immutable raw notes.
 - Structured extraction for tasks, reminders, projects, and memory candidates.
 - SQLite persistence and event logs.
 - Reminder scheduling and delivery.
-
-### V1.1: Extraction Reliability
-
 - Provider-agnostic `ModelProvider.chat()` contract.
 - Ollama and OpenAI-compatible providers.
 - Configuration-driven provider factory and optional fallback.
 - External prompt files and extraction benchmark.
-
-### V1.2: Reliability Foundation
-
 - Hosted providers use provider-specific default URLs.
 - Invalid JSON and schema validation failures trigger fallback providers.
 - Relative weekday dates are computed in Python.
@@ -29,14 +27,18 @@ Build a local-first personal secretary that captures rough notes, remembers dura
 - Derived writes are transactional.
 - Reminder dispatch claims work with a lease before sending.
 - Likely incomplete extractions generate audit events.
-
-### V1.5: Secretary Foundation
-
 - First-class meeting and follow-up storage.
 - Task states include waiting and blocked work.
 - Memory candidates support activation and supersession.
 - Telegram commands: `/today`, `/waiting`, `/projects`, `/memory`.
 - PostgreSQL and pgvector migration blueprint for long-distance storage.
+
+V1 closeout focus:
+
+- Keep obvious questions and commands from contaminating memory.
+- Support simple memory rejection, supersession, forgetting, and redaction.
+- Keep task/reminder/project views clear enough for manual use.
+- Preserve raw inputs separately from interpreted memory and operational state.
 
 ## Delivery Principle
 
@@ -44,9 +46,9 @@ Build thin end-to-end secretary experiences. Each milestone must reduce administ
 the user. Add infrastructure when a secretary behavior needs it, not as a prerequisite for
 proving that behavior.
 
-## Next Milestones
+## Next Versions
 
-### S1: Conversation Loop
+### V2: Conversational Secretary
 
 1. Classify Telegram messages as capture, question, instruction, correction, or casual
    conversation.
@@ -55,7 +57,7 @@ proving that behavior.
 4. Ask clarifying questions when required task, reminder, or meeting fields are missing.
 5. Replace extraction-count replies with concise confirmations and useful follow-up questions.
 
-### S2: Daily Secretary
+### V3: Daily And Recurring Secretary
 
 1. Send an automatic morning briefing with due work, overdue work, reminders, open follow-ups,
    and upcoming meetings.
@@ -64,7 +66,7 @@ proving that behavior.
 4. Bundle low-priority nudges and respect quiet hours.
 5. Record whether suggestions were accepted, edited, ignored, or rejected.
 
-### S3: People and Meeting Preparation
+### V4: People, Projects, And Meetings
 
 1. Link people, meetings, follow-ups, projects, and memory items.
 2. Track what the user owes other people and what other people owe the user.
@@ -73,38 +75,29 @@ proving that behavior.
 4. Add structured SQLite retrieval by person, project, status, recency, and durability.
 5. Add correction and supersession workflows for inaccurate memory.
 
-### S4: Calendar Read Access
+### V5: Orchestration And Specialist Agents
 
-1. Add read-only calendar access for briefings and meeting preparation.
-2. Detect schedule conflicts and suggest resolutions.
-3. Store source references and privacy classifications for retrieved context.
-4. Add a minimal registered-tool boundary and append-only run events for external reads.
+1. Add a supervisor layer for bounded delegation to specialist workers.
+2. Define worker roles for coding, research, drafting, document, and browsing tasks.
+3. Add structured handoff payloads, execution logs, retries, timeouts, fallback, and verification.
+4. Keep durable memory ownership centralized in the main assistant.
+5. Require approval boundaries for high-impact or external actions.
 
-### S5: Drafting and Approved Actions
+### V6: Knowledge System And Productization
+
+1. Add richer entity modeling for people, projects, topics, decisions, and recurring concepts.
+2. Add graph-like relationships only when measured retrieval value justifies them.
+3. Add backup, restore, export, privacy controls, installability, and setup flows.
+4. Add a web dashboard or mobile-friendly overview after core secretary workflows are proven.
+5. Add PostgreSQL and pgvector only when retrieval, concurrency, or backup needs justify them.
+
+### V7: Controlled Autonomy
 
 1. Draft follow-up messages, email replies, and meeting agendas from stored context.
 2. Add approval records and execution policy outcomes: allow, deny, and require approval.
 3. Add approval-gated email sends and calendar writes with idempotency keys.
 4. Add post-action verification and compensating actions where integrations support them.
 5. Add bounded research and drafting workflows with explicit budgets and stop conditions.
-
-### S6: Purposeful Memory and Learning
-
-1. Learn language, tone, pronoun, notification, schedule, and communication preferences from
-   explicit feedback and cautious observation.
-2. Add evidence and revision history for durable memory.
-3. Add full-text search when structured retrieval is insufficient.
-4. Add PostgreSQL, pgvector hybrid retrieval, and a verified SQLite import command only when
-   measured retrieval or concurrency needs justify them.
-5. Add pattern recognition for recurring follow-up gaps and workload signals.
-
-### S7: Productization and Trust
-
-1. Add backup, restore, export, and privacy controls.
-2. Add a web dashboard and mobile-friendly overview.
-3. Add document, file, voice, and email ingestion.
-4. Report administrative effort saved: forgotten commitments prevented, follow-ups surfaced,
-   context prepared, and manual work avoided.
 
 ## Explicitly Deferred
 

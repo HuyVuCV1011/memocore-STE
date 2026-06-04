@@ -25,11 +25,13 @@ from memocore.adapters.telegram.bot import create_bot
 from memocore.config import Settings, get_settings
 from memocore.services.capture_service import CaptureService
 from memocore.services.clarification_service import ClarificationService
+from memocore.services.conversation_service import ConversationService
 from memocore.services.event_service import EventService
 from memocore.services.memory_service import MemoryService
 from memocore.services.reminder_service import ReminderService
 from memocore.services.secretary_service import SecretaryService
 from memocore.services.task_extraction_service import ExtractionService
+from memocore.services.intent_classifier_service import IntentClassifierService
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,7 @@ async def create_app(settings: Settings | None = None) -> Application:
     event_service = EventService(event_repo)
     provider = create_provider_with_fallback(settings.model, settings.fallback)
     extraction_service = ExtractionService(provider, temperature=settings.model.temperature)
+    intent_classifier_service = IntentClassifierService(provider, temperature=settings.model.temperature)
     memory_service = MemoryService(memory_repo, event_service)
     reminder_service = ReminderService(reminder_repo, event_service)
     clarification_service = ClarificationService(
@@ -64,6 +67,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         reminder_service,
         event_service,
         default_timezone=ZoneInfo(settings.user_timezone),
+        task_repo=task_repo,
     )
     capture_service = CaptureService(
         note_repo,
@@ -75,13 +79,30 @@ async def create_app(settings: Settings | None = None) -> Application:
         event_service,
         clarification_service,
     )
-    secretary_service = SecretaryService(task_repo, followup_repo, project_repo, memory_repo)
+    secretary_service = SecretaryService(
+        task_repo,
+        reminder_repo,
+        followup_repo,
+        project_repo,
+        memory_repo,
+        display_timezone=ZoneInfo(settings.user_timezone),
+    )
+    conversation_service = ConversationService(
+        capture_service,
+        secretary_service,
+        note_repo,
+        task_repo,
+        memory_service,
+        event_service,
+        intent_classifier_service=intent_classifier_service,
+    )
 
     app = create_bot(
         settings.telegram_bot_token,
         capture_service,
         secretary_service,
         clarification_service,
+        conversation_service,
     )
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(

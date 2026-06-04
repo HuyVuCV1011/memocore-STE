@@ -2,7 +2,7 @@
 
 ## Goal
 
-V1 proves the first usable assistant loop: capture information quickly, turn it into structured objects, persist those objects locally, and create reminders or tasks when appropriate.
+V1 proves the first usable assistant loop: capture information quickly, turn it into structured objects, persist those objects locally, create reminders or tasks when appropriate, and keep basic memory trustworthy enough to support later conversation work.
 
 ## Must Include
 
@@ -15,9 +15,11 @@ V1 proves the first usable assistant loop: capture information quickly, turn it 
   - `profile`
   - `project`
   - `interaction`
+- Basic memory lifecycle controls: candidate, active, rejected, superseded, forget/redact.
 - Schema-driven model output validation.
 - SQLite local database.
 - Basic reminder dispatch for scheduled reminders.
+- Basic secretary commands for today, tasks, reminders, projects, memory, and waiting work.
 - Tests for schemas, services, repositories, and extraction fixtures.
 
 ## Golden Path
@@ -42,6 +44,8 @@ V1 proves the first usable assistant loop: capture information quickly, turn it 
 - All generated objects link back to the source note.
 - `ollama` model name and base URL are configurable.
 - Telegram handlers contain no persistence or prompt logic.
+- Obvious memory correction or rejection requests do not leave contradictory active memory.
+- Obvious questions about stored state do not become durable memory.
 
 ## Out of Scope
 
@@ -54,3 +58,5 @@ V1 proves the first usable assistant loop: capture information quickly, turn it 
 - Multi-user hosting.
 - Heavy task queue infrastructure.
 - Long-term memory ranking beyond simple buckets and source links.
+- Natural-language conversation routing beyond basic V1 safeguards.
+- Recurring reminders.

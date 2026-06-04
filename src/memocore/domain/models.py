@@ -83,6 +83,7 @@ class EventType(StrEnum):
     NOTE_PROCESSED = "note_processed"
     NOTE_FAILED = "note_failed"
     TASK_CANDIDATE_CREATED = "task_candidate_created"
+    TASK_DONE = "task_done"
     REMINDER_CANDIDATE_CREATED = "reminder_candidate_created"
     REMINDER_SCHEDULED = "reminder_scheduled"
     REMINDER_SENT = "reminder_sent"
@@ -96,9 +97,12 @@ class EventType(StrEnum):
     MEETING_CREATED = "meeting_created"
     MEMORY_ACTIVATED = "memory_activated"
     MEMORY_SUPERSEDED = "memory_superseded"
+    MEMORY_REJECTED = "memory_rejected"
+    MEMORY_DELETED = "memory_deleted"
     CLARIFICATION_REQUESTED = "clarification_requested"
     CLARIFICATION_RESOLVED = "clarification_resolved"
     CLARIFICATION_FAILED = "clarification_failed"
+    USER_FEEDBACK_RECORDED = "user_feedback_recorded"
 
 
 class TimestampedModel(BaseModel):

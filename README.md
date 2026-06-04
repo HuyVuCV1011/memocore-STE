@@ -44,12 +44,14 @@ MemoCore is a local-first personal secretary backend. It is designed to turn uns
 
 ## 🗺️ Current State
 
-The repository includes V1, V1.1, V1.2, and the local V1.5 secretary foundation.
+The repository is in the V1 capture-and-memory foundation. V1 includes capture, provider
+reliability, operational reliability, basic secretary views, and the memory-trust closeout needed
+before V2 conversation work.
 
-| Version family | Foundation |
+| Version | Foundation |
 | --- | --- |
-| V1 through V1.2 | Core capture, extraction, memory, task, and reminder behaviors. |
-| Local V1.5 | Secretary foundation with provider selection, fallback, Telegram commands, SQLite runtime, and migration planning. |
+| V1 | Telegram capture, extraction, SQLite storage, single-shot reminders, model providers, secretary commands, and basic memory lifecycle. |
+| V2 next | Conversational secretary behavior: intent routing, natural-language queries, and safer corrections. |
 
 ---
 
@@ -125,7 +127,9 @@ MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_b
 
 | Command | Purpose |
 | --- | --- |
-| `/today` | Show due and overdue work. |
+| `/today` | Show today's work and reminders. |
+| `/tasks` | Show active tasks. |
+| `/reminders` | Show recent reminders. |
 | `/waiting` | Show blocked, waiting, and follow-up items. |
 | `/projects` | Show captured projects. |
 | `/memory` | Show recent active memory candidates. |

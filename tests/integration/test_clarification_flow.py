@@ -33,6 +33,33 @@ def test_parse_clarification_datetime_relative_duration_before_clock_time():
     assert parsed == datetime(2026, 6, 3, 12, 0, tzinfo=UTC)
 
 
+def test_parse_clarification_datetime_vietnamese_today_clock():
+    vietnam = ZoneInfo("Asia/Ho_Chi_Minh")
+    now = datetime(2026, 6, 3, 13, 0, tzinfo=vietnam)
+
+    parsed = parse_clarification_datetime("Hôm nay 13h30", now=now, default_timezone=vietnam)
+
+    assert parsed == datetime(2026, 6, 3, 6, 30, tzinfo=UTC)
+
+
+def test_parse_clarification_datetime_vietnamese_relative_duration():
+    vietnam = ZoneInfo("Asia/Ho_Chi_Minh")
+    now = datetime(2026, 6, 3, 13, 0, tzinfo=vietnam)
+
+    parsed = parse_clarification_datetime("2 tiếng sau", now=now, default_timezone=vietnam)
+
+    assert parsed == datetime(2026, 6, 3, 8, 0, tzinfo=UTC)
+
+
+def test_parse_clarification_datetime_vietnamese_weekday():
+    vietnam = ZoneInfo("Asia/Ho_Chi_Minh")
+    now = datetime(2026, 6, 3, 13, 0, tzinfo=vietnam)
+
+    parsed = parse_clarification_datetime("13h30 thứ 4", now=now, default_timezone=vietnam)
+
+    assert parsed == datetime(2026, 6, 10, 6, 30, tzinfo=UTC)
+
+
 async def test_capture_requests_clarification_for_missing_reminder_time(
     capture_service, fake_provider, repos
 ):
@@ -48,7 +75,7 @@ async def test_capture_requests_clarification_for_missing_reminder_time(
     pending = await repos["clarifications"].find_pending_for_chat("123")
     reminders = await repos["reminders"].list_by_note(response.note_id)
 
-    assert response.clarification_question == 'When should I remind you about "Call John"?'
+    assert response.clarification_question == 'Khi nào bạn muốn được nhắc về "Call John"?'
     assert pending.status == ClarificationStatus.PENDING
     assert reminders[0].status == ReminderStatus.CANDIDATE
     assert reminders[0].remind_at is None
@@ -68,7 +95,7 @@ async def test_answer_pending_clarification_schedules_reminder(capture_service, 
 
     assert isinstance(service, ClarificationService)
     assert result.handled is True
-    assert "Reminder set" in result.message
+    assert "Reminder được đặt" in result.message
     assert updated.status == ReminderStatus.SCHEDULED
     assert updated.remind_at is not None
     assert pending is None

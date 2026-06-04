@@ -32,7 +32,11 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 def _dt(value: datetime | None) -> str | None:
-    return value.isoformat() if value else None
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -106,6 +110,23 @@ class NoteRepository(BaseRepository):
         ).fetchone()
         return _note_from_row(row) if row else None
 
+    async def list_recent_by_chat(
+        self, source: str, source_chat_id: str | None, limit: int = 5
+    ) -> list[Note]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM notes
+                WHERE source = ? AND source_chat_id IS ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (source, source_chat_id, limit),
+            )
+        ).fetchall()
+        return [_note_from_row(row) for row in rows]
+
     async def update_status(self, note_id: str, status: NoteStatus) -> None:
         await self._execute(
             "UPDATE notes SET status = ?, updated_at = ? WHERE id = ?",
@@ -146,6 +167,11 @@ class TaskRepository(BaseRepository):
         )
         return task
 
+    async def get_by_id(self, task_id: str) -> Task | None:
+        conn = await self.database.connection()
+        row = await (await conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))).fetchone()
+        return _task_from_row(row) if row else None
+
     async def list_by_note(self, note_id: str) -> list[Task]:
         conn = await self.database.connection()
         rows = await (await conn.execute("SELECT * FROM tasks WHERE source_note_id = ?", (note_id,))).fetchall()
@@ -165,10 +191,31 @@ class TaskRepository(BaseRepository):
         ).fetchall()
         return [_task_from_row(row) for row in rows]
 
+    async def list_recent_active(self, limit: int = 5) -> list[Task]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status IN (?, ?, ?, ?)
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                ("candidate", "open", "waiting", "blocked", limit),
+            )
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
     async def update_status(self, task_id: str, status: str) -> None:
         await self._execute(
             "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
             (status, _dt(utc_now()), task_id),
+        )
+
+    async def update_due_at(self, task_id: str, due_at: datetime | None) -> None:
+        await self._execute(
+            "UPDATE tasks SET due_at = ?, updated_at = ? WHERE id = ?",
+            (_dt(due_at), _dt(utc_now()), task_id),
         )
 
 
@@ -203,19 +250,38 @@ class ReminderRepository(BaseRepository):
         rows = await (await conn.execute("SELECT * FROM reminders WHERE source_note_id = ?", (note_id,))).fetchall()
         return [_reminder_from_row(row) for row in rows]
 
+    async def list_recent(self, limit: int = 20) -> list[Reminder]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM reminders
+                WHERE status != ?
+                ORDER BY remind_at IS NULL, remind_at DESC, created_at DESC
+                LIMIT ?
+                """,
+                (ReminderStatus.CANCELLED.value, limit),
+            )
+        ).fetchall()
+        return [_reminder_from_row(row) for row in rows]
+
     async def find_due(self, now: datetime) -> list[Reminder]:
         conn = await self.database.connection()
         rows = await (
             await conn.execute(
                 """
                 SELECT * FROM reminders
-                WHERE status = ? AND remind_at IS NOT NULL AND remind_at <= ?
+                WHERE status = ? AND remind_at IS NOT NULL
                 ORDER BY remind_at ASC
                 """,
-                (ReminderStatus.SCHEDULED.value, _dt(now)),
+                (ReminderStatus.SCHEDULED.value,),
             )
         ).fetchall()
-        return [_reminder_from_row(row) for row in rows]
+        return [
+            reminder
+            for reminder in (_reminder_from_row(row) for row in rows)
+            if reminder.remind_at and reminder.remind_at <= now
+        ]
 
     async def claim_due(self, now: datetime, lease_before: datetime) -> list[Reminder]:
         conn = await self.database.connection()
@@ -223,15 +289,21 @@ class ReminderRepository(BaseRepository):
             await conn.execute(
                 """
                 SELECT id FROM reminders
-                WHERE status = ? AND remind_at IS NOT NULL AND remind_at <= ?
+                WHERE status = ? AND remind_at IS NOT NULL
                   AND (claimed_at IS NULL OR claimed_at <= ?)
                 ORDER BY remind_at ASC
                 """,
-                (ReminderStatus.SCHEDULED.value, _dt(now), _dt(lease_before)),
+                (ReminderStatus.SCHEDULED.value, _dt(lease_before)),
             )
         ).fetchall()
         claimed: list[Reminder] = []
         for row in rows:
+            reminder_row = await (
+                await conn.execute("SELECT * FROM reminders WHERE id = ?", (row["id"],))
+            ).fetchone()
+            reminder = _reminder_from_row(reminder_row)
+            if not reminder.remind_at or reminder.remind_at > now:
+                continue
             result = await conn.execute(
                 """
                 UPDATE reminders
@@ -242,10 +314,7 @@ class ReminderRepository(BaseRepository):
                 (_dt(now), _dt(now), row["id"], ReminderStatus.SCHEDULED.value, _dt(lease_before)),
             )
             if result.rowcount:
-                reminder_row = await (
-                    await conn.execute("SELECT * FROM reminders WHERE id = ?", (row["id"],))
-                ).fetchone()
-                claimed.append(_reminder_from_row(reminder_row))
+                claimed.append(reminder)
         await self.database.commit_if_needed()
         return claimed
 
@@ -418,7 +487,17 @@ class MemoryItemRepository(BaseRepository):
 
     async def list_by_bucket(self, bucket: MemoryBucket) -> list[MemoryItem]:
         conn = await self.database.connection()
-        rows = await (await conn.execute("SELECT * FROM memory_items WHERE bucket = ?", (bucket.value,))).fetchall()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM memory_items WHERE bucket = ? ORDER BY updated_at DESC",
+                (bucket.value,),
+            )
+        ).fetchall()
+        return [_memory_from_row(row) for row in rows]
+
+    async def list_all(self) -> list[MemoryItem]:
+        conn = await self.database.connection()
+        rows = await (await conn.execute("SELECT * FROM memory_items ORDER BY updated_at DESC")).fetchall()
         return [_memory_from_row(row) for row in rows]
 
     async def list_by_note(self, note_id: str) -> list[MemoryItem]:
@@ -443,6 +522,9 @@ class MemoryItemRepository(BaseRepository):
             "UPDATE memory_items SET status = ?, updated_at = ? WHERE id = ?",
             (status, _dt(utc_now()), item_id),
         )
+
+    async def delete(self, item_id: str) -> None:
+        await self._execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
 
 
 class ClarificationRequestRepository(BaseRepository):
