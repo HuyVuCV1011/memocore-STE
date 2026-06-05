@@ -72,14 +72,14 @@ Edit `.env`:
 TELEGRAM_BOT_TOKEN=your-token
 DATABASE_PATH=data/memocore.db
 MODEL_PROVIDER=ollama
-MODEL_NAME=qwen3:4b
+MODEL_NAME=qwen3:14b
 # Optional: MODEL_BASE_URL=http://127.0.0.1:11434
 ```
 
 Install the default local model:
 
 ```bash
-ollama pull qwen3:4b
+ollama pull qwen3:14b
 ```
 
 ### Run

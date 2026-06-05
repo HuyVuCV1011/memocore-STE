@@ -16,7 +16,7 @@ from memocore.services.secretary_service import SecretaryService
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         await update.message.reply_text(
-            "Memocore is ready. Send a note or use /today, /tasks, /reminders, /waiting, /projects, or /memory."
+            "Memocore is ready. Send a note or use /today, /tomorrow, /tasks, /reminders, /waiting, /projects, or /memory."
         )
 
 
@@ -29,6 +29,8 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     service: SecretaryService = context.application.bot_data["secretary_service"]
     actions = {
         "today": service.today,
+        "todays": service.today,
+        "tomorrow": service.tomorrow,
         "tasks": service.tasks,
         "reminders": service.reminders,
         "waiting": service.waiting,
@@ -84,6 +86,6 @@ def register_handlers(
     app.bot_data["clarification_service"] = clarification_service
     app.bot_data["conversation_service"] = conversation_service
     app.add_handler(CommandHandler("start", start_handler))
-    for command in ("today", "tasks", "reminders", "waiting", "projects", "memory"):
+    for command in ("today", "todays", "tomorrow", "tasks", "reminders", "waiting", "projects", "memory"):
         app.add_handler(CommandHandler(command, secretary_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))

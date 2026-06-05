@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 
 from memocore.domain.models import MemoryBucket, MemoryKind, Note, Task
 from memocore.domain.schemas import CaptureRequest, IntentClassification, MemoryCandidate
@@ -35,6 +35,7 @@ def _conversation_service(capture_service, repos, classifier=None) -> Conversati
 
 def test_classifies_vietnamese_and_english_examples():
     assert classify_intent("hôm nay tôi cần làm gì") == "query_today"
+    assert classify_intent("mai tôi cần làm gì") == "query_tomorrow"
     assert classify_intent("tôi đã lưu gì về bản thân") == "query_memory"
     assert classify_intent("project Memocore còn gì chưa xong") == "query_projects"
     assert classify_intent("tôi đã làm xong việc mua pc") == "mark_task_done"
@@ -77,6 +78,39 @@ async def test_today_query_answers_agenda_without_extraction(
     assert result.intent == "query_today"
     assert "Finish Memocore V2 router" in result.reply
     assert fake_provider.calls == []
+
+
+async def test_tomorrow_query_answers_agenda_without_extraction(
+    capture_service, fake_provider, repos
+):
+    note = await repos["notes"].create(Note(raw_text="task source"))
+    tomorrow = datetime.now(UTC).date() + timedelta(days=1)
+    await repos["tasks"].create(
+        Task(
+            title="Call dưa hấu",
+            source_note_id=note.id,
+            due_at=datetime.combine(tomorrow, time(6, 0), tzinfo=UTC),
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(CaptureRequest(raw_text="mai tôi cần làm gì"))
+
+    assert result.intent == "query_tomorrow"
+    assert "Call dưa hấu" in result.reply
+    assert fake_provider.calls == []
+
+
+async def test_preference_statement_captures_memory_without_intent_classifier(
+    capture_service, fake_provider, repos
+):
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(CaptureRequest(raw_text="tôi thích ăn cơm tấm"))
+
+    assert result.intent == "capture_memory"
+    assert result.captured is True
+    assert fake_provider.calls
 
 
 async def test_task_moi_followup_captures_previous_message(

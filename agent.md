@@ -62,13 +62,13 @@ Providers expose `ProviderInfo`, `chat()`, and `health_check()`. Prompt ownershi
 TELEGRAM_BOT_TOKEN=...
 DATABASE_PATH=data/memocore.db
 MODEL_PROVIDER=ollama
-MODEL_NAME=qwen3:4b
+MODEL_NAME=qwen3:14b
 MODEL_BASE_URL=http://127.0.0.1:11434
 MODEL_API_KEY=
 MODEL_STRUCTURED_OUTPUT_MODE=auto
 ```
 
-The default local extraction model is `qwen3:4b`. Use small models only for smoke testing when reliability is not required.
+The default local extraction model is `qwen3:14b`. Use small models only for smoke testing when reliability is not required.
 
 ## Storage Direction
 

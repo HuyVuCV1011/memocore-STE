@@ -14,7 +14,7 @@ from memocore.config import FallbackConfig, ModelConfig
 
 
 PROVIDER_DEFAULTS = {
-    "ollama": ("http://127.0.0.1:11434", "qwen3:4b", StructuredOutputMode.JSON_MODE),
+    "ollama": ("http://127.0.0.1:11434", "qwen3:14b", StructuredOutputMode.JSON_MODE),
     "openai": ("https://api.openai.com/v1", "gpt-4.1-nano", StructuredOutputMode.JSON_SCHEMA),
     "deepseek": ("https://api.deepseek.com", "deepseek-chat", StructuredOutputMode.JSON_MODE),
     "openrouter": (

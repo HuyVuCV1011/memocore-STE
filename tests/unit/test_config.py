@@ -15,7 +15,7 @@ def test_settings_from_env(monkeypatch, tmp_path):
     assert settings.database_path == tmp_path / "test.db"
     assert settings.user_timezone == "Asia/Ho_Chi_Minh"
     assert settings.model.provider == "ollama"
-    assert settings.model.name == "qwen3:4b"
+    assert settings.model.name == "qwen3:14b"
 
 
 def test_settings_support_legacy_ollama_env(monkeypatch):

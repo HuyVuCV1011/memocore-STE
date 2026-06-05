@@ -59,7 +59,7 @@ async def test_live_extraction_benchmark():
     provider = create_provider(
         ModelConfig(
             provider=os.getenv("MODEL_PROVIDER", "ollama"),
-            name=os.getenv("MODEL_NAME", "qwen3:4b"),
+            name=os.getenv("MODEL_NAME", "qwen3:14b"),
             base_url=os.getenv("MODEL_BASE_URL", "http://127.0.0.1:11434"),
             api_key=os.getenv("MODEL_API_KEY"),
         )

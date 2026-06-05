@@ -48,6 +48,10 @@ class ConversationService:
             command = text.split()[0].removeprefix("/")
             if command == "today":
                 return "query_today"
+            if command == "todays":
+                return "query_today"
+            if command == "tomorrow":
+                return "query_tomorrow"
             if command == "memory":
                 return "query_memory"
             if command == "tasks":
@@ -90,6 +94,12 @@ class ConversationService:
         }:
             return "query_today"
 
+        if _is_tomorrow_query(normalized):
+            return "query_tomorrow"
+
+        if _has_explicit_memory_signal(normalized):
+            return "capture_memory"
+
         if normalized in {
             "what open tasks do i have",
             "tasks dang mo",
@@ -120,6 +130,7 @@ class ConversationService:
 
                     safe_intents = {
                         "query_today",
+                        "query_tomorrow",
                         "query_memory",
                         "query_tasks",
                         "query_reminders",
@@ -135,6 +146,7 @@ class ConversationService:
                     fallback_intent = classify_intent(request.raw_text)
                     safe_intents = {
                         "query_today",
+                        "query_tomorrow",
                         "query_memory",
                         "query_tasks",
                         "query_reminders",
@@ -194,6 +206,8 @@ class ConversationService:
 
         if intent == "query_today":
             return ConversationResult(intent=intent, reply=await self.secretary_service.today())
+        if intent == "query_tomorrow":
+            return ConversationResult(intent=intent, reply=await self.secretary_service.tomorrow())
         if intent in {"query_tasks", "query_tasks_due"}:
             project_name = _extract_project_name(request.raw_text)
             if project_name:
@@ -759,6 +773,8 @@ def classify_intent(raw_text: str) -> str:
         return "mark_task_done"
     if _is_today_query(normalized):
         return "query_today"
+    if _is_tomorrow_query(normalized):
+        return "query_tomorrow"
     if _is_memory_query(normalized):
         return "query_memory"
     if _is_project_query(normalized):
@@ -910,6 +926,12 @@ def _memory_bucket(raw_text: str) -> str | None:
 def _is_today_query(normalized: str) -> bool:
     return "hom nay" in normalized and any(
         signal in normalized for signal in ("can lam gi", "lich", "agenda", "viec gi", "today")
+    )
+
+
+def _is_tomorrow_query(normalized: str) -> bool:
+    return any(day in normalized for day in ("mai", "ngay mai", "tomorrow")) and any(
+        signal in normalized for signal in ("can lam gi", "lich", "agenda", "viec gi", "what")
     )
 
 

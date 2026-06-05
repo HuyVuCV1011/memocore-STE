@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, date, datetime, time, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from memocore.adapters.storage.repositories import (
     FollowUpRepository,
@@ -32,25 +32,41 @@ class SecretaryService:
     async def today(self) -> str:
         now = datetime.now(UTC)
         local_now = now.astimezone(self.display_timezone)
+        return await self.agenda_for_date(local_now.date(), "Hôm nay")
+
+    async def tomorrow(self) -> str:
+        now = datetime.now(UTC)
+        local_now = now.astimezone(self.display_timezone)
+        return await self.agenda_for_date(local_now.date() + timedelta(days=1), "Ngày mai")
+
+    async def agenda_for_date(self, target_date: date, title: str | None = None) -> str:
+        now = datetime.now(UTC)
         day_start = datetime.combine(
-            local_now.date(), time.min, tzinfo=self.display_timezone
+            target_date, time.min, tzinfo=self.display_timezone
         ).astimezone(UTC)
         day_end = datetime.combine(
-            local_now.date(), time.max, tzinfo=self.display_timezone
+            target_date, time.max, tzinfo=self.display_timezone
         ).astimezone(UTC)
         tasks = await self.task_repo.list_active()
         due = [
             task
             for task in tasks
-            if task.due_at and (task.due_at <= now or day_start <= task.due_at <= day_end)
+            if task.due_at and day_start <= task.due_at <= day_end
         ]
+        if target_date <= now.astimezone(self.display_timezone).date():
+            due = [
+                task
+                for task in tasks
+                if task.due_at and (task.due_at <= now or day_start <= task.due_at <= day_end)
+            ]
         waiting = [task for task in tasks if task.status in {"waiting", "blocked"}]
         reminders = [
             reminder
             for reminder in await self.reminder_repo.list_recent(limit=100)
             if reminder.remind_at and day_start <= reminder.remind_at <= day_end
         ]
-        lines = [f"Hôm nay - {local_now:%d/%m/%Y}"]
+        heading = title or _day_label(target_date, now.astimezone(self.display_timezone).date()).capitalize()
+        lines = [f"{heading} - {target_date:%d/%m/%Y}"]
         if due:
             lines.append("")
             lines.append("Cần làm")
@@ -58,7 +74,7 @@ class SecretaryService:
         else:
             lines.append("")
             lines.append("Cần làm")
-            lines.append("Không có task nào đến hạn hôm nay.")
+            lines.append(f"Không có task nào đến hạn {_day_label(target_date, now.astimezone(self.display_timezone).date())}.")
         if reminders:
             lines.append("")
             lines.append("Nhắc nhở")

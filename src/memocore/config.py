@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class ModelConfig(BaseModel):
     provider: str = "ollama"
-    name: str = "qwen3:4b"
+    name: str = "qwen3:14b"
     base_url: str | None = None
     api_key: str | None = None
     timeout_seconds: float = 60.0

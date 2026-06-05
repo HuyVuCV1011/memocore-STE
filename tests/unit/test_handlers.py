@@ -46,3 +46,39 @@ async def test_secretary_handler_ignores_empty_command_text():
     await secretary_handler(update, context)
 
     assert replies == []
+
+
+async def test_secretary_handler_accepts_todays_alias():
+    replies: list[str] = []
+
+    async def reply_text(text: str) -> None:
+        replies.append(text)
+
+    class FakeSecretary:
+        async def today(self) -> str:
+            return "today view"
+
+        async def tomorrow(self) -> str:
+            return "tomorrow view"
+
+        async def tasks(self) -> str:
+            return "tasks view"
+
+        async def reminders(self) -> str:
+            return "reminders view"
+
+        async def waiting(self) -> str:
+            return "waiting view"
+
+        async def projects(self) -> str:
+            return "projects view"
+
+        async def memories(self) -> str:
+            return "memory view"
+
+    update = SimpleNamespace(message=SimpleNamespace(text="/todays", reply_text=reply_text))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"secretary_service": FakeSecretary()}))
+
+    await secretary_handler(update, context)
+
+    assert replies == ["today view"]

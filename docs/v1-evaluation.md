@@ -21,7 +21,7 @@ This document preserves the useful conclusions from the V1 reliability review. T
 - `system_extraction.md` and `user_extraction.md` replaced the old combined prompt.
 - `openai_provider.py` and `provider_factory.py` were added.
 - Ollama, OpenAI, Gemini, DeepSeek, OpenRouter, and Groq configuration paths are supported.
-- The default local model became `qwen3:4b`.
+- The default local model became `qwen3:14b`.
 - Benchmark fixtures and fallback tests were added.
 
 ## Remaining Product Lesson
