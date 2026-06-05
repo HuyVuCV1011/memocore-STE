@@ -290,6 +290,20 @@ class ConversationService:
         )
         return note
 
+    async def _create_clarification_request(self, request: ClarificationRequest) -> ClarificationRequest:
+        created = await self.capture_service.clarification_service.clarification_repo.create(request)
+        await self.event_service.append_event(
+            EventType.CLARIFICATION_REQUESTED,
+            "clarification_request",
+            created.id,
+            {
+                "entity_type": created.entity_type,
+                "entity_id": created.entity_id,
+                "field_name": created.field_name,
+            },
+        )
+        return created
+
     async def _delete_all_tasks(self, raw_text: str) -> str:
         if not _is_delete_all_tasks(_normalize_text(raw_text)):
             return _localized(
@@ -381,7 +395,7 @@ class ConversationService:
                     field_name="status|done",
                     question=question,
                 )
-                await self.capture_service.clarification_service.clarification_repo.create(clar_req)
+                await self._create_clarification_request(clar_req)
             return question
 
         task = matches[0]
@@ -401,7 +415,7 @@ class ConversationService:
                     field_name="status|done",
                     question=question,
                 )
-                await self.capture_service.clarification_service.clarification_repo.create(clar_req)
+                await self._create_clarification_request(clar_req)
             return question
 
         await self.task_repo.update_status(task.id, TaskStatus.DONE.value)
@@ -457,7 +471,7 @@ class ConversationService:
                     field_name=f"due_at|{due_at.isoformat()}",
                     question=question,
                 )
-                await self.capture_service.clarification_service.clarification_repo.create(clar_req)
+                await self._create_clarification_request(clar_req)
             return question
 
         task = matches[0]
@@ -477,7 +491,7 @@ class ConversationService:
                     field_name=f"due_at|{due_at.isoformat()}",
                     question=question,
                 )
-                await self.capture_service.clarification_service.clarification_repo.create(clar_req)
+                await self._create_clarification_request(clar_req)
             return question
 
         await self.task_repo.update_due_at(task.id, due_at)
@@ -562,7 +576,7 @@ class ConversationService:
                         field_name="status|cancelled",
                         question=question,
                     )
-                    await self.capture_service.clarification_service.clarification_repo.create(clar_req)
+                    await self._create_clarification_request(clar_req)
                 return question
 
         if "khong phai memory" in normalized or "not a memory" in normalized:

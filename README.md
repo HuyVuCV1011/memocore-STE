@@ -37,21 +37,22 @@ MemoCore is a local-first personal secretary backend. It is designed to turn uns
 | Reliability | Validation-aware provider fallback and transactional derived writes. |
 | Time handling | Deterministic relative-date prompt context. |
 | Reminder delivery | Leased reminder dispatch. |
-| Telegram commands | `/today`, `/waiting`, `/projects`, and `/memory`. |
+| Telegram commands | `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`, `/projects`, and `/memory`. |
 | Storage | SQLite runtime with a PostgreSQL and `pgvector` migration blueprint. |
 
 ---
 
 ## 🗺️ Current State
 
-The repository is in the V1 capture-and-memory foundation. V1 includes capture, provider
-reliability, operational reliability, basic secretary views, and the memory-trust closeout needed
-before V2 conversation work.
+The repository is in the V2 conversational secretary foundation. V1 capture and memory
+reliability are in place, and V2 adds Telegram intent routing, natural-language SQLite queries,
+clarification flows, safer corrections, and audit-backed conversation actions.
 
 | Version | Foundation |
 | --- | --- |
 | V1 | Telegram capture, extraction, SQLite storage, single-shot reminders, model providers, secretary commands, and basic memory lifecycle. |
-| V2 next | Conversational secretary behavior: intent routing, natural-language queries, and safer corrections. |
+| V2 | Conversational secretary behavior: intent routing, natural-language queries, clarification, and safer corrections. |
+| V3 next | Daily briefings, recurring reminders, stale-loop nudges, quiet hours, and feedback signals. |
 
 ---
 

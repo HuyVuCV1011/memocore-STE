@@ -434,3 +434,79 @@ async def test_ambiguous_classifier_write_demotion(capture_service, repos):
     # Should demote to needs_clarification
     assert res.intent == "needs_clarification"
     assert res.captured is False
+
+
+def test_intent_schema_accepts_all_runtime_v2_intents():
+    runtime_intents = {
+        "query_today",
+        "query_tomorrow",
+        "query_memory",
+        "query_tasks",
+        "query_tasks_due",
+        "query_reminders",
+        "query_projects",
+        "capture_task",
+        "capture_reminder",
+        "capture_memory",
+        "update_task",
+        "update_task_due",
+        "mark_task_done",
+        "delete_all_tasks",
+        "memory_delete",
+        "memory_correction",
+        "correction_feedback",
+        "clarification_answer",
+        "casual_or_noop",
+        "needs_clarification",
+    }
+
+    for intent in runtime_intents:
+        parsed = IntentClassification(intent=intent, confidence=0.9)
+        assert parsed.intent == intent
+
+
+async def test_classifier_project_query_is_executed_without_extraction(capture_service, fake_provider, repos):
+    note = await repos["notes"].create(Note(raw_text="project setup"))
+    project = await repos["projects"].find_or_create("Memocore")
+    await repos["tasks"].create(
+        Task(
+            title="Ship V2 conversation hardening",
+            source_note_id=note.id,
+            project_id=project.id,
+        )
+    )
+    raw_text = "what is still open in project Memocore?"
+    classifier = FakeIntentClassifierService({
+        raw_text: IntentClassification(intent="query_projects", confidence=0.95)
+    })
+    service = _conversation_service(capture_service, repos, classifier=classifier)
+
+    result = await service.handle_text(CaptureRequest(raw_text=raw_text))
+
+    assert result.intent == "query_projects"
+    assert "Ship V2 conversation hardening" in result.reply
+    assert fake_provider.calls == []
+
+
+async def test_conversation_created_clarifications_are_audited(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="setup"))
+    await repos["tasks"].create(Task(title="Prepare Aptech lesson", source_note_id=note.id))
+    await repos["tasks"].create(Task(title="Prepare MindX lesson", source_note_id=note.id))
+    capture_service.clarification_service.task_repo = repos["tasks"]
+    raw_text = "change prepare lesson to 17h"
+    classifier = FakeIntentClassifierService({
+        raw_text: IntentClassification(
+            intent="update_task_due",
+            confidence=0.95,
+            target_entity_hints="prepare lesson",
+        )
+    })
+    service = _conversation_service(capture_service, repos, classifier=classifier)
+
+    result = await service.handle_text(CaptureRequest(raw_text=raw_text, source_chat_id="audit-chat"))
+
+    assert result.intent == "update_task_due"
+    pending = await capture_service.clarification_service.find_pending_for_chat("audit-chat")
+    assert pending is not None
+    events = await repos["events"].list_by_entity("clarification_request", pending.id)
+    assert any(event.event_type == EventType.CLARIFICATION_REQUESTED for event in events)

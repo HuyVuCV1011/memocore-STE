@@ -98,17 +98,23 @@ class CaptureResponse(BaseModel):
 class IntentClassification(BaseModel):
     intent: Literal[
         "query_today",
+        "query_tomorrow",
         "query_memory",
         "query_tasks",
+        "query_tasks_due",
         "query_reminders",
+        "query_projects",
         "capture_task",
         "capture_reminder",
         "capture_memory",
         "update_task",
+        "update_task_due",
         "mark_task_done",
         "delete_all_tasks",
         "memory_delete",
+        "memory_correction",
         "correction_feedback",
+        "clarification_answer",
         "casual_or_noop",
         "needs_clarification",
     ]

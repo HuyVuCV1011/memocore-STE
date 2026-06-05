@@ -46,16 +46,20 @@ Build thin end-to-end secretary experiences. Each milestone must reduce administ
 the user. Add infrastructure when a secretary behavior needs it, not as a prerequisite for
 proving that behavior.
 
+## Delivered V2: Conversational Secretary
+
+V2 turns Telegram from a capture-only surface into a conversational secretary interface.
+
+Delivered foundations:
+
+- Deterministic and model-assisted intent routing for capture, question, instruction, correction, clarification, and casual/no-op messages.
+- Natural-language queries over existing SQLite data for agendas, tasks, reminders, projects, and memory.
+- Safer task completion, deadline updates, bulk task cancellation, memory deletion, and correction flows.
+- Clarification requests for ambiguous task selection and weak matches.
+- Audit events for conversation notes, user feedback, and conversation-created clarifications.
+- Guardrails so low-confidence or ambiguous write intents ask for clarification instead of creating or mutating durable objects.
+
 ## Next Versions
-
-### V2: Conversational Secretary
-
-1. Classify Telegram messages as capture, question, instruction, correction, or casual
-   conversation.
-2. Add a conversation service with bounded recent context.
-3. Answer simple questions from existing SQLite data.
-4. Ask clarifying questions when required task, reminder, or meeting fields are missing.
-5. Replace extraction-count replies with concise confirmations and useful follow-up questions.
 
 ### V3: Daily And Recurring Secretary
 
