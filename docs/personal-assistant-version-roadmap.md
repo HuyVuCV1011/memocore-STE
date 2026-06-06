@@ -1,110 +1,92 @@
-# Personal Assistant Version Roadmap
+# Personal Assistant Roadmap
 
 ## Product Goal
 
-Memocore should become a dependable personal secretary: it captures rough inputs, turns them into structured work, manages trustworthy memory, surfaces open loops, and later coordinates tools or specialist agents under clear approval boundaries.
+MemoCore should become a dependable local-first personal secretary: capture rough inputs, preserve
+evidence, manage trustworthy memory, surface open loops, and later coordinate tools under explicit
+approval boundaries.
 
-## Version 1: Capture And Memory Foundation
+## Version Status
 
-Version 1 proves the local-first secretary foundation. It includes the original capture loop, provider reliability, operational reliability, basic secretary views, and the minimum memory hygiene needed before moving to conversational behavior.
+| Version | Status | Theme |
+| --- | --- | --- |
+| V1 | Delivered | Capture and memory foundation |
+| V2 | Delivered | Conversational secretary |
+| V3 | Next | Daily and recurring secretary |
+| V4 | Future | People, projects, and meetings |
+| V5 | Future | Orchestration and specialist workers |
+| V6 | Future | Knowledge system and productization |
+| V7 | Future | Controlled autonomy |
 
-### V1 Internal Phases
+## V1: Capture And Memory Foundation
 
-These are implementation checkpoints inside Version 1, not separate product versions:
+V1 proves the local-first secretary foundation:
 
-- Foundation capture: Telegram capture, immutable raw notes, structured extraction, SQLite persistence, event logs.
-- Provider reliability: Ollama plus OpenAI-compatible hosted providers, model profiles, external prompts, benchmark harness.
-- Operational reliability: schema validation, fallback on invalid model output, transactional derived writes, idempotent capture, reminder leases, deterministic relative-date context.
-- Secretary views: tasks, reminders, projects, memory, waiting and blocked work, follow-ups, meetings, and compact Telegram commands.
-- Memory trust closeout: memory buckets, candidate lifecycle, correction/supersession basics, forget/redact support, and safeguards against obvious memory contamination.
+- Telegram capture and immutable raw notes.
+- Structured extraction into notes, tasks, reminders, projects, people, meetings, follow-ups,
+  memory items, and event logs.
+- SQLite local runtime.
+- Provider abstraction and provider switching.
+- Schema validation, fallback, transactional writes, idempotent capture, and reminder leases.
+- Basic secretary commands for today, tasks, reminders, projects, memory, and waiting work.
+- Memory lifecycle basics: candidate, active, rejected, superseded, delete, and forget.
 
-### V1 Done Means
+## V2: Conversational Secretary
 
-- A Telegram note can create linked notes, tasks, reminders, projects, and memory candidates.
-- Single-shot reminders are scheduled and dispatched reliably.
-- Existing data can be inspected through Telegram commands such as `/today`, `/tasks`, `/reminders`, `/projects`, `/memory`, and `/waiting`.
-- Basic memory updates are manageable: bad memory can be rejected, forgotten, or superseded by an explicit correction.
-- V1 does not silently treat obvious questions like durable memory.
-- Raw input, interpreted memory, operational state, and audit events remain separate.
+V2 turns Telegram from a capture-only surface into a conversational secretary interface:
 
-### V1 Explicitly Does Not Include
+- Deterministic and model-assisted intent routing.
+- Natural-language SQLite queries for agendas, tasks, reminders, projects, and memory.
+- Clarification for ambiguous task selection and weak matches.
+- Safer task completion, deadline updates, bulk cancellation, memory deletion, and correction
+  flows.
+- Guardrails to prevent ordinary questions from becoming durable tasks or memory.
 
-- Full natural-language conversation routing.
-- Recurring reminders such as every week or every two hours.
-- Automatic daily briefings.
-- Deep people-aware meeting preparation.
-- Calendar or email integration.
-- Specialist-agent orchestration.
-- Autonomous external actions.
+## V3: Daily And Recurring Secretary
 
-## Version 2: Conversational Secretary
+V3 should make MemoCore proactive:
 
-Version 2 turns Telegram from a capture-only surface into a conversational secretary interface.
-
-Scope:
-
-- Intent routing for capture, question, instruction, correction, clarification, and casual/no-op messages.
-- Natural-language queries over existing SQLite data.
-- Queries such as "hôm nay tôi cần làm gì", "tôi đã lưu gì về bản thân", and "project Memocore còn gì chưa xong".
-- Better Vietnamese clarification and confirmation messages.
-- Safer state transitions such as marking ambiguous work done only after clarification.
-- No accidental task or memory creation from ordinary questions.
-
-## Version 3: Daily And Recurring Secretary
-
-Version 3 makes Memocore proactive in daily and weekly operation.
-
-Scope:
-
-- Recurring reminders: daily, weekly, weekday-specific, and interval-based reminders.
+- Recurring reminders: daily, weekly, weekday-specific, and interval-based.
 - Morning briefing, weekly review, optional end-of-day review.
-- Stale-loop nudges, approaching-deadline warnings, and quiet hours.
-- Better separation of upcoming, overdue, sent, and recurring reminders.
+- Stale-loop nudges and approaching-deadline warnings.
+- Quiet hours and bundled low-priority nudges.
 - Feedback signals for accepted, edited, ignored, or rejected suggestions.
 
-## Version 4: People, Projects, And Meetings
+## V4: People, Projects, And Meetings
 
-Version 4 deepens operational context around people and work.
-
-Scope:
+V4 deepens operational context:
 
 - People profiles and relationship-aware commitments.
 - What the user owes others and what others owe the user.
 - Meeting preparation summaries from previous notes, open commitments, and project context.
-- Project snapshots, decision logs, and structured retrieval by person, project, status, recency, and durability.
-- Richer follow-up workflows by person and project.
+- Project snapshots, decision logs, and retrieval by person, project, status, recency, and
+  durability.
 
-## Version 5: Orchestration And Specialist Agents
+## V5: Orchestration And Specialist Workers
 
-Version 5 introduces a supervisor layer that can delegate bounded work to specialist workers while preserving central memory ownership.
-
-Scope:
+V5 introduces bounded delegation:
 
 - Supervisor service and structured worker handoffs.
 - Specialist workers for repository analysis, research, drafting, documents, or browsing.
-- Execution logging, retries, timeouts, fallback, and verification.
+- Execution logs, retries, timeouts, fallback, and verification.
 - Approval boundaries before high-impact or external actions.
-- Workers can propose memory updates, but the main assistant decides what becomes durable.
+- Centralized durable memory ownership in the main secretary services.
 
-## Version 6: Knowledge System And Productization
+## V6: Knowledge System And Productization
 
-Version 6 turns the prototype into a more portable and shareable personal assistant system.
-
-Scope:
+V6 makes the system easier to operate and share:
 
 - Richer entity modeling for people, projects, topics, decisions, and recurring concepts.
-- Graph-like relationships only when they improve measured retrieval value.
 - Backup, restore, import, export, privacy controls, and setup flows.
-- Web dashboard or mobile-friendly overview once core secretary workflows are proven.
-- PostgreSQL and pgvector only when measured retrieval, concurrency, or backup needs justify them.
+- Web dashboard or mobile-friendly overview after core secretary workflows are proven.
+- PostgreSQL and `pgvector` only when measured retrieval, concurrency, or backup needs justify
+  them.
 
-## Version 7: Controlled Autonomy
+## V7: Controlled Autonomy
 
-Version 7 allows bounded action while maintaining user trust.
+V7 allows bounded action without losing user control:
 
-Scope:
-
-- Draft messages, emails, agendas, and documents.
+- Draft messages, email replies, agendas, and documents.
 - Approval-gated email sends and calendar writes.
 - Policy outcomes: allow, deny, require approval.
 - Idempotency keys, audit records, post-action verification, and compensating actions.
@@ -116,4 +98,4 @@ Scope:
 - Do not treat model guesses as durable facts without lifecycle controls.
 - Do not add autonomy before observability, policy, and approval boundaries exist.
 - Do not add graph or orchestration infrastructure before a secretary workflow needs it.
-- Measure whether each version reduces real administrative effort, not just stored-item counts.
+- Measure whether each version reduces administrative effort, not just stored-item counts.

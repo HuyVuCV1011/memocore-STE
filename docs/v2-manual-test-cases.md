@@ -9,6 +9,10 @@ memory objects unless the action explicitly updates an existing object.
 1. Send: `hôm nay tôi cần làm gì`
 2. Expected: replies with today's agenda.
 3. Expected: no extraction call is needed and no task/memory/reminder is created from the question.
+4. Send: `mai tôi cần làm gì` or `/tomorrow`
+5. Expected: replies with tomorrow's agenda.
+6. Send: `/todays`
+7. Expected: behaves like `/today`.
 
 ## Memory Queries
 
@@ -18,9 +22,9 @@ memory objects unless the action explicitly updates an existing object.
 
 ## Project Queries
 
-1. Ensure a `Memocore` project has open tasks.
-2. Send: `project Memocore còn gì chưa xong`
-3. Expected: replies with open Memocore tasks.
+1. Ensure a `MemoCore` project has open tasks.
+2. Send: `project MemoCore còn gì chưa xong`
+3. Expected: replies with open MemoCore tasks.
 4. Expected: no new project or note-derived task is created from the question.
 
 ## Task Completion

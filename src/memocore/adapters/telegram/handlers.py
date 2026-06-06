@@ -16,7 +16,7 @@ from memocore.services.secretary_service import SecretaryService
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         await update.message.reply_text(
-            "Memocore is ready. Send a note or use /today, /tomorrow, /tasks, /reminders, /waiting, /projects, or /memory."
+            "MemoCore is ready. Send a note or use /today, /tomorrow, /tasks, /reminders, /waiting, /projects, or /memory."
         )
 
 

@@ -140,7 +140,7 @@ async def test_secretary_today_includes_tasks_due_later_today(repos):
     note = await repos["notes"].create(Note(raw_text="today I need to finish"))
     await repos["tasks"].create(
         Task(
-            title="Finish Memocore",
+            title="Finish MemoCore",
             source_note_id=note.id,
             due_at=datetime.fromisoformat("2026-06-03T23:59:59+07:00"),
         )
@@ -156,4 +156,4 @@ async def test_secretary_today_includes_tasks_due_later_today(repos):
 
     summary = await service.today()
 
-    assert "Finish Memocore" in summary
+    assert "Finish MemoCore" in summary

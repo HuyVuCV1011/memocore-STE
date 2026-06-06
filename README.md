@@ -2,63 +2,59 @@
 
 # MemoCore
 
-![Python](https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-local--first-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
 ![Telegram](https://img.shields.io/badge/Telegram-bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-local--AI-111111?style=for-the-badge)
+![Pytest](https://img.shields.io/badge/pytest-tested-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 
 **A local-first personal secretary backend for rough notes, reminders, memory, and open loops.**
 
-<a href="#-concept">Concept</a> ·
-<a href="#-features">Features</a> ·
-<a href="#-quick-start">Quick Start</a> ·
-<a href="#-providers">Providers</a> ·
-<a href="#-documentation">Documentation</a>
+<a href="#concept">Concept</a> ·
+<a href="#features">Features</a> ·
+<a href="#quick-start">Quick Start</a> ·
+<a href="#windows-runtime">Windows Runtime</a> ·
+<a href="#documentation">Documentation</a>
 
 </div>
 
-> MemoCore captures rough Telegram notes, extracts structured work, remembers context, sends reminders, and surfaces open loops.
+> MemoCore turns rough Telegram messages into structured work, evidence-backed memory, reminders,
+> and auditable secretary actions while keeping local data under the user's control.
 
----
+## Concept
 
-## 💡 Concept
+MemoCore is not a generic chatbot. It is a personal secretary backend designed to reduce the need
+to remember, re-explain, triage, and manually chase open loops.
 
-MemoCore is a local-first personal secretary backend. It is designed to turn unstructured Telegram notes into durable tasks, reminders, projects, memory candidates, meetings, follow-ups, and audit events while keeping the verified runtime simple.
+Telegram is the first interface. Core behavior lives in services, repositories, typed schemas, and
+provider abstractions so future email, calendar, voice, file, or web adapters can reuse the same
+backend.
 
----
-
-## ✨ Features
+## Features
 
 | Capability | Current state |
 | --- | --- |
-| Raw-note capture | Immutable raw-note capture with idempotency. |
-| Work extraction | Tasks, reminders, projects, memory candidates, meetings, follow-ups, and audit events. |
-| Model support | Ollama plus OpenAI-compatible hosted providers. |
-| Reliability | Validation-aware provider fallback and transactional derived writes. |
-| Time handling | Deterministic relative-date prompt context. |
-| Reminder delivery | Leased reminder dispatch. |
-| Telegram commands | `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`, `/projects`, and `/memory`. |
-| Storage | SQLite runtime with a PostgreSQL and `pgvector` migration blueprint. |
+| Raw-note capture | Immutable raw notes with Telegram source idempotency. |
+| Conversation routing | Deterministic and model-assisted routing for capture, query, correction, clarification, and casual messages. |
+| Work extraction | Tasks, reminders, projects, people, meetings, follow-ups, memory candidates, and event logs. |
+| Secretary queries | `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`, `/projects`, and `/memory`. |
+| Memory lifecycle | Candidate, active, rejected, superseded, and delete/forget flows. |
+| Reliability | Schema validation, provider fallback, transactional derived writes, and audit events. |
+| Time handling | Python-resolved relative dates for prompts and agenda views. |
+| Reminder delivery | Leased reminder dispatch to avoid immediate duplicate sends. |
+| Storage | SQLite verified runtime; PostgreSQL plus `pgvector` remains a blueprint. |
 
----
+## Current Status
 
-## 🗺️ Current State
+| Version | Status | Focus |
+| --- | --- | --- |
+| V1 | Delivered | Capture, extraction, SQLite storage, reminders, provider reliability, and memory hygiene. |
+| V2 | Delivered | Conversational secretary routing, natural-language SQLite queries, clarification, and safer corrections. |
+| V3 | Next | Daily briefings, recurring reminders, stale-loop nudges, quiet hours, and feedback signals. |
 
-The repository is in the V2 conversational secretary foundation. V1 capture and memory
-reliability are in place, and V2 adds Telegram intent routing, natural-language SQLite queries,
-clarification flows, safer corrections, and audit-backed conversation actions.
+## Quick Start
 
-| Version | Foundation |
-| --- | --- |
-| V1 | Telegram capture, extraction, SQLite storage, single-shot reminders, model providers, secretary commands, and basic memory lifecycle. |
-| V2 | Conversational secretary behavior: intent routing, natural-language queries, clarification, and safer corrections. |
-| V3 next | Daily briefings, recurring reminders, stale-loop nudges, quiet hours, and feedback signals. |
-
----
-
-## 🚀 Quick Start
-
-### Setup
+### Linux or macOS Development
 
 ```bash
 python3 -m venv .venv
@@ -67,129 +63,151 @@ python3 -m venv .venv
 cp .env.example .env
 ```
 
-Edit `.env`:
+### Windows Development
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\pip install -e ".[dev]"
+Copy-Item .env.example .env
+```
+
+Edit `.env` with local secrets. Do not commit `.env`.
 
 ```env
 TELEGRAM_BOT_TOKEN=your-token
 DATABASE_PATH=data/memocore.db
+USER_TIMEZONE=Asia/Ho_Chi_Minh
 MODEL_PROVIDER=ollama
 MODEL_NAME=qwen3:14b
-# Optional: MODEL_BASE_URL=http://127.0.0.1:11434
 ```
 
-Install the default local model:
+Install the default local model when using Ollama:
 
 ```bash
 ollama pull qwen3:14b
 ```
 
-### Run
+## Commands
 
-```bash
-.venv/bin/memocore
-```
+| Command | Purpose |
+| --- | --- |
+| `.venv/bin/memocore models` | List configured provider profiles on Linux/macOS. |
+| `.\.venv\Scripts\memocore models` | List configured provider profiles on Windows. |
+| `.venv/bin/memocore run --provider ollama` | Run the bot with Ollama. |
+| `.venv/bin/memocore run --provider groq` | Run the bot with Groq. |
+| `.venv/bin/pytest -q` | Run the test suite on Linux/macOS. |
+| `.\.venv\Scripts\pytest -q` | Run the test suite on Windows. |
 
-List configured model profiles:
-
-```bash
-.venv/bin/memocore models
-```
-
-Select a provider when starting MemoCore:
-
-```bash
-.venv/bin/memocore run --provider ollama
-.venv/bin/memocore run --provider gemini
-.venv/bin/memocore run --provider groq
-.venv/bin/memocore run --provider openrouter
-```
-
-Each hosted provider uses its default model unless `--model` is supplied:
-
-```bash
-.venv/bin/memocore run --provider gemini --model gemini-2.5-flash
-```
-
-### Test
-
-```bash
-.venv/bin/pytest -q
-```
-
-Run the opt-in live extraction benchmark:
+Live extraction benchmarks are opt-in because they may call a real model/provider:
 
 ```bash
 MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_benchmark.py -v
 ```
 
----
+## Windows Runtime
 
-## 💬 Telegram Commands
+The Windows PC is the primary runtime. The live Telegram bot should run through PM2 as exactly one
+process named `memocore-ste`.
 
-| Command | Purpose |
-| --- | --- |
-| `/today` | Show today's work and reminders. |
-| `/tasks` | Show active tasks. |
-| `/reminders` | Show recent reminders. |
-| `/waiting` | Show blocked, waiting, and follow-up items. |
-| `/projects` | Show captured projects. |
-| `/memory` | Show recent active memory candidates. |
+```powershell
+pm2 list
+.\scripts\windows\restart-memocore.ps1
+.\scripts\windows\logs-memocore.ps1
+```
 
----
+Do not start a manual second bot while PM2 is online:
 
-## 🤖 Providers
+```powershell
+.\.venv\Scripts\memocore run --provider groq
+python -m memocore.cli.main run --provider groq
+```
 
-Set `MODEL_PROVIDER` to `ollama`, `openai`, `gemini`, `deepseek`, `openrouter`, or `groq`. Hosted providers require `MODEL_API_KEY`. Gemini is routed through its OpenAI-compatible endpoint.
+Running two bot instances with the same Telegram token causes:
 
-For CLI switching, store provider-specific keys such as `GEMINI_API_KEY`, `GROQ_API_KEY`, and `OPENROUTER_API_KEY` in `.env`. `MODEL_API_KEY` remains supported as a generic active-provider override.
+```text
+Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+```
+
+See [Windows Runtime Guide](docs/windows-runtime.md) for the full operating rule.
+
+## Providers
+
+Set `MODEL_PROVIDER` to one of:
+
+| Provider | Default model | Key source |
+| --- | --- | --- |
+| `ollama` | `qwen3:14b` | Local Ollama server |
+| `openai` | `gpt-4.1-nano` | `OPENAI_API_KEY` or `MODEL_API_KEY` |
+| `gemini` | `gemini-2.5-flash` | `GEMINI_API_KEY` or `MODEL_API_KEY` |
+| `deepseek` | `deepseek-chat` | `DEEPSEEK_API_KEY` or `MODEL_API_KEY` |
+| `openrouter` | `meta-llama/llama-3.3-70b-instruct:free` | `OPENROUTER_API_KEY` or `MODEL_API_KEY` |
+| `groq` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` or `MODEL_API_KEY` |
 
 Optional fallback:
 
 ```env
-MODEL_FALLBACK_PROVIDER=openai
-MODEL_FALLBACK_NAME=gpt-4.1-nano
+MODEL_FALLBACK_PROVIDER=openrouter
+MODEL_FALLBACK_NAME=meta-llama/llama-3.3-70b-instruct:free
 MODEL_FALLBACK_API_KEY=your-key
 MODEL_FALLBACK_STRUCTURED_OUTPUT_MODE=auto
 ```
 
-Legacy `OLLAMA_BASE_URL` and `OLLAMA_MODEL` variables remain accepted during migration.
+Legacy `OLLAMA_BASE_URL` and `OLLAMA_MODEL` are still accepted during migration.
 
----
-
-## 🏗️ Tech Stack
+## Tech Stack
 
 | Layer | Technology |
 | --- | --- |
-| Runtime | Python |
-| Local storage | SQLite |
-| Future storage blueprint | PostgreSQL with `pgvector` |
-| Messaging interface | Telegram bot |
-| Local model provider | Ollama |
-| Hosted model providers | OpenAI-compatible providers, Gemini, DeepSeek, OpenRouter, Groq |
+| Runtime | Python 3.12+ |
+| Messaging | Telegram bot |
+| Storage | SQLite with packaged migrations |
+| Models | Ollama and OpenAI-compatible HTTP providers |
+| Schemas | Pydantic and Pydantic Settings |
+| Async I/O | `python-telegram-bot`, `aiosqlite`, `httpx` |
+| Tests | `pytest`, `pytest-asyncio` |
+| Windows service | PM2 process `memocore-ste` |
 
-<details>
-<summary>📁 Storage Note</summary>
+## Project Structure
 
-SQLite is the verified local runtime. PostgreSQL with `pgvector` remains a blueprint for measured concurrency, backup, full-text search, or semantic retrieval needs after secretary workflows are proven. See [storage migrations](docs/storage/README.md).
+```text
+src/memocore/
+  app.py                         # dependency wiring and Telegram application setup
+  config.py                      # .env-backed settings and provider overrides
+  adapters/
+    llm/                         # provider abstraction, Ollama, OpenAI-compatible providers
+    storage/                     # SQLite runtime, migrations, repositories
+    telegram/                    # Telegram handlers and bot creation
+  domain/                        # typed domain models and schemas
+  prompts/                       # extraction and intent-classification prompts
+  services/                      # capture, conversation, reminders, memory, events, views
+tests/                           # unit, integration, benchmark, and fixture tests
+docs/                            # architecture, roadmap, runtime, storage, and harness notes
+scripts/windows/                 # PM2 restart and log helpers for the Windows runtime
+```
 
-</details>
-
----
-
-## 📚 Documentation
+## Documentation
 
 | Document | Purpose |
 | --- | --- |
-| [Implementation plan](implementation_plan.md) | Implementation direction |
-| [Engineering guide](agent.md) | Engineering guide |
-| [Architecture](docs/architecture.md) | System architecture |
-| [Agent harness direction](docs/agent-harness.md) | Agent harness direction |
-| [Roadmap](docs/personal-assistant-version-roadmap.md) | Personal assistant roadmap |
-| [V1 specification](docs/v1-spec.md) | V1 specification |
-| [Archived V1 evaluation](docs/v1-evaluation.md) | Archived V1 evaluation |
+| [Engineering Guide](agent.md) | Code ownership boundaries, runtime rules, and engineering conventions. |
+| [Architecture](docs/architecture.md) | Layering, capture flow, conversation flow, model boundary, and storage direction. |
+| [Windows Runtime Guide](docs/windows-runtime.md) | Single-instance PM2 runtime policy for the primary Windows machine. |
+| [Implementation Plan](implementation_plan.md) | Delivered V1/V2 scope and next-version plan. |
+| [Roadmap](docs/personal-assistant-version-roadmap.md) | Product version roadmap from V1 through controlled autonomy. |
+| [Agent Harness Direction](docs/agent-harness.md) | Future audited tool-use and approval boundary. |
+| [Storage Migrations](docs/storage/README.md) | SQLite runtime and PostgreSQL/pgvector blueprint status. |
+| [V2 Manual Tests](docs/v2-manual-test-cases.md) | Telegram messages for conversational secretary verification. |
 
----
+## Data Safety
 
-## 🔐 Security
+Never commit:
 
-Never commit `.env`, local databases, API keys, Telegram tokens, or generated runtime files. The included `.gitignore` excludes these by default.
+- `.env`
+- `data/`
+- local SQLite databases
+- Telegram bot tokens
+- provider API keys
+- cookies, browser sessions, or generated runtime logs
+
+The repository `.gitignore` excludes these local runtime files by default.

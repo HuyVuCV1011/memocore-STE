@@ -1,8 +1,8 @@
 # Agent Harness Direction
 
-## Why Memocore Needs a Harness
+## Why MemoCore Needs a Harness
 
-Memocore already has a narrow extraction harness. `ExtractionService` builds prompts, calls
+MemoCore already has a narrow extraction harness. `ExtractionService` builds prompts, calls
 configured providers, validates structured output, retries invalid responses, and falls back to
 another provider. `CaptureService` then persists derived objects transactionally and records
 events.
@@ -89,7 +89,7 @@ Add infrastructure only when a milestone needs it:
 - Durable background work: a queue after concurrent or multi-device workers become necessary.
 - Observability export: OpenTelemetry after local run events are useful and stable.
 
-Avoid installing a general agent framework initially. The core value here is Memocore's policy,
+Avoid installing a general agent framework initially. The core value here is MemoCore's policy,
 audit, memory, and approval boundary; a framework does not remove the need to design those
 contracts.
 

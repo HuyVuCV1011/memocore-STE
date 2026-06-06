@@ -2,15 +2,18 @@
 
 ## Principle
 
-Memocore is a personal secretary backend with Telegram as its first input adapter. Raw evidence, interpreted memory, operational state, and user-visible actions remain distinct.
+MemoCore is a personal secretary backend. Raw evidence, interpreted memory, operational state, and
+user-visible actions are separate by design.
+
+Telegram is the first adapter, not the product boundary.
 
 ## Layers
 
 | Layer | Responsibility |
-|---|---|
-| Adapters | Telegram, LLM providers, SQLite runtime, future PostgreSQL runtime |
-| Services | Capture, extraction, memory lifecycle, reminders, secretary views, events |
-| Domain | Typed notes, tasks, reminders, meetings, follow-ups, projects, people, memory, events |
+| --- | --- |
+| Adapters | Telegram, LLM providers, SQLite runtime, future external tools |
+| Services | Capture, extraction, conversation routing, memory lifecycle, reminders, secretary views, events |
+| Domain | Typed notes, tasks, reminders, meetings, follow-ups, projects, people, memory, events, schemas |
 | Storage | Repositories, transactions, indexes, migrations |
 
 ## Capture Flow
@@ -19,74 +22,74 @@ Memocore is a personal secretary backend with Telegram as its first input adapte
 flowchart LR
     A["Telegram note"] --> B["Persist raw note"]
     B --> C["Extract structured data"]
-    C --> D["Validate and cross-check"]
+    C --> D["Validate schema"]
     D --> E["Persist derived objects in one transaction"]
-    E --> F["Reply and schedule reminders"]
+    E --> F["Record events and reply"]
 ```
 
-Raw notes are stored before model calls. A repeated Telegram source message returns the prior capture rather than duplicating work.
+Raw notes are stored before model calls. A repeated Telegram source message returns the existing
+capture instead of duplicating work.
 
-## Conversation Direction
+## Conversation Flow
 
-Telegram must evolve from a capture-only adapter into a conversational secretary interface.
-Incoming messages should pass through a conversation service that classifies intent before
-choosing a workflow.
+Incoming Telegram text passes through `ConversationService` before capture or mutation.
 
 ```mermaid
 flowchart LR
-    A["Telegram message"] --> B["Conversation service"]
-    B --> C["Classify intent"]
-    C -->|capture| D["Capture service"]
-    C -->|question| E["Secretary retrieval"]
-    C -->|instruction| F["Secretary workflow"]
-    C -->|correction| G["Memory lifecycle"]
-    C -->|conversation| H["Contextual response"]
-    D --> I["Useful confirmation or clarification"]
-    E --> I
-    F --> I
-    G --> I
-    H --> I
+    A["Telegram message"] --> B["Clarification check"]
+    B --> C["Conversation service"]
+    C --> D["Deterministic route"]
+    D -->|known intent| F["Action executor"]
+    D -->|unknown| E["Model-assisted intent classification"]
+    E --> F
+    F -->|capture| G["Capture service"]
+    F -->|query| H["Secretary SQLite retrieval"]
+    F -->|correction| I["Memory or task lifecycle"]
+    F -->|casual| J["Short acknowledgement"]
+    G --> K["Reply"]
+    H --> K
+    I --> K
+    J --> K
 ```
 
-Conversation context should be bounded and operational. Durable facts, commitments, and
-preferences belong in managed storage rather than raw chat history.
+Deterministic routes are preferred for high-frequency queries and sensitive mutations. Model
+classification is a fallback for less obvious language, and low-confidence write intents should ask
+for clarification instead of mutating durable state.
 
 ## Model Boundary
 
-`ExtractionService` builds prompt messages and validates `NoteExtraction`. Providers implement `chat(ChatRequest) -> ChatResponse`. The provider factory selects Ollama or an OpenAI-compatible endpoint from configuration.
+`ExtractionService` and `IntentClassifierService` own prompt construction. Providers implement:
 
-Fallback applies to request failures and invalid model output. Relative weekday dates are calculated in Python before prompting.
+```python
+chat(ChatRequest) -> ChatResponse
+```
 
-## Agent Harness Direction
-
-The current extraction path is a narrow harness: it manages prompt context, provider calls,
-validation, retries, fallback, transactional persistence, and audit events. Future calendar,
-email, file, and specialist-worker capabilities must use a broader agent harness rather than
-calling external systems directly.
-
-Grow the harness incrementally with secretary workflows. Start with a minimal audited boundary
-for read-only calendar access. Add approval records, idempotency controls, and post-action
-verification before write-capable calendar or email tools. Generalized bounded worker support
-comes later. Free-form autonomous execution remains deferred.
-
-See [agent harness direction](agent-harness.md).
-
-## Reminder Safety
-
-Reminder workers claim due rows with a lease before sending. This prevents immediate duplicate delivery when multiple workers poll concurrently. PostgreSQL migration should use row locking for stronger multi-worker guarantees.
+Fallback applies to request failures and invalid model output. Relative dates are resolved in
+Python before prompt construction.
 
 ## Storage Direction
 
-SQLite is the current verified local runtime. PostgreSQL with pgvector remains a possible
-long-distance target:
+SQLite is the verified runtime. It supports:
 
-- transactions and concurrent workers;
-- remote backup and restore;
-- `JSONB` for flexible metadata;
-- full-text search;
-- vector embeddings for hybrid memory retrieval.
+- raw notes and source idempotency;
+- tasks, reminders, projects, people, meetings, and follow-ups;
+- memory items with lifecycle status;
+- event logs for auditability;
+- packaged schema bootstrap and migrations.
 
-Start with structured SQLite retrieval. Add full-text search, PostgreSQL, and pgvector after
-measured secretary workflows demonstrate a retrieval, concurrency, backup, or deployment need.
+PostgreSQL plus `pgvector` remains a blueprint for future retrieval, concurrency, backup, and
+deployment needs. Do not claim production PostgreSQL support until a runtime adapter and contract
+tests exist.
 
-Graph relations should begin as relational link tables. A separate graph database is deferred until measurements justify it.
+## Runtime Direction
+
+The primary live runtime is the Windows PC. The Telegram bot should run through the PM2 process
+`memocore-ste` as a single polling instance. See [Windows Runtime Guide](windows-runtime.md).
+
+## Agent Harness Direction
+
+The current extraction and conversation paths are narrow harnesses: they manage bounded context,
+provider calls, validation, retries, fallback, transactional persistence, and audit events.
+
+Future calendar, email, file, and worker capabilities should use a broader audited harness rather
+than calling external systems directly. See [Agent Harness Direction](agent-harness.md).

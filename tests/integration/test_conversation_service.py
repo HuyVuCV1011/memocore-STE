@@ -37,7 +37,7 @@ def test_classifies_vietnamese_and_english_examples():
     assert classify_intent("hôm nay tôi cần làm gì") == "query_today"
     assert classify_intent("mai tôi cần làm gì") == "query_tomorrow"
     assert classify_intent("tôi đã lưu gì về bản thân") == "query_memory"
-    assert classify_intent("project Memocore còn gì chưa xong") == "query_projects"
+    assert classify_intent("project MemoCore còn gì chưa xong") == "query_projects"
     assert classify_intent("tôi đã làm xong việc mua pc") == "mark_task_done"
     assert classify_intent("Đã mua pc xong") == "mark_task_done"
     assert classify_intent("Đổi lại giờ soạn giáo án thành hạn chót là 17h") == "update_task_due"
@@ -66,7 +66,7 @@ async def test_today_query_answers_agenda_without_extraction(
     note = await repos["notes"].create(Note(raw_text="task source"))
     await repos["tasks"].create(
         Task(
-            title="Finish Memocore V2 router",
+            title="Finish MemoCore V2 router",
             source_note_id=note.id,
             due_at=datetime(2026, 6, 3, 6, 0, tzinfo=UTC),
         )
@@ -76,7 +76,7 @@ async def test_today_query_answers_agenda_without_extraction(
     result = await service.handle_text(CaptureRequest(raw_text="hôm nay tôi cần làm gì"))
 
     assert result.intent == "query_today"
-    assert "Finish Memocore V2 router" in result.reply
+    assert "Finish MemoCore V2 router" in result.reply
     assert fake_provider.calls == []
 
 
@@ -212,7 +212,7 @@ async def test_memory_query_answers_profile_memory_without_extraction(
             MemoryCandidate(
                 bucket=MemoryBucket.PROJECT,
                 kind=MemoryKind.PROJECT_STATE,
-                content="Memocore đang ở V2",
+                content="MemoCore đang ở V2",
                 confidence=0.9,
             ),
         ],
@@ -224,7 +224,7 @@ async def test_memory_query_answers_profile_memory_without_extraction(
 
     assert result.intent == "query_memory"
     assert "tôi thích làm việc buổi sáng" in result.reply
-    assert "Memocore đang ở V2" not in result.reply
+    assert "MemoCore đang ở V2" not in result.reply
     assert fake_provider.calls == []
 
 
@@ -232,7 +232,7 @@ async def test_project_query_returns_project_tasks_without_creating_note_objects
     capture_service, fake_provider, repos
 ):
     note = await repos["notes"].create(Note(raw_text="project source"))
-    project = await repos["projects"].find_or_create("Memocore")
+    project = await repos["projects"].find_or_create("MemoCore")
     await repos["tasks"].create(
         Task(
             title="Implement conversation routing",
@@ -243,7 +243,7 @@ async def test_project_query_returns_project_tasks_without_creating_note_objects
     service = _conversation_service(capture_service, repos)
 
     result = await service.handle_text(
-        CaptureRequest(raw_text="project Memocore còn gì chưa xong")
+        CaptureRequest(raw_text="project MemoCore còn gì chưa xong")
     )
 
     assert result.intent == "query_projects"

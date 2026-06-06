@@ -40,7 +40,7 @@ async def _run(settings: Settings) -> None:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Memocore personal secretary.")
+    parser = argparse.ArgumentParser(description="Run the MemoCore personal secretary.")
     subparsers = parser.add_subparsers(dest="command")
     run_parser = subparsers.add_parser("run", help="Start the Telegram secretary.")
     run_parser.add_argument("--provider", choices=sorted(PROVIDER_DEFAULTS))

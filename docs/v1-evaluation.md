@@ -26,4 +26,4 @@ This document preserves the useful conclusions from the V1 reliability review. T
 
 ## Remaining Product Lesson
 
-Reliable extraction is necessary but insufficient. Memocore must now be evaluated as a secretary system: does it remember evidence-backed context, track commitments, and reduce manual follow-up work?
+Reliable extraction is necessary but insufficient. MemoCore must now be evaluated as a secretary system: does it remember evidence-backed context, track commitments, and reduce manual follow-up work?

@@ -467,7 +467,7 @@ def test_intent_schema_accepts_all_runtime_v2_intents():
 
 async def test_classifier_project_query_is_executed_without_extraction(capture_service, fake_provider, repos):
     note = await repos["notes"].create(Note(raw_text="project setup"))
-    project = await repos["projects"].find_or_create("Memocore")
+    project = await repos["projects"].find_or_create("MemoCore")
     await repos["tasks"].create(
         Task(
             title="Ship V2 conversation hardening",
@@ -475,7 +475,7 @@ async def test_classifier_project_query_is_executed_without_extraction(capture_s
             project_id=project.id,
         )
     )
-    raw_text = "what is still open in project Memocore?"
+    raw_text = "what is still open in project MemoCore?"
     classifier = FakeIntentClassifierService({
         raw_text: IntentClassification(intent="query_projects", confidence=0.95)
     })

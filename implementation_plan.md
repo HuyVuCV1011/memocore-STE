@@ -1,4 +1,4 @@
-# Memocore Implementation Plan
+# MemoCore Implementation Plan
 
 ## Goal
 

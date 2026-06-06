@@ -1,12 +1,17 @@
-# Memocore Engineering Guide
+# MemoCore Engineering Guide
+
+This guide is for agents and contributors working inside the MemoCore repository. Keep it current
+whenever runtime behavior, ownership boundaries, or verification commands change.
 
 ## Product Boundary
 
-Memocore is a personal secretary backend, not a generic chatbot. It should reduce the user's need to remember, re-explain, triage, and manually chase open loops.
+MemoCore is a local-first personal secretary backend, not a generic chatbot. It should reduce the
+user's need to remember, re-explain, triage, and chase open loops manually.
 
-Telegram is the first adapter. Core behavior belongs in services and repositories so future email, calendar, voice, file, and web interfaces can reuse the same contracts.
+Telegram is the first adapter. Core behavior belongs in services and repositories so future email,
+calendar, voice, file, web, and worker adapters can reuse the same contracts.
 
-## Current Architecture
+## Architecture Map
 
 ```text
 src/memocore/
@@ -21,6 +26,7 @@ src/memocore/
     storage/
       sqlite.py
       repositories.py
+      migrations/sqlite/
     telegram/
       bot.py
       handlers.py
@@ -30,23 +36,30 @@ src/memocore/
   prompts/
     system_extraction.md
     user_extraction.md
+    system_intent_classification.md
+    user_intent_classification.md
   services/
     capture_service.py
+    clarification_service.py
+    conversation_service.py
     event_service.py
+    intent_classifier_service.py
     memory_service.py
     reminder_service.py
     secretary_service.py
     task_extraction_service.py
 ```
 
-## Boundaries
+## Ownership Boundaries
 
 - Adapters translate external protocols.
 - Services own assistant behavior.
-- Domain models describe notes, work, people, projects, memories, meetings, follow-ups, and events.
 - Repositories persist state and do not call models or Telegram.
+- Domain models and schemas describe notes, tasks, reminders, projects, people, meetings,
+  follow-ups, memory, events, and structured model output.
 - Raw notes remain separate from AI-derived data.
-- User-visible actions and memory lifecycle changes must be auditable.
+- User-visible actions and memory lifecycle changes must be auditable through event logs.
+- Prompt ownership belongs in extraction and intent services, not providers.
 
 LLM service code calls:
 
@@ -54,51 +67,145 @@ LLM service code calls:
 await provider.chat(ChatRequest(...))
 ```
 
-Providers expose `ProviderInfo`, `chat()`, and `health_check()`. Prompt ownership belongs to `ExtractionService`.
+Providers expose `ProviderInfo`, `chat()`, and `health_check()`.
 
 ## Runtime Configuration
 
 ```env
 TELEGRAM_BOT_TOKEN=...
 DATABASE_PATH=data/memocore.db
+LOG_LEVEL=INFO
+USER_TIMEZONE=Asia/Ho_Chi_Minh
+
 MODEL_PROVIDER=ollama
 MODEL_NAME=qwen3:14b
-MODEL_BASE_URL=http://127.0.0.1:11434
+MODEL_BASE_URL=
 MODEL_API_KEY=
+MODEL_TIMEOUT_SECONDS=60
+MODEL_TEMPERATURE=0
 MODEL_STRUCTURED_OUTPUT_MODE=auto
 ```
 
-The default local extraction model is `qwen3:14b`. Use small models only for smoke testing when reliability is not required.
+Default local model: `qwen3:14b`.
 
-## Storage Direction
+Hosted providers use provider-specific keys when available:
 
-SQLite remains the verified local runtime. Start with structured SQLite retrieval. Add full-text
-search, PostgreSQL, and pgvector only when measured secretary workflows demonstrate a retrieval,
-concurrency, backup, or deployment need. Do not introduce a separate graph database until
-ordinary relational links fail a measured retrieval need.
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `OPENROUTER_API_KEY`
+- `GROQ_API_KEY`
 
-## Current Secretary Features
+`MODEL_API_KEY` remains a generic active-provider override.
 
-- Idempotent raw capture.
-- Tasks with candidate, open, waiting, blocked, done, and cancelled states.
-- Reminders with leased dispatch claims.
-- Projects, people, meetings, follow-ups, memory candidates, and events.
-- `/today`, `/waiting`, `/projects`, and `/memory` Telegram commands.
+## Windows Runtime Rule
 
-## Near-Term Work
+The Windows PC is the primary live runtime. Run the Telegram bot as one PM2-managed process named
+`memocore-ste`. Do not run a second manual bot while PM2 is online.
 
-The next implementation milestone is the conversation loop: classify Telegram messages as
-capture, question, instruction, correction, or casual conversation; retain bounded recent
-context; answer simple questions from SQLite; ask clarifying questions; and replace
-extraction-count replies with useful confirmations.
+Use:
 
-After the conversation loop, deliver automatic briefings and proactive nudges, then people-aware
-meeting preparation. Grow the harness alongside integrations: begin with an audited boundary for
-calendar reads, then add approvals, retries, idempotency controls, and append-only traces before
-write-capable integrations. See [agent harness direction](docs/agent-harness.md).
+```powershell
+pm2 list
+.\scripts\windows\restart-memocore.ps1
+.\scripts\windows\logs-memocore.ps1
+```
+
+Avoid while PM2 is online:
+
+```powershell
+.\.venv\Scripts\memocore run --provider groq
+python -m memocore.cli.main run --provider groq
+```
+
+Telegram long polling allows only one active `getUpdates` consumer per bot token. Duplicate bot
+instances cause:
+
+```text
+Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+```
+
+Read [Windows Runtime Guide](docs/windows-runtime.md) before changing live-service commands.
+
+## Development Setup
+
+Windows:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\pip install -e ".[dev]"
+Copy-Item .env.example .env
+```
+
+Linux or macOS:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/pip install -e ".[dev]"
+cp .env.example .env
+```
+
+Never copy `.env`, `data/`, API keys, Telegram tokens, cookies, browser sessions, or local
+databases into Git.
+
+## Verification
+
+Full suite:
+
+```powershell
+.\.venv\Scripts\pytest -q
+```
+
+Targeted examples:
+
+```powershell
+.\.venv\Scripts\pytest tests\unit\test_config.py -q
+.\.venv\Scripts\pytest tests\unit\test_extraction_service.py -q
+.\.venv\Scripts\pytest tests\integration\test_conversation_service.py -q
+.\.venv\Scripts\pytest tests\integration\test_capture_flow.py -q
+```
+
+Provider profile check:
+
+```powershell
+.\.venv\Scripts\memocore models
+```
+
+The live extraction benchmark is opt-in because it can call real providers:
+
+```bash
+MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_benchmark.py -v
+```
+
+## Coding Conventions
+
+- Keep I/O async end to end.
+- Use Pydantic/domain models for structured data.
+- Validate model output before persistence.
+- Persist derived objects related to one note inside `database.transaction()`.
+- Record event logs for user-visible and lifecycle transitions.
+- Preserve idempotency by `source`, `source_chat_id`, and `source_message_id`.
+- Keep Vietnamese matching helpers accent-tolerant through `_normalize_text`.
+- Add tests for Vietnamese text with and without accents when adding routing rules.
+- Prefer narrow service/repository changes over handler-level logic.
+
+## Current Secretary Surface
+
+- Capture rough notes.
+- Answer natural-language agenda and state queries from SQLite.
+- Track tasks, reminders, projects, people, meetings, follow-ups, and memory candidates.
+- Ask clarification questions for ambiguous task updates or reminder times.
+- Handle task completion, deadline updates, bulk cancellation, memory deletion, and correction
+  feedback with guardrails.
+- Provide Telegram commands: `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`,
+  `/projects`, and `/memory`.
 
 ## Deferred Work
 
+- Recurring reminders and automatic briefings.
+- Calendar, email, file, browser, and voice integrations.
 - Broad autonomous tool execution.
 - Peer-to-peer agent swarms.
 - Separate graph database.

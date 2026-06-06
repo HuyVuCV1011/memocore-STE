@@ -2,27 +2,28 @@
 
 ## Intent
 
-Memocore is a long-term personal secretary system centered on capture, memory, follow-up, planning, and practical daily support. It is not a generic chatbot, not only a note archive, and not a code-writing toy.
+MemoCore is a long-term personal secretary system centered on capture, memory, follow-up,
+planning, and practical daily support. It is not a generic chatbot, a flat note archive, or a
+free-form autonomous agent.
 
-The assistant should reduce the user's need to remember, re-explain, manually triage, and manually chase open loops. Telegram is the first low-friction input surface, while the backend should remain reusable by future web, voice, email, calendar, file, and worker-agent adapters.
+The assistant should reduce the user's need to remember, re-explain, manually triage, and manually
+chase open loops.
 
 ## Product Shape
 
-The project should grow in versions:
-
-- V1: Capture and memory foundation.
-- V2: Conversational secretary.
-- V3: Daily and recurring secretary.
-- V4: People, projects, and meetings.
-- V5: Orchestration and specialist agents.
-- V6: Knowledge system and productization.
-- V7: Controlled autonomy.
-
-Version 1 is allowed to have internal implementation checkpoints, but those checkpoints are still part of V1. Memory trust basics belong in the V1 closeout because V2 conversation will be unreliable if V1 memory is already contaminated.
+| Version | Product focus |
+| --- | --- |
+| V1 | Capture and memory foundation |
+| V2 | Conversational secretary |
+| V3 | Daily and recurring secretary |
+| V4 | People, projects, and meetings |
+| V5 | Orchestration and specialist workers |
+| V6 | Knowledge system and productization |
+| V7 | Controlled autonomy |
 
 ## Secretary Charter
 
-Memocore should:
+MemoCore should:
 
 - preserve raw evidence separately from interpreted data;
 - convert rough notes into useful structured work;
@@ -34,67 +35,55 @@ Memocore should:
 
 ## Operating Principles
 
-- Build slowly but keep architecture durable.
-- Deliver visible secretary value in thin end-to-end slices.
+- Build thin end-to-end secretary experiences.
 - Keep adapters thin and services explicit.
 - Separate raw inputs, interpreted memory, operational state, and external actions.
-- Treat memory as a managed system with correction, rejection, supersession, and forgetting.
+- Treat memory as managed state with correction, rejection, supersession, and forgetting.
 - Prefer local-first, low-cost, self-hosted operation where practical.
 - Keep model providers replaceable.
-- Add infrastructure when a secretary workflow needs it and expand it from measured usage.
+- Add infrastructure when a measured secretary workflow needs it.
 - Measure whether features reduce real administrative effort.
 
-## Default Interaction Profile
+## Interaction Profile
 
-These defaults are starting points. The assistant should learn from explicit corrections and cautious observation, while keeping preferences editable.
+Starting defaults:
 
 - Reply in the language of the user's latest message.
 - Support Vietnamese, English, and mixed messages naturally.
 - Use a warm, competent, concise tone.
-- Learn preferred Vietnamese pronouns explicitly rather than guessing.
-- Bundle low-priority nudges and respect quiet hours once proactive features exist.
+- Learn preferred pronouns explicitly rather than guessing.
 - Ask before taking external or sensitive actions.
-- Keep the assistant identity subtle unless the user chooses a stronger persona.
-
-## Version 1 Boundary
-
-V1 should finish with a dependable local-first capture system:
-
-- Telegram capture and raw-note storage.
-- Structured extraction into notes, tasks, reminders, projects, memory items, people, meetings, follow-ups, and events.
-- SQLite runtime with model-provider abstraction.
-- Single-shot reminder dispatch.
-- Basic secretary commands for today's work, tasks, reminders, projects, memory, and waiting items.
-- Memory hygiene strong enough to avoid obvious contamination before V2.
-
-V1 should not try to solve full natural conversation, recurring reminders, calendar integration, specialist-agent orchestration, or autonomous external action.
+- Keep assistant identity subtle unless the user chooses a stronger persona.
 
 ## Memory Direction
 
-Memory must not be a flat append-only transcript. V1 should distinguish:
+Memory must not be a flat append-only transcript. MemoCore distinguishes:
 
-- profile memory: durable facts, preferences, boundaries;
-- project memory: project facts, project state, open loops;
-- interaction memory: corrections, feedback, and behavior signals.
+| Bucket | Purpose |
+| --- | --- |
+| `profile` | Durable user facts, preferences, boundaries, and identity details |
+| `project` | Project facts, project state, decisions, and open loops |
+| `interaction` | Corrections, feedback, and behavior signals |
 
-V1 memory only needs simple lifecycle operations, but those operations must be explicit: candidate, active, rejected, superseded, forget/redact. V2 and later can add richer retrieval, ranking, and conversational correction workflows.
-
-## Storage Direction
-
-SQLite is appropriate for the verified local runtime. PostgreSQL with pgvector is a long-distance option for concurrent workers, backups, full-text search, and semantic retrieval after secretary workflows prove a measured need.
-
-Start with structured SQLite retrieval by person, project, bucket, status, and recency. Add full-text search, graph-like relationships, PostgreSQL, and pgvector only when measured workflows need them.
+Memory lifecycle operations must remain explicit: candidate, active, rejected, superseded, deleted,
+and forgotten/redacted.
 
 ## Product Risks
 
 - False usefulness: saving notes without reducing workload.
-- Memory contamination: treating questions, guesses, or transient thoughts like durable facts.
+- Memory contamination: treating questions, guesses, or transient thoughts as durable facts.
 - Premature autonomy: taking action before approval and audit boundaries exist.
-- Infrastructure overreach: adding graph, orchestration, or dashboard complexity before secretary workflows prove useful.
-- Provider overfitting: depending on quirks of one LLM instead of keeping behavior in services and schemas.
+- Infrastructure overreach: adding graph, orchestration, or dashboards before workflows prove value.
+- Provider overfitting: depending on one model's quirks instead of service and schema behavior.
 
-## Success
+## Success Criteria
 
-Memocore succeeds when the user feels that a dependable secretary is carrying part of the administrative load: fewer forgotten commitments, timely follow-ups, useful context reconstruction, clean memory, and bounded help without losing trust or control.
+MemoCore succeeds when it reduces cognitive and administrative load:
 
-Stored-item counts are supporting metrics. The real goal is reduced cognitive and administrative burden.
+- fewer forgotten commitments;
+- cleaner memory;
+- timely reminders and follow-ups;
+- useful context reconstruction;
+- bounded help without loss of trust or control.
+
+Stored-item counts are supporting metrics. Reduced administrative burden is the real goal.

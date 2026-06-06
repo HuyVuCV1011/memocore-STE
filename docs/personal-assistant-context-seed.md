@@ -1,6 +1,6 @@
 # Personal Assistant Context Seed
 
-This is the minimum upfront context Memocore needs to become a useful secretary instead of a flat
+This is the minimum upfront context MemoCore needs to become a useful secretary instead of a flat
 task collector. V2 can use this lightly for routing and project hints. V3/V4 should turn it into
 first-class work-group, project, people, and memory links.
 
@@ -67,7 +67,7 @@ Provide domain shorthand that would otherwise be ambiguous:
 
 ## Task Routing Rules
 
-Memocore should learn rules like:
+MemoCore should learn rules like:
 
 - `cần check X đã xong chưa` means create/check work, not mark a task done.
 - `tôi đã làm xong X`, `đã X xong`, or `finished X` means mark a matching task done.

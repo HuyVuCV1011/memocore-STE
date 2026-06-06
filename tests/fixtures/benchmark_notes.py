@@ -49,10 +49,10 @@ BENCHMARK_CASES = [
     },
     {
         "id": "explicit_project",
-        "note": "For the Memocore project, add unit tests for the provider",
+        "note": "For the MemoCore project, add unit tests for the provider",
         "expect": {
             "has_project": True,
-            "project_name_contains": "Memocore",
+            "project_name_contains": "MemoCore",
             "has_task": True,
         },
     },
