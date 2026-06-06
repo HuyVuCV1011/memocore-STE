@@ -2,15 +2,34 @@
 .env
 .env.*
 !.env.example
+.env.local
+.env.*.local
 .envrc
+*.secret
+*.secrets
+*.token
+*.tokens
+*.apikey
+*.api-key
 *.pem
 *.key
 *.crt
 *.p12
 *.pfx
+*.ppk
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.kdbx
 credentials*.json
 *service-account*.json
+client_secret*.json
+token*.json
+oauth*.json
 secrets/
+private/
+.private/
 
 # Python
 .venv/
@@ -33,14 +52,19 @@ data/
 *.sqlite
 *.sqlite3
 logs/
+*.jsonl
 
 # Editor and OS files
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
 *.swp
 
 # Local reports and scratch files
 tmp/
+temp/
 *.log
 coverage.xml
+*.bak
+*.tmp

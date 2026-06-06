@@ -103,6 +103,9 @@ class EventType(StrEnum):
     CLARIFICATION_RESOLVED = "clarification_resolved"
     CLARIFICATION_FAILED = "clarification_failed"
     USER_FEEDBACK_RECORDED = "user_feedback_recorded"
+    BRIEFING_SENT = "briefing_sent"
+    WEEKLY_REVIEW_SENT = "weekly_review_sent"
+    NUDGE_SENT = "nudge_sent"
 
 
 class TimestampedModel(BaseModel):
@@ -143,6 +146,7 @@ class Reminder(TimestampedModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     attempt_count: int = 0
     claimed_at: datetime | None = None
+    recurrence_rule: str | None = None
 
 
 class Project(TimestampedModel):

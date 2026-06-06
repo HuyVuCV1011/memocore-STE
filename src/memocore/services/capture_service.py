@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 import re
 import unicodedata
 
@@ -11,7 +11,7 @@ from memocore.adapters.storage.repositories import (
     TaskRepository,
     parse_model_datetime,
 )
-from memocore.domain.models import EventType, Note, NoteStatus, Task, TaskStatus
+from memocore.domain.models import EventType, Note, NoteStatus, Reminder, Task, TaskStatus
 from memocore.domain.schemas import CaptureRequest, CaptureResponse
 from memocore.services.event_service import EventService
 from memocore.services.clarification_service import ClarificationService
@@ -90,6 +90,33 @@ class CaptureService:
                 note_id=note.id,
                 summary=f"Memory delete request handled: {deleted} item(s) removed.",
                 memories_deleted=deleted,
+            )
+
+        recurring = _parse_recurring_reminder(request.raw_text)
+        if recurring is not None:
+            title, remind_at, recurrence_rule = recurring
+            reminder = await self.reminder_service.reminder_repo.create(
+                Reminder(
+                    title=title,
+                    remind_at=remind_at,
+                    source_note_id=note.id,
+                    recurrence_rule=recurrence_rule,
+                    confidence=1.0,
+                )
+            )
+            await self.event_service.append_event(
+                EventType.REMINDER_CANDIDATE_CREATED,
+                "reminder",
+                reminder.id,
+                {"source_note_id": note.id, "recurrence_rule": recurrence_rule},
+            )
+            await self.reminder_service.schedule_reminder(reminder.id)
+            summary = f"Recurring reminder scheduled: {title}"
+            await self.note_repo.update_processed(note.id, summary, ["reminder", "recurring"])
+            return CaptureResponse(
+                note_id=note.id,
+                summary=summary,
+                reminders_created=1,
             )
 
         try:
@@ -353,3 +380,90 @@ def _normalize_text(value: str) -> str:
     decomposed = unicodedata.normalize("NFD", lowered)
     ascii_text = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
     return "".join(char if char.isalnum() else " " for char in ascii_text)
+
+
+def _parse_recurring_reminder(raw_text: str) -> tuple[str, datetime, str] | None:
+    normalized = _normalize_text(raw_text)
+    if not any(signal in normalized for signal in ("nhac toi", "remind me")):
+        return None
+    recurrence_rule: str | None = None
+    weekday: int | None = None
+    if any(signal in normalized for signal in ("moi ngay", "hang ngay", "every day", "daily")):
+        recurrence_rule = "daily"
+    else:
+        weekdays = {
+            "thu 2": 0,
+            "thu hai": 0,
+            "monday": 0,
+            "thu 3": 1,
+            "thu ba": 1,
+            "tuesday": 1,
+            "thu 4": 2,
+            "thu tu": 2,
+            "wednesday": 2,
+            "thu 5": 3,
+            "thu nam": 3,
+            "thursday": 3,
+            "thu 6": 4,
+            "thu sau": 4,
+            "friday": 4,
+            "thu 7": 5,
+            "thu bay": 5,
+            "saturday": 5,
+            "chu nhat": 6,
+            "sunday": 6,
+        }
+        if any(signal in normalized for signal in ("moi tuan", "hang tuan", "weekly", "every week")):
+            weekday = next((day for label, day in weekdays.items() if label in normalized), None)
+            recurrence_rule = f"weekly:{weekday if weekday is not None else 0}"
+        else:
+            for label, day in weekdays.items():
+                if f"moi {label}" in normalized or f"hang {label}" in normalized or f"every {label}" in normalized:
+                    weekday = day
+                    recurrence_rule = f"weekly:{day}"
+                    break
+    if recurrence_rule is None:
+        return None
+    clock = _parse_recurring_clock(normalized)
+    if clock is None:
+        return None
+    now = datetime.now().astimezone()
+    target_date = now.date()
+    if recurrence_rule.startswith("weekly"):
+        target_weekday = weekday if weekday is not None else int(recurrence_rule.split(":", 1)[1])
+        days_ahead = (target_weekday - now.weekday()) % 7
+        target_date = now.date() + timedelta(days=days_ahead)
+    remind_at = datetime.combine(target_date, clock, tzinfo=now.tzinfo).astimezone(UTC)
+    if remind_at <= datetime.now(UTC):
+        remind_at += timedelta(days=7 if recurrence_rule.startswith("weekly") else 1)
+    return (_recurring_title(raw_text), remind_at, recurrence_rule)
+
+
+def _parse_recurring_clock(normalized: str) -> time | None:
+    match = re.search(r"\b(\d{1,2})(?:h|:)(\d{2})?\b", normalized)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return time(hour, minute)
+    match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", normalized)
+    if match:
+        hour = int(match.group(1))
+        if match.group(2) == "pm" and hour < 12:
+            hour += 12
+        if match.group(2) == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23:
+            return time(hour, 0)
+    return None
+
+
+def _recurring_title(raw_text: str) -> str:
+    title = re.sub(r"(?i)\b(nhắc tôi|nhac toi|remind me)\b", " ", raw_text)
+    title = re.sub(r"(?i)\b(mỗi ngày|moi ngay|hằng ngày|hang ngay|every day|daily)\b", " ", title)
+    title = re.sub(r"(?i)\b(mỗi tuần|moi tuan|hằng tuần|hang tuan|weekly|every week)\b", " ", title)
+    title = re.sub(r"(?i)\b(mỗi|moi|hằng|hang|every)\s+(thứ\s+\d|thu\s+\d|thứ hai|thu hai|thứ ba|thu ba|thứ tư|thu tu|thứ năm|thu nam|thứ sáu|thu sau|thứ bảy|thu bay|chủ nhật|chu nhat|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", " ", title)
+    title = re.sub(r"\b\d{1,2}(?:h|:)\d{0,2}\b", " ", title)
+    title = re.sub(r"\b\d{1,2}\s*(?:am|pm)\b", " ", title, flags=re.IGNORECASE)
+    title = " ".join(title.split())
+    return title or "Recurring reminder"

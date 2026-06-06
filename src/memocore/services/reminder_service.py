@@ -45,11 +45,31 @@ class ReminderService:
         return await self.reminder_repo.claim_due(now, now - timedelta(seconds=lease_seconds))
 
     async def mark_sent(self, reminder_id: str) -> None:
-        await self.reminder_repo.update_status(reminder_id, ReminderStatus.SENT)
+        reminder = await self.reminder_repo.get_by_id(reminder_id)
         await self.event_service.append_event(EventType.REMINDER_SENT, "reminder", reminder_id)
+        if reminder and reminder.recurrence_rule and reminder.remind_at:
+            next_remind_at = next_recurrence(reminder.remind_at, reminder.recurrence_rule)
+            if next_remind_at is not None:
+                await self.reminder_repo.update_schedule(reminder_id, next_remind_at)
+                await self.event_service.append_event(
+                    EventType.REMINDER_SCHEDULED,
+                    "reminder",
+                    reminder_id,
+                    {"recurrence_rule": reminder.recurrence_rule},
+                )
+                return
+        await self.reminder_repo.update_status(reminder_id, ReminderStatus.SENT)
 
     async def mark_failed(self, reminder_id: str, reason: str) -> None:
         await self.reminder_repo.update_status(reminder_id, ReminderStatus.FAILED)
         await self.event_service.append_event(
             EventType.REMINDER_FAILED, "reminder", reminder_id, {"reason": reason}
         )
+
+
+def next_recurrence(current: datetime, recurrence_rule: str) -> datetime | None:
+    if recurrence_rule == "daily":
+        return current + timedelta(days=1)
+    if recurrence_rule.startswith("weekly"):
+        return current + timedelta(days=7)
+    return None

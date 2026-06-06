@@ -44,6 +44,8 @@ class Database:
             await conn.execute("ALTER TABLE reminders ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
         if "claimed_at" not in columns:
             await conn.execute("ALTER TABLE reminders ADD COLUMN claimed_at TEXT")
+        if "recurrence_rule" not in columns:
+            await conn.execute("ALTER TABLE reminders ADD COLUMN recurrence_rule TEXT")
 
     async def _apply_migrations(self, conn: aiosqlite.Connection) -> None:
         migration_dir = files("memocore.adapters.storage").joinpath("migrations/sqlite")
@@ -147,6 +149,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     confidence REAL NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     claimed_at TEXT,
+    recurrence_rule TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

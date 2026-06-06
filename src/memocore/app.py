@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import Bot
@@ -13,6 +13,7 @@ from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
     EventLogRepository,
     FollowUpRepository,
+    MeetingRepository,
     MemoryItemRepository,
     NoteRepository,
     PersonRepository,
@@ -23,6 +24,7 @@ from memocore.adapters.storage.repositories import (
 from memocore.adapters.storage.sqlite import Database
 from memocore.adapters.telegram.bot import create_bot
 from memocore.config import Settings, get_settings
+from memocore.domain.models import EventType
 from memocore.services.capture_service import CaptureService
 from memocore.services.clarification_service import ClarificationService
 from memocore.services.conversation_service import ConversationService
@@ -51,6 +53,7 @@ async def create_app(settings: Settings | None = None) -> Application:
     clarification_repo = ClarificationRequestRepository(database)
     project_repo = ProjectRepository(database)
     PersonRepository(database)
+    meeting_repo = MeetingRepository(database)
     followup_repo = FollowUpRepository(database)
     memory_repo = MemoryItemRepository(database)
     event_repo = EventLogRepository(database)
@@ -86,6 +89,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         project_repo,
         memory_repo,
         display_timezone=ZoneInfo(settings.user_timezone),
+        meeting_repo=meeting_repo,
     )
     conversation_service = ConversationService(
         capture_service,
@@ -107,6 +111,15 @@ async def create_app(settings: Settings | None = None) -> Application:
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(
         reminder_dispatch_loop(reminder_service, note_repo, app.bot)
+    )
+    app.bot_data["morning_briefing_task"] = asyncio.create_task(
+        scheduled_morning_briefing_loop(secretary_service, note_repo, event_service, app.bot, settings)
+    )
+    app.bot_data["nudge_task"] = asyncio.create_task(
+        proactive_nudge_loop(secretary_service, note_repo, event_service, app.bot, settings)
+    )
+    app.bot_data["weekly_review_task"] = asyncio.create_task(
+        scheduled_weekly_review_loop(secretary_service, note_repo, event_service, app.bot, settings)
     )
     return app
 
@@ -136,14 +149,184 @@ async def reminder_dispatch_loop(
         await asyncio.sleep(interval)
 
 
-async def shutdown_app(app: Application) -> None:
-    reminder_task = app.bot_data.get("reminder_task")
-    if reminder_task:
-        reminder_task.cancel()
+async def scheduled_morning_briefing_loop(
+    secretary_service: SecretaryService,
+    note_repo: NoteRepository,
+    event_service: EventService,
+    bot: Bot,
+    settings: Settings,
+    interval: int = 60,
+) -> None:
+    while True:
+        await send_due_morning_briefings(secretary_service, note_repo, event_service, bot, settings)
+        await asyncio.sleep(interval)
+
+
+async def proactive_nudge_loop(
+    secretary_service: SecretaryService,
+    note_repo: NoteRepository,
+    event_service: EventService,
+    bot: Bot,
+    settings: Settings,
+) -> None:
+    while True:
+        await send_due_nudges(secretary_service, note_repo, event_service, bot, settings)
+        await asyncio.sleep(max(60, settings.proactive_nudge_interval_minutes * 60))
+
+
+async def scheduled_weekly_review_loop(
+    secretary_service: SecretaryService,
+    note_repo: NoteRepository,
+    event_service: EventService,
+    bot: Bot,
+    settings: Settings,
+    interval: int = 60,
+) -> None:
+    while True:
+        await send_due_weekly_reviews(secretary_service, note_repo, event_service, bot, settings)
+        await asyncio.sleep(interval)
+
+
+async def send_due_morning_briefings(
+    secretary_service: SecretaryService,
+    note_repo: NoteRepository,
+    event_service: EventService,
+    bot: Bot,
+    settings: Settings,
+    now: datetime | None = None,
+) -> int:
+    if not settings.morning_briefing_enabled:
+        return 0
+    now = now or datetime.now(UTC)
+    timezone = ZoneInfo(settings.user_timezone)
+    local_now = now.astimezone(timezone)
+    if local_now.time() < _parse_clock(settings.morning_briefing_time):
+        return 0
+    day_start = datetime.combine(local_now.date(), time.min, tzinfo=timezone).astimezone(UTC)
+    sent = 0
+    for chat_id in await note_repo.list_source_chat_ids():
+        if await event_service.exists_recent(EventType.BRIEFING_SENT, "telegram_chat", chat_id, day_start):
+            continue
         try:
-            await reminder_task
-        except asyncio.CancelledError:
-            pass
+            await bot.send_message(chat_id=int(chat_id), text=await secretary_service.daily_briefing(now))
+        except Exception:
+            logger.exception("Failed to send morning briefing to chat %s", chat_id)
+            continue
+        await event_service.append_event(
+            EventType.BRIEFING_SENT,
+            "telegram_chat",
+            chat_id,
+            {"date": local_now.date().isoformat()},
+            created_at=now,
+        )
+        sent += 1
+    return sent
+
+
+async def send_due_weekly_reviews(
+    secretary_service: SecretaryService,
+    note_repo: NoteRepository,
+    event_service: EventService,
+    bot: Bot,
+    settings: Settings,
+    now: datetime | None = None,
+) -> int:
+    if not settings.weekly_review_enabled:
+        return 0
+    now = now or datetime.now(UTC)
+    timezone = ZoneInfo(settings.user_timezone)
+    local_now = now.astimezone(timezone)
+    if local_now.weekday() != settings.weekly_review_weekday:
+        return 0
+    if local_now.time() < _parse_clock(settings.weekly_review_time):
+        return 0
+    day_start = datetime.combine(local_now.date(), time.min, tzinfo=timezone).astimezone(UTC)
+    sent = 0
+    for chat_id in await note_repo.list_source_chat_ids():
+        if await event_service.exists_recent(EventType.WEEKLY_REVIEW_SENT, "telegram_chat", chat_id, day_start):
+            continue
+        try:
+            await bot.send_message(chat_id=int(chat_id), text=await secretary_service.weekly_review(now))
+        except Exception:
+            logger.exception("Failed to send weekly review to chat %s", chat_id)
+            continue
+        await event_service.append_event(
+            EventType.WEEKLY_REVIEW_SENT,
+            "telegram_chat",
+            chat_id,
+            {"date": local_now.date().isoformat()},
+            created_at=now,
+        )
+        sent += 1
+    return sent
+
+
+async def send_due_nudges(
+    secretary_service: SecretaryService,
+    note_repo: NoteRepository,
+    event_service: EventService,
+    bot: Bot,
+    settings: Settings,
+    now: datetime | None = None,
+) -> int:
+    if not settings.proactive_nudges_enabled:
+        return 0
+    now = now or datetime.now(UTC)
+    timezone = ZoneInfo(settings.user_timezone)
+    if _is_in_quiet_hours(now.astimezone(timezone).time(), settings.quiet_hours_start, settings.quiet_hours_end):
+        return 0
+    chat_ids = await note_repo.list_source_chat_ids()
+    if not chat_ids:
+        return 0
+    cooldown_since = now - timedelta(hours=settings.proactive_nudge_cooldown_hours)
+    sent = 0
+    for entity_type, entity_id, text_body in await secretary_service.deadline_nudges(
+        now, stale_followup_days=settings.stale_followup_days
+    ):
+        if await event_service.exists_recent(EventType.NUDGE_SENT, entity_type, entity_id, cooldown_since):
+            continue
+        delivered = False
+        for chat_id in chat_ids:
+            try:
+                await bot.send_message(chat_id=int(chat_id), text=text_body)
+                delivered = True
+                sent += 1
+            except Exception:
+                logger.exception("Failed to send nudge %s:%s to chat %s", entity_type, entity_id, chat_id)
+        if delivered:
+            await event_service.append_event(EventType.NUDGE_SENT, entity_type, entity_id, created_at=now)
+    return sent
+
+
+def _parse_clock(value: str) -> time:
+    hour, minute = value.split(":", 1)
+    return time(int(hour), int(minute))
+
+
+def _is_in_quiet_hours(current: time, start: str | None, end: str | None) -> bool:
+    if not start or not end:
+        return False
+    start_time = _parse_clock(start)
+    end_time = _parse_clock(end)
+    if start_time <= end_time:
+        return start_time <= current < end_time
+    return current >= start_time or current < end_time
+
+
+async def shutdown_app(app: Application) -> None:
+    for task_name in (
+        "reminder_task",
+        "morning_briefing_task",
+        "nudge_task",
+        "weekly_review_task",
+    ):
+        task = app.bot_data.get(task_name)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     database = app.bot_data.get("database")
     if database:
         await database.close()

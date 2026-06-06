@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from memocore.domain.schemas import CaptureRequest
@@ -12,11 +15,14 @@ from memocore.services.conversation_service import (
 )
 from memocore.services.secretary_service import SecretaryService
 
+logger = logging.getLogger(__name__)
+
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text(
-            "MemoCore is ready. Send a note or use /today, /tomorrow, /tasks, /reminders, /waiting, /projects, or /memory."
+        await _safe_reply_text(
+            update,
+            "MemoCore is ready. Send a note or use /today, /tomorrow, /tasks, /reminders, /waiting, /projects, /memory, /briefing, or /weekly."
         )
 
 
@@ -36,11 +42,13 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "waiting": service.waiting,
         "projects": service.projects,
         "memory": service.memories,
+        "briefing": service.daily_briefing,
+        "weekly": service.weekly_review,
     }
     action = actions.get(command)
     if action is None:
         return
-    await update.message.reply_text(await action())
+    await _safe_reply_text(update, await action())
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -53,7 +61,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if source_chat_id and clarification_service:
         result = await clarification_service.answer_pending(source_chat_id, update.message.text)
         if result.handled:
-            await update.message.reply_text(result.message)
+            await _safe_reply_text(update, result.message)
             return
 
     conversation_service: ConversationService | None = context.application.bot_data.get(
@@ -68,10 +76,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     if conversation_service is not None:
         response = await conversation_service.handle_text(request)
-        await update.message.reply_text(response.reply)
+        await _safe_reply_text(update, response.reply)
         return
     response = await capture_service.capture(request)
-    await update.message.reply_text(format_capture_response(response))
+    await _safe_reply_text(update, format_capture_response(response))
+
+
+async def _safe_reply_text(update: Update, text: str) -> None:
+    if not update.message:
+        return
+    try:
+        await update.message.reply_text(text)
+    except TelegramError:
+        logger.warning(
+            "Failed to send Telegram reply",
+            exc_info=True,
+            extra={
+                "update_id": update.update_id,
+                "chat_id": update.effective_chat.id if update.effective_chat else None,
+                "message_id": update.message.message_id,
+            },
+        )
 
 
 def register_handlers(
@@ -86,6 +111,17 @@ def register_handlers(
     app.bot_data["clarification_service"] = clarification_service
     app.bot_data["conversation_service"] = conversation_service
     app.add_handler(CommandHandler("start", start_handler))
-    for command in ("today", "todays", "tomorrow", "tasks", "reminders", "waiting", "projects", "memory"):
+    for command in (
+        "today",
+        "todays",
+        "tomorrow",
+        "tasks",
+        "reminders",
+        "waiting",
+        "projects",
+        "memory",
+        "briefing",
+        "weekly",
+    ):
         app.add_handler(CommandHandler(command, secretary_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))

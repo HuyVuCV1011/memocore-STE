@@ -127,6 +127,20 @@ class NoteRepository(BaseRepository):
         ).fetchall()
         return [_note_from_row(row) for row in rows]
 
+    async def list_source_chat_ids(self, source: str = "telegram") -> list[str]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT DISTINCT source_chat_id FROM notes
+                WHERE source = ? AND source_chat_id IS NOT NULL
+                ORDER BY updated_at DESC
+                """,
+                (source,),
+            )
+        ).fetchall()
+        return [row["source_chat_id"] for row in rows]
+
     async def update_status(self, note_id: str, status: NoteStatus) -> None:
         await self._execute(
             "UPDATE notes SET status = ?, updated_at = ? WHERE id = ?",
@@ -206,6 +220,20 @@ class TaskRepository(BaseRepository):
         ).fetchall()
         return [_task_from_row(row) for row in rows]
 
+    async def list_done_since(self, since: datetime) -> list[Task]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status = ? AND updated_at >= ?
+                ORDER BY updated_at DESC
+                """,
+                ("done", _dt(since)),
+            )
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
     async def update_status(self, task_id: str, status: str) -> None:
         await self._execute(
             "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
@@ -225,8 +253,9 @@ class ReminderRepository(BaseRepository):
             """
             INSERT INTO reminders (
                 id, title, remind_at, status, task_id, source_note_id,
-                delivery_channel, confidence, attempt_count, claimed_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                delivery_channel, confidence, attempt_count, claimed_at,
+                recurrence_rule, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 reminder.id,
@@ -239,6 +268,7 @@ class ReminderRepository(BaseRepository):
                 reminder.confidence,
                 reminder.attempt_count,
                 _dt(reminder.claimed_at),
+                reminder.recurrence_rule,
                 _dt(reminder.created_at),
                 _dt(reminder.updated_at),
             ),
@@ -326,8 +356,23 @@ class ReminderRepository(BaseRepository):
 
     async def update_remind_at(self, reminder_id: str, remind_at: datetime) -> None:
         await self._execute(
-            "UPDATE reminders SET remind_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE reminders SET remind_at = ?, claimed_at = NULL, updated_at = ? WHERE id = ?",
             (_dt(remind_at), _dt(utc_now()), reminder_id),
+        )
+
+    async def update_schedule(
+        self,
+        reminder_id: str,
+        remind_at: datetime,
+        status: ReminderStatus = ReminderStatus.SCHEDULED,
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE reminders
+            SET remind_at = ?, status = ?, claimed_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (_dt(remind_at), status.value, _dt(utc_now()), reminder_id),
         )
 
     async def get_by_id(self, reminder_id: str) -> Reminder | None:
@@ -625,6 +670,50 @@ class EventLogRepository(BaseRepository):
         ).fetchall()
         return [_event_from_row(row) for row in rows]
 
+    async def list_recent(
+        self,
+        event_type: EventType | None = None,
+        since: datetime | None = None,
+        limit: int = 50,
+    ) -> list[EventLog]:
+        conn = await self.database.connection()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if event_type is not None:
+            clauses.append("event_type = ?")
+            params.append(event_type.value)
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(_dt(since))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = await (
+            await conn.execute(
+                f"SELECT * FROM event_logs {where} ORDER BY created_at DESC LIMIT ?",
+                (*params, limit),
+            )
+        ).fetchall()
+        return [_event_from_row(row) for row in rows]
+
+    async def exists_recent(
+        self,
+        event_type: EventType,
+        entity_type: str,
+        entity_id: str,
+        since: datetime,
+    ) -> bool:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute(
+                """
+                SELECT 1 FROM event_logs
+                WHERE event_type = ? AND entity_type = ? AND entity_id = ? AND created_at >= ?
+                LIMIT 1
+                """,
+                (event_type.value, entity_type, entity_id, _dt(since)),
+            )
+        ).fetchone()
+        return row is not None
+
 
 def parse_model_datetime(value: str | None) -> datetime | None:
     if not value:
@@ -683,6 +772,7 @@ def _reminder_from_row(row: Any) -> Reminder:
         confidence=row["confidence"],
         attempt_count=row["attempt_count"],
         claimed_at=_parse_dt(row["claimed_at"]),
+        recurrence_rule=row["recurrence_rule"] if "recurrence_rule" in row.keys() else None,
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )

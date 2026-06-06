@@ -200,11 +200,27 @@ MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_b
 - Handle task completion, deadline updates, bulk cancellation, memory deletion, and correction
   feedback with guardrails.
 - Provide Telegram commands: `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`,
-  `/projects`, and `/memory`.
+  `/projects`, `/memory`, `/briefing`, and `/weekly`.
+- Send scheduled morning briefings, weekly reviews, recurring daily/weekly reminders, and
+  cooldown-protected proactive nudges that respect quiet hours.
+
+## Repository Hygiene
+
+Commit source code, tests, docs, migrations, scripts, fixtures, and safe examples such as
+`.env.example`.
+
+Never commit `.env`, `.env.*` except `.env.example`, `data/`, `logs/`, local SQLite databases,
+runtime `*.jsonl` feedback files, provider API keys, Telegram bot tokens, private keys,
+certificates, OAuth tokens, service-account JSON, client-secret JSON, cookies, browser sessions,
+virtual environments, caches, or generated build artifacts.
 
 ## Deferred Work
 
-- Recurring reminders and automatic briefings.
+- Interval recurrence such as "every 2 days" or "every 3 weeks".
+- Bundled low-priority nudge digests.
+- Explicit accepted, edited, ignored, and rejected suggestion feedback signals beyond correction
+  feedback.
+- Optional end-of-day review and pre-deadline warnings.
 - Calendar, email, file, browser, and voice integrations.
 - Broad autonomous tool execution.
 - Peer-to-peer agent swarms.

@@ -12,8 +12,8 @@ approval boundaries.
 | --- | --- | --- |
 | V1 | Delivered | Capture and memory foundation |
 | V2 | Delivered | Conversational secretary |
-| V3 | Next | Daily and recurring secretary |
-| V4 | Future | People, projects, and meetings |
+| V3 | Delivered | Daily and recurring secretary |
+| V4 | Next | People, projects, and meetings |
 | V5 | Future | Orchestration and specialist workers |
 | V6 | Future | Knowledge system and productization |
 | V7 | Future | Controlled autonomy |
@@ -44,13 +44,18 @@ V2 turns Telegram from a capture-only surface into a conversational secretary in
 
 ## V3: Daily And Recurring Secretary
 
-V3 should make MemoCore proactive:
+V3 makes MemoCore proactive:
 
-- Recurring reminders: daily, weekly, weekday-specific, and interval-based.
-- Morning briefing, weekly review, optional end-of-day review.
-- Stale-loop nudges and approaching-deadline warnings.
-- Quiet hours and bundled low-priority nudges.
-- Feedback signals for accepted, edited, ignored, or rejected suggestions.
+- Recurring reminders: daily and weekday-specific weekly reminders.
+- Morning briefing and weekly review.
+- Stale-loop and overdue-work nudges.
+- Quiet hours and nudge cooldowns.
+- Audit events for proactive sends and recurring reminder reschedules.
+
+Delivered V3 scope includes manual and scheduled briefings, weekly reviews, daily/weekly recurring
+reminders, stale-loop nudges, quiet hours, cooldowns, and audit events. Interval recurrence,
+bundled nudge digests, explicit suggestion feedback signals, end-of-day review, and pre-deadline
+warnings are intentionally deferred.
 
 ## V4: People, Projects, And Meetings
 

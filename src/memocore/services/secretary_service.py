@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from memocore.adapters.storage.repositories import (
     FollowUpRepository,
+    MeetingRepository,
     MemoryItemRepository,
     ProjectRepository,
     ReminderRepository,
@@ -21,6 +22,7 @@ class SecretaryService:
         project_repo: ProjectRepository,
         memory_repo: MemoryItemRepository,
         display_timezone: tzinfo = UTC,
+        meeting_repo: MeetingRepository | None = None,
     ):
         self.task_repo = task_repo
         self.reminder_repo = reminder_repo
@@ -28,6 +30,7 @@ class SecretaryService:
         self.project_repo = project_repo
         self.memory_repo = memory_repo
         self.display_timezone = display_timezone
+        self.meeting_repo = meeting_repo
 
     async def today(self) -> str:
         now = datetime.now(UTC)
@@ -170,6 +173,111 @@ class SecretaryService:
             f"- [{item.bucket}] {item.content}" for item in memories[:20]
         )
 
+    async def daily_briefing(self, now: datetime | None = None) -> str:
+        now = now or datetime.now(UTC)
+        local_now = now.astimezone(self.display_timezone)
+        day_start = datetime.combine(local_now.date(), time.min, tzinfo=self.display_timezone).astimezone(UTC)
+        day_end = datetime.combine(local_now.date(), time.max, tzinfo=self.display_timezone).astimezone(UTC)
+        tasks = await self.task_repo.list_active()
+        overdue = [task for task in tasks if task.due_at and task.due_at < day_start]
+        due_today = [task for task in tasks if task.due_at and day_start <= task.due_at <= day_end]
+        undated_priority = [task for task in tasks if task.due_at is None][:5]
+        waiting = [task for task in tasks if task.status in {"waiting", "blocked"}]
+        reminders = [
+            reminder
+            for reminder in await self.reminder_repo.list_recent(limit=100)
+            if reminder.remind_at and day_start <= reminder.remind_at <= day_end
+        ]
+        followups = await self.followup_repo.list_open()
+        meetings = []
+        if self.meeting_repo is not None:
+            meetings = [
+                meeting
+                for meeting in await self.meeting_repo.list_upcoming(day_start)
+                if meeting.starts_at and day_start <= meeting.starts_at <= day_end
+            ]
+
+        lines = [f"Briefing hôm nay - {local_now.date():%d/%m/%Y}"]
+        lines.append("")
+        lines.append(f"Tổng quan: {len(due_today)} task hôm nay, {len(overdue)} quá hạn, {len(reminders)} reminder, {len(followups)} follow-up mở.")
+        lines.append("")
+        lines.append("Quá hạn")
+        lines.extend(_task_lines(overdue, self.display_timezone) if overdue else ["Không có task quá hạn."])
+        lines.append("")
+        lines.append("Hôm nay")
+        lines.extend(_task_lines(due_today, self.display_timezone) if due_today else ["Không có task đến hạn hôm nay."])
+        if reminders:
+            lines.append("")
+            lines.append("Reminder hôm nay")
+            lines.extend(_reminder_lines(reminders, self.display_timezone))
+        if meetings:
+            lines.append("")
+            lines.append("Lịch/meeting hôm nay")
+            lines.extend(_meeting_lines(meetings, self.display_timezone))
+        if followups:
+            lines.append("")
+            lines.append("Follow-up đang mở")
+            lines.extend(_followup_lines(followups, self.display_timezone))
+        if waiting:
+            lines.append("")
+            lines.append("Đang chờ hoặc bị chặn")
+            lines.extend(_task_lines(waiting, self.display_timezone))
+        if undated_priority:
+            lines.append("")
+            lines.append("Không có hạn nhưng nên rà soát")
+            lines.extend(_task_lines(undated_priority, self.display_timezone))
+        return "\n".join(lines)
+
+    async def weekly_review(self, now: datetime | None = None) -> str:
+        now = now or datetime.now(UTC)
+        local_now = now.astimezone(self.display_timezone)
+        since = now - timedelta(days=7)
+        done = await self.task_repo.list_done_since(since)
+        active = await self.task_repo.list_active()
+        followups = await self.followup_repo.list_open()
+        overdue = [task for task in active if task.due_at and task.due_at < now]
+        lines = [f"Weekly review - tuần kết thúc {local_now.date():%d/%m/%Y}"]
+        lines.append("")
+        lines.append(f"Đã xong tuần này: {len(done)} task.")
+        lines.extend(_task_lines(done[:10], self.display_timezone) if done else ["Chưa có task nào được đánh dấu xong tuần này."])
+        lines.append("")
+        lines.append(f"Còn mở: {len(active)} task, trong đó {len(overdue)} quá hạn.")
+        lines.extend(_task_lines(overdue[:10], self.display_timezone) if overdue else ["Không có task quá hạn."])
+        lines.append("")
+        lines.append(f"Follow-up còn mở: {len(followups)}.")
+        if followups:
+            lines.extend(_followup_lines(followups[:10], self.display_timezone))
+        return "\n".join(lines)
+
+    async def deadline_nudges(
+        self,
+        now: datetime | None = None,
+        stale_followup_days: int = 3,
+    ) -> list[tuple[str, str, str]]:
+        now = now or datetime.now(UTC)
+        local_now = now.astimezone(self.display_timezone)
+        tasks = await self.task_repo.list_active()
+        followups = await self.followup_repo.list_open()
+        nudges: list[tuple[str, str, str]] = []
+        for task in tasks:
+            if task.due_at and task.due_at < now:
+                nudges.append(
+                    (
+                        "task",
+                        task.id,
+                        f"Task quá hạn: {task.title}\nHạn: {_format_due(task.due_at, self.display_timezone)}",
+                    )
+                )
+        stale_before = now - timedelta(days=stale_followup_days)
+        for followup in followups:
+            is_due = followup.due_at is not None and followup.due_at < now
+            is_stale = followup.due_at is None and followup.created_at < stale_before
+            if is_due or is_stale:
+                label = "quá hạn" if is_due else f"chưa cập nhật {stale_followup_days}+ ngày"
+                due_text = _format_due(followup.due_at, self.display_timezone) if followup.due_at else local_now.date().strftime("%d/%m/%Y")
+                nudges.append(("followup", followup.id, f"Follow-up {label}: {followup.title}\nMốc: {due_text}"))
+        return nudges
+
 
 def _task_lines(tasks, display_timezone: tzinfo = UTC) -> list[str]:
     lines: list[str] = []
@@ -210,6 +318,24 @@ def _reminder_lines(reminders, display_timezone: tzinfo) -> list[str]:
         lines.append(
             f"   Lúc: {_format_due(item.remind_at, display_timezone)} | Trạng thái: {_label_status(item.status)}"
         )
+    return lines
+
+
+def _followup_lines(followups, display_timezone: tzinfo) -> list[str]:
+    lines: list[str] = []
+    for index, item in enumerate(followups, 1):
+        details = [f"Hạn: {_format_due(item.due_at, display_timezone)}"]
+        lines.append(f"{index}. {item.title}")
+        lines.append(f"   {' | '.join(details)}")
+    return lines
+
+
+def _meeting_lines(meetings, display_timezone: tzinfo) -> list[str]:
+    lines: list[str] = []
+    for index, item in enumerate(meetings, 1):
+        starts = _format_due(item.starts_at, display_timezone)
+        lines.append(f"{index}. {item.title}")
+        lines.append(f"   Bắt đầu: {starts}")
     return lines
 
 

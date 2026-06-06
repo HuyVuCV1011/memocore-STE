@@ -59,16 +59,30 @@ Delivered foundations:
 - Audit events for conversation notes, user feedback, and conversation-created clarifications.
 - Guardrails so low-confidence or ambiguous write intents ask for clarification instead of creating or mutating durable objects.
 
+## Delivered V3: Daily And Recurring Secretary
+
+V3 makes MemoCore proactive in the local Telegram runtime.
+
+Delivered foundations:
+
+- Manual `/briefing` and `/weekly` secretary views.
+- Automatic morning briefing, sent once per chat per day.
+- Automatic weekly review, sent once per chat per configured weekday.
+- Recurring reminder support for daily and weekday-specific weekly reminders.
+- Recurring reminders are rescheduled after successful delivery.
+- Proactive nudges for overdue tasks and stale or overdue follow-ups.
+- Quiet hours and per-entity cooldowns for proactive nudges.
+- Event logs for briefing, weekly review, nudge, reminder sent, and reminder reschedule events.
+
+Deferred from V3:
+
+- Interval recurrence such as "every 2 days" or "every 3 weeks".
+- Bundling many low-priority nudges into one digest.
+- Explicit accepted, edited, ignored, and rejected suggestion feedback signals beyond existing correction feedback.
+- Optional end-of-day review.
+- Pre-deadline warnings before a task becomes overdue.
+
 ## Next Versions
-
-### V3: Daily And Recurring Secretary
-
-1. Send an automatic morning briefing with due work, overdue work, reminders, open follow-ups,
-   and upcoming meetings.
-2. Add stale follow-up and approaching-deadline nudges.
-3. Add a weekly review and an optional end-of-day review.
-4. Bundle low-priority nudges and respect quiet hours.
-5. Record whether suggestions were accepted, edited, ignored, or rejected.
 
 ### V4: People, Projects, And Meetings
 

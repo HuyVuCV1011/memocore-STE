@@ -50,7 +50,16 @@ backend.
 | --- | --- | --- |
 | V1 | Delivered | Capture, extraction, SQLite storage, reminders, provider reliability, and memory hygiene. |
 | V2 | Delivered | Conversational secretary routing, natural-language SQLite queries, clarification, and safer corrections. |
-| V3 | Next | Daily briefings, recurring reminders, stale-loop nudges, quiet hours, and feedback signals. |
+| V3 | Delivered | Daily briefings, recurring daily/weekly reminders, stale-loop nudges, quiet hours, and weekly reviews. |
+| V4 | Next | People, projects, meetings, linked commitments, and structured retrieval. |
+
+V3 intentionally defers a few deeper behaviors to V4/V5 unless they become painful sooner:
+
+| Deferred item | Current decision |
+| --- | --- |
+| Interval recurrence | Daily and weekly recurrence are supported. Rules like "every 2 days" or "every 3 weeks" are deferred. |
+| Nudge bundling | Quiet hours and cooldown exist. Bundling many low-priority nudges into one digest is deferred. |
+| Feedback signals | Correction feedback exists. Explicit accepted, edited, ignored, and rejected suggestion signals are deferred. |
 
 ## Quick Start
 
@@ -201,13 +210,19 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 
 ## Data Safety
 
+Commit source, tests, docs, migrations, and safe examples such as `.env.example`.
+
 Never commit:
 
 - `.env`
+- `.env.*` except `.env.example`
 - `data/`
 - local SQLite databases
+- `logs/`
+- `*.jsonl` runtime feedback/event exports
 - Telegram bot tokens
 - provider API keys
+- private keys, certificates, OAuth tokens, service-account files, or client secret files
 - cookies, browser sessions, or generated runtime logs
 
 The repository `.gitignore` excludes these local runtime files by default.
