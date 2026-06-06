@@ -13,7 +13,7 @@ Telegram is the first adapter, not the product boundary.
 | --- | --- |
 | Adapters | Telegram, LLM providers, SQLite runtime, future external tools |
 | Services | Capture, extraction, conversation routing, memory lifecycle, reminders, secretary views, events |
-| Domain | Typed notes, tasks, reminders, meetings, follow-ups, projects, people, memory, events, schemas |
+| Domain | Typed notes, tasks, reminders, meetings, follow-ups, commitments, projects, people, memory, events, schemas |
 | Storage | Repositories, transactions, indexes, migrations |
 
 ## Capture Flow
@@ -72,7 +72,8 @@ Python before prompt construction.
 SQLite is the verified runtime. It supports:
 
 - raw notes and source idempotency;
-- tasks, reminders, projects, people, meetings, and follow-ups;
+- tasks, reminders, projects, people, meetings, follow-ups, and commitments;
+- person/project links for operational context and meeting preparation;
 - memory items with lifecycle status;
 - event logs for auditability;
 - packaged schema bootstrap and migrations.

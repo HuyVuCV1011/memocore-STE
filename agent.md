@@ -195,14 +195,17 @@ MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_b
 
 - Capture rough notes.
 - Answer natural-language agenda and state queries from SQLite.
-- Track tasks, reminders, projects, people, meetings, follow-ups, and memory candidates.
+- Track tasks, reminders, projects, people, meetings, follow-ups, commitments, and memory candidates.
 - Ask clarification questions for ambiguous task updates or reminder times.
 - Handle task completion, deadline updates, bulk cancellation, memory deletion, and correction
   feedback with guardrails.
 - Provide Telegram commands: `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`,
-  `/projects`, `/memory`, `/briefing`, and `/weekly`.
+  `/projects`, `/memory`, `/briefing`, `/weekly`, `/people`, `/commitments`, `/person`,
+  `/project`, `/context`, and `/prep`.
 - Send scheduled morning briefings, weekly reviews, recurring daily/weekly reminders, and
   cooldown-protected proactive nudges that respect quiet hours.
+- Generate person/project context and meeting-prep summaries from linked tasks, follow-ups,
+  commitments, meetings, and memory.
 
 ## Repository Hygiene
 
@@ -221,6 +224,8 @@ virtual environments, caches, or generated build artifacts.
 - Explicit accepted, edited, ignored, and rejected suggestion feedback signals beyond correction
   feedback.
 - Optional end-of-day review and pre-deadline warnings.
+- Automatic bulk import of personal Markdown or Telegram exports into the live database.
+- Dedicated review UI for personal context seed approval.
 - Calendar, email, file, browser, and voice integrations.
 - Broad autonomous tool execution.
 - Peer-to-peer agent swarms.

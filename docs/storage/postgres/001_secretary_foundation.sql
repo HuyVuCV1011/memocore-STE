@@ -40,6 +40,7 @@ CREATE TABLE memory_claims (
     confidence double precision NOT NULL,
     source_capture_id uuid NOT NULL REFERENCES captures(id),
     project_id uuid REFERENCES projects(id),
+    person_id uuid REFERENCES people(id),
     embedding vector,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL
@@ -62,6 +63,7 @@ CREATE TABLE tasks (
     priority text NOT NULL,
     due_at timestamptz,
     project_id uuid REFERENCES projects(id),
+    person_id uuid REFERENCES people(id),
     source_capture_id uuid NOT NULL REFERENCES captures(id),
     confidence double precision NOT NULL,
     created_at timestamptz NOT NULL,
@@ -77,6 +79,7 @@ CREATE TABLE reminders (
     source_capture_id uuid NOT NULL REFERENCES captures(id),
     attempt_count integer NOT NULL DEFAULT 0,
     claimed_at timestamptz,
+    recurrence_rule text,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL
 );
@@ -87,6 +90,7 @@ CREATE TABLE meetings (
     starts_at timestamptz,
     ends_at timestamptz,
     project_id uuid REFERENCES projects(id),
+    person_id uuid REFERENCES people(id),
     source_capture_id uuid NOT NULL REFERENCES captures(id),
     notes text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL,
@@ -104,6 +108,28 @@ CREATE TABLE followups (
     notes text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL
+);
+
+CREATE TABLE commitments (
+    id uuid PRIMARY KEY,
+    title text NOT NULL,
+    direction text NOT NULL,
+    status text NOT NULL,
+    person_id uuid REFERENCES people(id),
+    project_id uuid REFERENCES projects(id),
+    due_at timestamptz,
+    source_capture_id uuid REFERENCES captures(id),
+    notes text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL
+);
+
+CREATE TABLE meeting_people (
+    meeting_id uuid NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    person_id uuid NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    role text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (meeting_id, person_id)
 );
 
 CREATE TABLE events (
@@ -131,3 +157,8 @@ ON memory_claims USING gin (to_tsvector('simple', content));
 CREATE INDEX tasks_status_due_idx ON tasks(status, due_at);
 CREATE INDEX reminders_status_due_idx ON reminders(status, remind_at);
 CREATE INDEX followups_status_due_idx ON followups(status, due_at);
+CREATE INDEX tasks_person_idx ON tasks(person_id);
+CREATE INDEX meetings_person_idx ON meetings(person_id);
+CREATE INDEX memory_claims_person_idx ON memory_claims(person_id);
+CREATE INDEX commitments_person_status_idx ON commitments(person_id, status);
+CREATE INDEX commitments_project_status_idx ON commitments(project_id, status);

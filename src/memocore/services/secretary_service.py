@@ -4,9 +4,11 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from memocore.adapters.storage.repositories import (
+    CommitmentRepository,
     FollowUpRepository,
     MeetingRepository,
     MemoryItemRepository,
+    PersonRepository,
     ProjectRepository,
     ReminderRepository,
     TaskRepository,
@@ -23,6 +25,8 @@ class SecretaryService:
         memory_repo: MemoryItemRepository,
         display_timezone: tzinfo = UTC,
         meeting_repo: MeetingRepository | None = None,
+        person_repo: PersonRepository | None = None,
+        commitment_repo: CommitmentRepository | None = None,
     ):
         self.task_repo = task_repo
         self.reminder_repo = reminder_repo
@@ -31,6 +35,8 @@ class SecretaryService:
         self.memory_repo = memory_repo
         self.display_timezone = display_timezone
         self.meeting_repo = meeting_repo
+        self.person_repo = person_repo
+        self.commitment_repo = commitment_repo
 
     async def today(self) -> str:
         now = datetime.now(UTC)
@@ -228,6 +234,156 @@ class SecretaryService:
             lines.extend(_task_lines(undated_priority, self.display_timezone))
         return "\n".join(lines)
 
+    async def people(self) -> str:
+        if self.person_repo is None:
+            return "People\nPeople repository chưa được cấu hình."
+        people = await self.person_repo.list_all()
+        if not people:
+            return "People\nChưa có person nào."
+        lines = ["People"]
+        for index, person in enumerate(people, 1):
+            aliases = f" | aliases: {', '.join(person.aliases)}" if person.aliases else ""
+            relationship = f" | {person.relationship}" if person.relationship else ""
+            lines.append(f"{index}. {person.display_name}{relationship}{aliases}")
+        return "\n".join(lines)
+
+    async def commitments(self) -> str:
+        if self.commitment_repo is None:
+            return "Commitments\nCommitment repository chưa được cấu hình."
+        commitments = await self.commitment_repo.list_open()
+        lines = ["Commitments đang mở"]
+        if commitments:
+            lines.extend(_commitment_lines(commitments, self.display_timezone))
+        else:
+            lines.append("Không có commitment đang mở.")
+        return "\n".join(lines)
+
+    async def person_context(self, query: str) -> str:
+        if self.person_repo is None:
+            return "Person context\nPeople repository chưa được cấu hình."
+        person = await self.person_repo.find_by_name_or_alias(query)
+        if person is None:
+            return f"Person {query}\nMình chưa thấy person này trong dữ liệu."
+        tasks = await self.task_repo.list_active_by_person(person.id)
+        followups = await self.followup_repo.list_open_by_person(person.id)
+        memories = await self.memory_repo.list_active_by_person(person.id)
+        commitments = (
+            await self.commitment_repo.list_open_by_person(person.id)
+            if self.commitment_repo is not None
+            else []
+        )
+        meetings = (
+            await self.meeting_repo.list_by_person(person.id)
+            if self.meeting_repo is not None
+            else []
+        )
+        lines = [f"Person {person.display_name}"]
+        if person.relationship:
+            lines.append(f"Quan hệ: {person.relationship}")
+        if person.notes:
+            lines.append(f"Ghi chú: {person.notes}")
+        lines.append("")
+        lines.append(f"Tổng quan: {len(tasks)} task, {len(commitments)} commitment, {len(followups)} follow-up, {len(meetings)} meeting, {len(memories)} memory.")
+        lines.append("")
+        lines.append("Commitments")
+        lines.extend(_commitment_lines(commitments, self.display_timezone) if commitments else ["Không có commitment đang mở."])
+        lines.append("")
+        lines.append("Task liên quan")
+        lines.extend(_task_lines(tasks, self.display_timezone) if tasks else ["Không có task đang mở."])
+        lines.append("")
+        lines.append("Follow-up")
+        lines.extend(_followup_lines(followups, self.display_timezone) if followups else ["Không có follow-up đang mở."])
+        if meetings:
+            lines.append("")
+            lines.append("Meeting gần đây/sắp tới")
+            lines.extend(_meeting_lines(meetings[:5], self.display_timezone))
+        if memories:
+            lines.append("")
+            lines.append("Memory liên quan")
+            lines.extend(_memory_lines(memories[:8]))
+        return "\n".join(lines)
+
+    async def project_context(self, query: str) -> str:
+        project = await self._find_project(query)
+        if project is None:
+            return f"Project {query}\nMình chưa thấy project này trong dữ liệu."
+        tasks = await self.task_repo.list_active_by_project(project.id)
+        followups = await self.followup_repo.list_open_by_project(project.id)
+        memories = await self.memory_repo.list_active_by_project(project.id)
+        commitments = (
+            await self.commitment_repo.list_open_by_project(project.id)
+            if self.commitment_repo is not None
+            else []
+        )
+        meetings = (
+            await self.meeting_repo.list_by_project(project.id)
+            if self.meeting_repo is not None
+            else []
+        )
+        lines = [f"Project {project.name}"]
+        if project.summary:
+            lines.append(project.summary)
+        lines.append("")
+        lines.append(f"Tổng quan: {len(tasks)} task, {len(commitments)} commitment, {len(followups)} follow-up, {len(meetings)} meeting, {len(memories)} memory.")
+        lines.append("")
+        lines.append("Task đang mở")
+        lines.extend(_task_lines(tasks, self.display_timezone) if tasks else ["Không có task đang mở."])
+        lines.append("")
+        lines.append("Commitments")
+        lines.extend(_commitment_lines(commitments, self.display_timezone) if commitments else ["Không có commitment đang mở."])
+        lines.append("")
+        lines.append("Follow-up")
+        lines.extend(_followup_lines(followups, self.display_timezone) if followups else ["Không có follow-up đang mở."])
+        if meetings:
+            lines.append("")
+            lines.append("Meeting liên quan")
+            lines.extend(_meeting_lines(meetings[:5], self.display_timezone))
+        if memories:
+            lines.append("")
+            lines.append("Memory liên quan")
+            lines.extend(_memory_lines(memories[:8]))
+        return "\n".join(lines)
+
+    async def meeting_prep(self, query: str) -> str:
+        person = await self.person_repo.find_by_name_or_alias(query) if self.person_repo else None
+        project = await self._find_project(query)
+        if person is not None:
+            heading = f"Meeting prep với {person.display_name}"
+            body = await self.person_context(person.display_name)
+        elif project is not None:
+            heading = f"Meeting prep cho project {project.name}"
+            body = await self.project_context(project.name)
+        else:
+            return f"Meeting prep {query}\nMình chưa tìm thấy person hoặc project khớp."
+        lines = [heading, ""]
+        lines.append("Chuẩn bị nên rà:")
+        lines.append("- Commitments còn mở")
+        lines.append("- Task/follow-up đang chờ")
+        lines.append("- Meeting gần đây hoặc sắp tới")
+        lines.append("- Memory/project state liên quan")
+        lines.append("")
+        lines.append(body)
+        return "\n".join(lines)
+
+    async def context(self, query: str) -> str:
+        if self.person_repo is not None and await self.person_repo.find_by_name_or_alias(query):
+            return await self.person_context(query)
+        if await self._find_project(query):
+            return await self.project_context(query)
+        return f"Context {query}\nMình chưa tìm thấy person hoặc project khớp."
+
+    async def _find_project(self, query: str):
+        normalized_query = _normalize_text(query)
+        for project in await self.project_repo.list_all():
+            normalized_name = _normalize_text(project.name)
+            if (
+                normalized_query == normalized_name
+                or normalized_query in normalized_name
+                or normalized_name in normalized_query
+            ):
+                return project
+        return None
+
     async def weekly_review(self, now: datetime | None = None) -> str:
         now = now or datetime.now(UTC)
         local_now = now.astimezone(self.display_timezone)
@@ -330,6 +486,25 @@ def _followup_lines(followups, display_timezone: tzinfo) -> list[str]:
     return lines
 
 
+def _commitment_lines(commitments, display_timezone: tzinfo) -> list[str]:
+    lines: list[str] = []
+    for index, item in enumerate(commitments, 1):
+        details = [
+            f"Chiều: {_label_commitment_direction(item.direction)}",
+            f"Hạn: {_format_due(item.due_at, display_timezone)}",
+        ]
+        lines.append(f"{index}. {item.title}")
+        lines.append(f"   {' | '.join(details)}")
+    return lines
+
+
+def _memory_lines(memories) -> list[str]:
+    return [
+        f"{index}. [{item.bucket}/{item.kind}] {item.content}"
+        for index, item in enumerate(memories, 1)
+    ]
+
+
 def _meeting_lines(meetings, display_timezone: tzinfo) -> list[str]:
     lines: list[str] = []
     for index, item in enumerate(meetings, 1):
@@ -375,6 +550,15 @@ def _label_status(value) -> str:
 def _label_priority(value: str) -> str:
     labels = {"low": "thấp", "medium": "vừa", "high": "cao"}
     return labels.get(value, value)
+
+
+def _label_commitment_direction(value) -> str:
+    labels = {
+        "user_owes": "mình nợ người khác",
+        "owed_to_user": "người khác nợ mình",
+        "mutual": "hai bên",
+    }
+    return labels.get(str(value), str(value))
 
 
 def _normalize_text(value: str) -> str:

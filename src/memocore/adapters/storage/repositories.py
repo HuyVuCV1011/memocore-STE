@@ -10,6 +10,8 @@ from memocore.adapters.storage.sqlite import Database
 from memocore.domain.models import (
     ClarificationRequest,
     ClarificationStatus,
+    Commitment,
+    CommitmentStatus,
     EventLog,
     EventType,
     FollowUp,
@@ -162,8 +164,8 @@ class TaskRepository(BaseRepository):
             """
             INSERT INTO tasks (
                 id, title, description, status, priority, due_at, project_id,
-                source_note_id, confidence, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                person_id, source_note_id, confidence, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task.id,
@@ -173,6 +175,7 @@ class TaskRepository(BaseRepository):
                 task.priority,
                 _dt(task.due_at),
                 task.project_id,
+                task.person_id,
                 task.source_note_id,
                 task.confidence,
                 _dt(task.created_at),
@@ -212,7 +215,7 @@ class TaskRepository(BaseRepository):
                 """
                 SELECT * FROM tasks
                 WHERE status IN (?, ?, ?, ?)
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, rowid DESC
                 LIMIT ?
                 """,
                 ("candidate", "open", "waiting", "blocked", limit),
@@ -230,6 +233,34 @@ class TaskRepository(BaseRepository):
                 ORDER BY updated_at DESC
                 """,
                 ("done", _dt(since)),
+            )
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
+    async def list_active_by_project(self, project_id: str) -> list[Task]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE project_id = ? AND status IN (?, ?, ?, ?)
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                (project_id, "candidate", "open", "waiting", "blocked"),
+            )
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
+    async def list_active_by_person(self, person_id: str) -> list[Task]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE person_id = ? AND status IN (?, ?, ?, ?)
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                (person_id, "candidate", "open", "waiting", "blocked"),
             )
         ).fetchall()
         return [_task_from_row(row) for row in rows]
@@ -423,6 +454,11 @@ class ProjectRepository(BaseRepository):
         rows = await (await conn.execute("SELECT * FROM projects ORDER BY last_seen_at DESC")).fetchall()
         return [_project_from_row(row) for row in rows]
 
+    async def get_by_id(self, project_id: str) -> Project | None:
+        conn = await self.database.connection()
+        row = await (await conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,))).fetchone()
+        return _project_from_row(row) if row else None
+
 
 class PersonRepository(BaseRepository):
     async def create(self, person: Person) -> Person:
@@ -444,6 +480,26 @@ class PersonRepository(BaseRepository):
         )
         return person
 
+    async def get_by_id(self, person_id: str) -> Person | None:
+        conn = await self.database.connection()
+        row = await (await conn.execute("SELECT * FROM people WHERE id = ?", (person_id,))).fetchone()
+        return _person_from_row(row) if row else None
+
+    async def find_by_name_or_alias(self, query: str) -> Person | None:
+        normalized_query = normalize_lookup(query)
+        if not normalized_query:
+            return None
+        for person in await self.list_all():
+            names = [person.display_name, *person.aliases]
+            if any(
+                normalized_query == normalize_lookup(name)
+                or normalized_query in normalize_lookup(name)
+                or normalize_lookup(name) in normalized_query
+                for name in names
+            ):
+                return person
+        return None
+
     async def list_all(self) -> list[Person]:
         conn = await self.database.connection()
         rows = await (await conn.execute("SELECT * FROM people ORDER BY display_name")).fetchall()
@@ -456,12 +512,12 @@ class MeetingRepository(BaseRepository):
             """
             INSERT INTO meetings (
                 id, title, starts_at, ends_at, project_id, source_note_id,
-                notes, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                person_id, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 meeting.id, meeting.title, _dt(meeting.starts_at), _dt(meeting.ends_at),
-                meeting.project_id, meeting.source_note_id, meeting.notes,
+                meeting.project_id, meeting.source_note_id, meeting.person_id, meeting.notes,
                 _dt(meeting.created_at), _dt(meeting.updated_at),
             ),
         )
@@ -476,6 +532,46 @@ class MeetingRepository(BaseRepository):
             )
         ).fetchall()
         return [_meeting_from_row(row) for row in rows]
+
+    async def list_by_project(self, project_id: str, limit: int = 10) -> list[Meeting]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM meetings
+                WHERE project_id = ?
+                ORDER BY starts_at IS NULL, starts_at DESC, created_at DESC
+                LIMIT ?
+                """,
+                (project_id, limit),
+            )
+        ).fetchall()
+        return [_meeting_from_row(row) for row in rows]
+
+    async def list_by_person(self, person_id: str, limit: int = 10) -> list[Meeting]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT DISTINCT m.* FROM meetings m
+                LEFT JOIN meeting_people mp ON mp.meeting_id = m.id
+                WHERE m.person_id = ? OR mp.person_id = ?
+                ORDER BY m.starts_at IS NULL, m.starts_at DESC, m.created_at DESC
+                LIMIT ?
+                """,
+                (person_id, person_id, limit),
+            )
+        ).fetchall()
+        return [_meeting_from_row(row) for row in rows]
+
+    async def add_person(self, meeting_id: str, person_id: str, role: str = "") -> None:
+        await self._execute(
+            """
+            INSERT OR REPLACE INTO meeting_people (meeting_id, person_id, role, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (meeting_id, person_id, role, _dt(utc_now())),
+        )
 
 
 class FollowUpRepository(BaseRepository):
@@ -505,6 +601,115 @@ class FollowUpRepository(BaseRepository):
         ).fetchall()
         return [_followup_from_row(row) for row in rows]
 
+    async def list_open_by_project(self, project_id: str) -> list[FollowUp]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM followups
+                WHERE status = ? AND project_id = ?
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                (FollowUpStatus.OPEN.value, project_id),
+            )
+        ).fetchall()
+        return [_followup_from_row(row) for row in rows]
+
+    async def list_open_by_person(self, person_id: str) -> list[FollowUp]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM followups
+                WHERE status = ? AND person_id = ?
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                (FollowUpStatus.OPEN.value, person_id),
+            )
+        ).fetchall()
+        return [_followup_from_row(row) for row in rows]
+
+
+class CommitmentRepository(BaseRepository):
+    async def create(self, commitment: Commitment) -> Commitment:
+        await self._execute(
+            """
+            INSERT INTO commitments (
+                id, title, direction, status, person_id, project_id, due_at,
+                source_note_id, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                commitment.id,
+                commitment.title,
+                commitment.direction.value,
+                commitment.status.value,
+                commitment.person_id,
+                commitment.project_id,
+                _dt(commitment.due_at),
+                commitment.source_note_id,
+                commitment.notes,
+                _dt(commitment.created_at),
+                _dt(commitment.updated_at),
+            ),
+        )
+        return commitment
+
+    async def get_by_id(self, commitment_id: str) -> Commitment | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute("SELECT * FROM commitments WHERE id = ?", (commitment_id,))
+        ).fetchone()
+        return _commitment_from_row(row) if row else None
+
+    async def list_open(self) -> list[Commitment]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM commitments
+                WHERE status = ?
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                (CommitmentStatus.OPEN.value,),
+            )
+        ).fetchall()
+        return [_commitment_from_row(row) for row in rows]
+
+    async def list_open_by_project(self, project_id: str) -> list[Commitment]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM commitments
+                WHERE status = ? AND project_id = ?
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                (CommitmentStatus.OPEN.value, project_id),
+            )
+        ).fetchall()
+        return [_commitment_from_row(row) for row in rows]
+
+    async def list_open_by_person(self, person_id: str) -> list[Commitment]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM commitments
+                WHERE status = ? AND person_id = ?
+                ORDER BY due_at IS NULL, due_at, created_at
+                """,
+                (CommitmentStatus.OPEN.value, person_id),
+            )
+        ).fetchall()
+        return [_commitment_from_row(row) for row in rows]
+
+    async def update_status(self, commitment_id: str, status: CommitmentStatus) -> None:
+        await self._execute(
+            "UPDATE commitments SET status = ?, updated_at = ? WHERE id = ?",
+            (status.value, _dt(utc_now()), commitment_id),
+        )
+
 
 class MemoryItemRepository(BaseRepository):
     async def create(self, item: MemoryItem) -> MemoryItem:
@@ -512,8 +717,8 @@ class MemoryItemRepository(BaseRepository):
             """
             INSERT INTO memory_items (
                 id, bucket, kind, content, source_note_id, project_id,
-                confidence, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                person_id, confidence, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -522,6 +727,7 @@ class MemoryItemRepository(BaseRepository):
                 item.content,
                 item.source_note_id,
                 item.project_id,
+                item.person_id,
                 item.confidence,
                 item.status.value,
                 _dt(item.created_at),
@@ -558,6 +764,34 @@ class MemoryItemRepository(BaseRepository):
             await conn.execute(
                 "SELECT * FROM memory_items WHERE status IN (?, ?) ORDER BY updated_at DESC",
                 ("candidate", "active"),
+            )
+        ).fetchall()
+        return [_memory_from_row(row) for row in rows]
+
+    async def list_active_by_project(self, project_id: str) -> list[MemoryItem]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM memory_items
+                WHERE project_id = ? AND status IN (?, ?)
+                ORDER BY updated_at DESC
+                """,
+                (project_id, "candidate", "active"),
+            )
+        ).fetchall()
+        return [_memory_from_row(row) for row in rows]
+
+    async def list_active_by_person(self, person_id: str) -> list[MemoryItem]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM memory_items
+                WHERE person_id = ? AND status IN (?, ?)
+                ORDER BY updated_at DESC
+                """,
+                (person_id, "candidate", "active"),
             )
         ).fetchall()
         return [_memory_from_row(row) for row in rows]
@@ -728,6 +962,15 @@ def parse_model_datetime(value: str | None) -> datetime | None:
     return parsed
 
 
+def normalize_lookup(value: str) -> str:
+    import unicodedata
+
+    lowered = value.lower().replace("đ", "d")
+    decomposed = unicodedata.normalize("NFD", lowered)
+    ascii_text = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
+    return " ".join("".join(char if char.isalnum() else " " for char in ascii_text).split())
+
+
 def _note_from_row(row: Any) -> Note:
     return Note(
         id=row["id"],
@@ -753,6 +996,7 @@ def _task_from_row(row: Any) -> Task:
         priority=row["priority"],
         due_at=_parse_dt(row["due_at"]),
         project_id=row["project_id"],
+        person_id=row["person_id"] if "person_id" in row.keys() else None,
         source_note_id=row["source_note_id"],
         confidence=row["confidence"],
         created_at=_parse_dt(row["created_at"]),
@@ -810,6 +1054,7 @@ def _meeting_from_row(row: Any) -> Meeting:
         starts_at=_parse_dt(row["starts_at"]),
         ends_at=_parse_dt(row["ends_at"]),
         project_id=row["project_id"],
+        person_id=row["person_id"] if "person_id" in row.keys() else None,
         source_note_id=row["source_note_id"],
         notes=row["notes"],
         created_at=_parse_dt(row["created_at"]),
@@ -832,6 +1077,22 @@ def _followup_from_row(row: Any) -> FollowUp:
     )
 
 
+def _commitment_from_row(row: Any) -> Commitment:
+    return Commitment(
+        id=row["id"],
+        title=row["title"],
+        direction=row["direction"],
+        status=row["status"],
+        person_id=row["person_id"],
+        project_id=row["project_id"],
+        due_at=_parse_dt(row["due_at"]),
+        source_note_id=row["source_note_id"],
+        notes=row["notes"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
 def _memory_from_row(row: Any) -> MemoryItem:
     return MemoryItem(
         id=row["id"],
@@ -840,6 +1101,7 @@ def _memory_from_row(row: Any) -> MemoryItem:
         content=row["content"],
         source_note_id=row["source_note_id"],
         project_id=row["project_id"],
+        person_id=row["person_id"] if "person_id" in row.keys() else None,
         confidence=row["confidence"],
         status=row["status"],
         created_at=_parse_dt(row["created_at"]),

@@ -79,4 +79,5 @@ MemoCore should learn rules like:
 
 - V2: deterministic intent routing, simple project/task queries, task completion, corrections, and safer follow-ups.
 - V3: daily/weekly planning, recurring review surfaces, and proactive briefings by work group.
-- V4: first-class people, roles, work groups, project memory, and linked retrieval.
+- V4: first-class people, roles, work groups, project memory, linked commitments, meeting prep,
+  and person/project retrieval.

@@ -45,6 +45,18 @@ class FollowUpStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class CommitmentStatus(StrEnum):
+    OPEN = "open"
+    DONE = "done"
+    CANCELLED = "cancelled"
+
+
+class CommitmentDirection(StrEnum):
+    USER_OWES = "user_owes"
+    OWED_TO_USER = "owed_to_user"
+    MUTUAL = "mutual"
+
+
 class ProjectStatus(StrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
@@ -94,6 +106,8 @@ class EventType(StrEnum):
     EXTRACTION_LIKELY_INCOMPLETE = "extraction_likely_incomplete"
     FOLLOWUP_CREATED = "followup_created"
     FOLLOWUP_DONE = "followup_done"
+    COMMITMENT_CREATED = "commitment_created"
+    COMMITMENT_DONE = "commitment_done"
     MEETING_CREATED = "meeting_created"
     MEMORY_ACTIVATED = "memory_activated"
     MEMORY_SUPERSEDED = "memory_superseded"
@@ -132,6 +146,7 @@ class Task(TimestampedModel):
     priority: str = "medium"
     due_at: datetime | None = None
     project_id: str | None = None
+    person_id: str | None = None
     source_note_id: str
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -169,6 +184,7 @@ class Meeting(TimestampedModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     project_id: str | None = None
+    person_id: str | None = None
     source_note_id: str
     notes: str = ""
 
@@ -183,12 +199,24 @@ class FollowUp(TimestampedModel):
     notes: str = ""
 
 
+class Commitment(TimestampedModel):
+    title: str
+    direction: CommitmentDirection = CommitmentDirection.USER_OWES
+    status: CommitmentStatus = CommitmentStatus.OPEN
+    person_id: str | None = None
+    project_id: str | None = None
+    due_at: datetime | None = None
+    source_note_id: str | None = None
+    notes: str = ""
+
+
 class MemoryItem(TimestampedModel):
     bucket: MemoryBucket
     kind: MemoryKind
     content: str
     source_note_id: str
     project_id: str | None = None
+    person_id: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     status: MemoryStatus = MemoryStatus.CANDIDATE
 

@@ -82,16 +82,31 @@ Deferred from V3:
 - Optional end-of-day review.
 - Pre-deadline warnings before a task becomes overdue.
 
+## Delivered V4: People, Projects, And Meetings
+
+V4 deepens operational context without importing private datasets automatically.
+
+Delivered foundations:
+
+- SQLite/domain support for linked `person_id` on tasks, meetings, and memory items.
+- `Commitment` domain model and repository for `user_owes`, `owed_to_user`, and `mutual` commitments.
+- `meeting_people` links for meeting participants beyond the primary person field.
+- Repository retrieval by person, project, status, due date, and recency for tasks, meetings,
+  follow-ups, commitments, and memory.
+- Secretary views for `/people`, `/commitments`, `/person <name>`, `/project <name>`,
+  `/context <person-or-project>`, and `/prep <person-or-project>`.
+- Meeting preparation summaries assembled from linked commitments, tasks, follow-ups, meetings,
+  and memory.
+- V4 intent routing for people, commitments, context, and meeting-prep queries without turning
+  them into captured notes.
+
+Deferred from V4:
+
+- Automatic bulk import of personal Markdown/Telegram exports into the live database.
+- Dedicated review UI for approving personal context seed items.
+- Cross-entity graph database; SQLite links are enough for the current secretary workflows.
+
 ## Next Versions
-
-### V4: People, Projects, And Meetings
-
-1. Link people, meetings, follow-ups, projects, and memory items.
-2. Track what the user owes other people and what other people owe the user.
-3. Generate a meeting preparation summary from previous notes, open commitments, and relevant
-   project context.
-4. Add structured SQLite retrieval by person, project, status, recency, and durability.
-5. Add correction and supersession workflows for inaccurate memory.
 
 ### V5: Orchestration And Specialist Agents
 

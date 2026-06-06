@@ -13,10 +13,13 @@ from memocore.adapters.llm.base import (
 )
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
+    CommitmentRepository,
     EventLogRepository,
     FollowUpRepository,
+    MeetingRepository,
     MemoryItemRepository,
     NoteRepository,
+    PersonRepository,
     ProjectRepository,
     ReminderRepository,
     TaskRepository,
@@ -74,9 +77,12 @@ def repos(tmp_database):
         "tasks": TaskRepository(tmp_database),
         "reminders": ReminderRepository(tmp_database),
         "projects": ProjectRepository(tmp_database),
+        "people": PersonRepository(tmp_database),
+        "meetings": MeetingRepository(tmp_database),
         "memory": MemoryItemRepository(tmp_database),
         "events": EventLogRepository(tmp_database),
         "followups": FollowUpRepository(tmp_database),
+        "commitments": CommitmentRepository(tmp_database),
         "clarifications": ClarificationRequestRepository(tmp_database),
     }
 

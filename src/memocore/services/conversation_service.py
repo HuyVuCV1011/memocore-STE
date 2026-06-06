@@ -60,6 +60,14 @@ class ConversationService:
                 return "query_reminders"
             if command == "projects":
                 return "query_projects"
+            if command == "people":
+                return "query_people"
+            if command == "commitments":
+                return "query_commitments"
+            if command in {"person", "project", "context"}:
+                return "query_context"
+            if command == "prep":
+                return "query_meeting_prep"
             if command == "waiting":
                 return "query_tasks"
 
@@ -134,8 +142,12 @@ class ConversationService:
                         "query_memory",
                         "query_tasks",
                         "query_reminders",
-                        "query_projects",
-                        "casual_or_noop",
+            "query_projects",
+            "query_people",
+            "query_commitments",
+            "query_context",
+            "query_meeting_prep",
+            "casual_or_noop",
                         "clarification_answer",
                         "needs_clarification",
                     }
@@ -151,6 +163,10 @@ class ConversationService:
                         "query_tasks",
                         "query_reminders",
                         "query_projects",
+                        "query_people",
+                        "query_commitments",
+                        "query_context",
+                        "query_meeting_prep",
                         "casual_or_noop",
                         "clarification_answer",
                         "needs_clarification",
@@ -226,6 +242,26 @@ class ConversationService:
                     reply=await self.secretary_service.project_tasks(project_name),
                 )
             return ConversationResult(intent=intent, reply=await self.secretary_service.projects())
+        if intent == "query_people":
+            return ConversationResult(intent=intent, reply=await self.secretary_service.people())
+        if intent == "query_commitments":
+            return ConversationResult(intent=intent, reply=await self.secretary_service.commitments())
+        if intent == "query_context":
+            query = _extract_context_query(request.raw_text)
+            if not query:
+                return ConversationResult(
+                    intent=intent,
+                    reply="Bạn muốn xem context nào? Nói tên person hoặc project giúp mình nhé.",
+                )
+            return ConversationResult(intent=intent, reply=await self.secretary_service.context(query))
+        if intent == "query_meeting_prep":
+            query = _extract_context_query(request.raw_text)
+            if not query:
+                return ConversationResult(
+                    intent=intent,
+                    reply="Bạn muốn chuẩn bị meeting nào? Nói tên person hoặc project giúp mình nhé.",
+                )
+            return ConversationResult(intent=intent, reply=await self.secretary_service.meeting_prep(query))
         if intent == "query_memory":
             return ConversationResult(
                 intent=intent,
@@ -675,8 +711,7 @@ def _has_explicit_memory_signal(normalized: str) -> bool:
         for sig in (
             "ten la", "name is", "thich", "like", "birthday", "sinh nhat",
             "nho rang", "ghi nho rang", "remember that", "please remember that", "keep in mind that",
-            "vo toi", "chong toi", "con toi", "bo toi", "me toi", "my wife", "my husband",
-            "my son", "my daughter", "my father", "my mother", "sinh ngay", "born on"
+            "sinh ngay", "born on"
         )
     )
 
@@ -793,6 +828,14 @@ def classify_intent(raw_text: str) -> str:
         return "query_memory"
     if _is_project_query(normalized):
         return "query_projects"
+    if _is_people_query(normalized):
+        return "query_people"
+    if _is_commitment_query(normalized):
+        return "query_commitments"
+    if _is_meeting_prep_query(normalized):
+        return "query_meeting_prep"
+    if _is_context_query(normalized):
+        return "query_context"
     if _is_reminder_query(normalized):
         return "query_reminders"
     if _is_task_query(normalized):
@@ -928,6 +971,23 @@ def _extract_project_name(raw_text: str) -> str | None:
     return None
 
 
+def _extract_context_query(raw_text: str) -> str | None:
+    normalized = _normalize_text(raw_text)
+    if raw_text.startswith("/"):
+        query = raw_text.partition(" ")[2].strip()
+        return query or None
+    cleanup_patterns = (
+        r"\b(?:context|ngu canh|thong tin|xem context|cho toi context)\b",
+        r"\b(?:meeting prep|prep|chuan bi hop|chuan bi meeting|truoc khi hop)\b",
+        r"\b(?:voi|ve|cho|project|person|nguoi)\b",
+    )
+    query = normalized
+    for pattern in cleanup_patterns:
+        query = re.sub(pattern, " ", query)
+    query = " ".join(query.split())
+    return query or None
+
+
 def _memory_bucket(raw_text: str) -> str | None:
     normalized = _normalize_text(raw_text)
     if any(signal in normalized for signal in ("ban than", "profile", "about me", "ve toi")):
@@ -971,6 +1031,45 @@ def _is_project_query(normalized: str) -> bool:
     return "project" in normalized and any(
         signal in normalized
         for signal in ("con gi", "chua xong", "tasks", "viec", "dang mo", "open", "unfinished")
+    )
+
+
+def _is_people_query(normalized: str) -> bool:
+    return normalized in {"people", "persons", "danh sach nguoi", "nhung nguoi lien quan"} or (
+        any(signal in normalized for signal in ("people", "nguoi", "person"))
+        and any(signal in normalized for signal in ("danh sach", "list", "co ai", "lien quan"))
+    )
+
+
+def _is_commitment_query(normalized: str) -> bool:
+    return any(
+        signal in normalized
+        for signal in (
+            "commitments",
+            "cam ket",
+            "toi no ai",
+            "ai no toi",
+            "nguoi khac no toi",
+            "what do i owe",
+            "who owes me",
+        )
+    )
+
+
+def _is_context_query(normalized: str) -> bool:
+    return any(signal in normalized for signal in ("context", "ngu canh", "thong tin ve"))
+
+
+def _is_meeting_prep_query(normalized: str) -> bool:
+    return any(
+        signal in normalized
+        for signal in (
+            "meeting prep",
+            "prep meeting",
+            "chuan bi hop",
+            "chuan bi meeting",
+            "truoc khi hop",
+        )
     )
 
 

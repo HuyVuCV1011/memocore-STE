@@ -46,6 +46,21 @@ class Database:
             await conn.execute("ALTER TABLE reminders ADD COLUMN claimed_at TEXT")
         if "recurrence_rule" not in columns:
             await conn.execute("ALTER TABLE reminders ADD COLUMN recurrence_rule TEXT")
+        await self._ensure_column(conn, "tasks", "person_id", "TEXT REFERENCES people(id)")
+        await self._ensure_column(conn, "meetings", "person_id", "TEXT REFERENCES people(id)")
+        await self._ensure_column(conn, "memory_items", "person_id", "TEXT REFERENCES people(id)")
+
+    async def _ensure_column(
+        self,
+        conn: aiosqlite.Connection,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        rows = await (await conn.execute(f"PRAGMA table_info({table_name})")).fetchall()
+        columns = {row["name"] for row in rows}
+        if column_name not in columns:
+            await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     async def _apply_migrations(self, conn: aiosqlite.Connection) -> None:
         migration_dir = files("memocore.adapters.storage").joinpath("migrations/sqlite")
@@ -132,6 +147,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority TEXT NOT NULL,
     due_at TEXT,
     project_id TEXT REFERENCES projects(id),
+    person_id TEXT REFERENCES people(id),
     source_note_id TEXT NOT NULL REFERENCES notes(id),
     confidence REAL NOT NULL,
     created_at TEXT NOT NULL,
@@ -170,6 +186,7 @@ CREATE TABLE IF NOT EXISTS meetings (
     starts_at TEXT,
     ends_at TEXT,
     project_id TEXT REFERENCES projects(id),
+    person_id TEXT REFERENCES people(id),
     source_note_id TEXT NOT NULL REFERENCES notes(id),
     notes TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -189,6 +206,28 @@ CREATE TABLE IF NOT EXISTS followups (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS commitments (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    status TEXT NOT NULL,
+    person_id TEXT REFERENCES people(id),
+    project_id TEXT REFERENCES projects(id),
+    due_at TEXT,
+    source_note_id TEXT REFERENCES notes(id),
+    notes TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meeting_people (
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, person_id)
+);
+
 CREATE TABLE IF NOT EXISTS memory_items (
     id TEXT PRIMARY KEY,
     bucket TEXT NOT NULL,
@@ -196,6 +235,7 @@ CREATE TABLE IF NOT EXISTS memory_items (
     content TEXT NOT NULL,
     source_note_id TEXT NOT NULL REFERENCES notes(id),
     project_id TEXT REFERENCES projects(id),
+    person_id TEXT REFERENCES people(id),
     confidence REAL NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -218,6 +258,11 @@ CREATE INDEX IF NOT EXISTS idx_reminders_source_note_id ON reminders(source_note
 CREATE INDEX IF NOT EXISTS idx_memory_items_bucket ON memory_items(bucket);
 CREATE INDEX IF NOT EXISTS idx_event_logs_entity ON event_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_followups_status_due ON followups(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_person ON tasks(person_id);
+CREATE INDEX IF NOT EXISTS idx_meetings_person ON meetings(person_id);
+CREATE INDEX IF NOT EXISTS idx_memory_items_person ON memory_items(person_id);
+CREATE INDEX IF NOT EXISTS idx_commitments_person_status ON commitments(person_id, status);
+CREATE INDEX IF NOT EXISTS idx_commitments_project_status ON commitments(project_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_source_message
 ON notes(source, source_chat_id, source_message_id)
 WHERE source_message_id IS NOT NULL;

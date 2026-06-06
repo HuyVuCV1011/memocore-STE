@@ -13,8 +13,8 @@ approval boundaries.
 | V1 | Delivered | Capture and memory foundation |
 | V2 | Delivered | Conversational secretary |
 | V3 | Delivered | Daily and recurring secretary |
-| V4 | Next | People, projects, and meetings |
-| V5 | Future | Orchestration and specialist workers |
+| V4 | Delivered | People, projects, and meetings |
+| V5 | Next | Orchestration and specialist workers |
 | V6 | Future | Knowledge system and productization |
 | V7 | Future | Controlled autonomy |
 
@@ -66,6 +66,12 @@ V4 deepens operational context:
 - Meeting preparation summaries from previous notes, open commitments, and project context.
 - Project snapshots, decision logs, and retrieval by person, project, status, recency, and
   durability.
+
+Delivered V4 scope includes people aliases, linked person/project ids on operational records,
+commitments with direction, meeting participant links, `/people`, `/commitments`, `/person`,
+`/project`, `/context`, and `/prep` secretary views, and structured SQLite retrieval for meeting
+preparation. Bulk personal-context import remains review-gated and separate from live database
+writes.
 
 ## V5: Orchestration And Specialist Workers
 

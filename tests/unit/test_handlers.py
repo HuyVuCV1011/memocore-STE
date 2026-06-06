@@ -120,6 +120,12 @@ async def test_secretary_handler_accepts_todays_alias(monkeypatch):
         async def weekly_review(self) -> str:
             return "weekly view"
 
+        async def people(self) -> str:
+            return "people view"
+
+        async def commitments(self) -> str:
+            return "commitments view"
+
     update_dict = deepcopy(COMMAND_UPDATE)
     update_dict["message"]["text"] = "/todays"
     update_dict["message"]["entities"] = [{"offset": 0, "length": 7, "type": "bot_command"}]
@@ -163,6 +169,12 @@ async def test_secretary_handler_accepts_briefing_command(monkeypatch):
         async def weekly_review(self) -> str:
             return "weekly view"
 
+        async def people(self) -> str:
+            return "people view"
+
+        async def commitments(self) -> str:
+            return "commitments view"
+
     update_dict = deepcopy(COMMAND_UPDATE)
     update_dict["message"]["text"] = "/briefing"
     update_dict["message"]["entities"] = [{"offset": 0, "length": 9, "type": "bot_command"}]
@@ -174,6 +186,30 @@ async def test_secretary_handler_accepts_briefing_command(monkeypatch):
 
     send_message.assert_awaited_once()
     assert send_message.await_args.kwargs["text"] == "briefing view"
+
+
+async def test_secretary_handler_accepts_v4_prep_command_with_query(monkeypatch):
+    class FakeSecretary:
+        async def people(self) -> str:
+            return "people view"
+
+        async def commitments(self) -> str:
+            return "commitments view"
+
+        async def meeting_prep(self, query: str) -> str:
+            return f"prep view {query}"
+
+    update_dict = deepcopy(COMMAND_UPDATE)
+    update_dict["message"]["text"] = "/prep Alex"
+    update_dict["message"]["entities"] = [{"offset": 0, "length": 5, "type": "bot_command"}]
+    update = build_real_update(update_dict)
+    context = build_context({"secretary_service": FakeSecretary()})
+    send_message = patch_send_message(monkeypatch, update)
+
+    await secretary_handler(update, context)
+
+    send_message.assert_awaited_once()
+    assert send_message.await_args.kwargs["text"] == "prep view Alex"
 
 
 async def test_start_handler_reply(monkeypatch):

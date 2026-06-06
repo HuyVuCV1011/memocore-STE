@@ -22,7 +22,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if update.message:
         await _safe_reply_text(
             update,
-            "MemoCore is ready. Send a note or use /today, /tomorrow, /tasks, /reminders, /waiting, /projects, /memory, /briefing, or /weekly."
+            "MemoCore is ready. Send a note or use /today, /tomorrow, /tasks, /reminders, /waiting, /projects, /memory, /briefing, /weekly, /people, /commitments, /person, /project, /context, or /prep."
         )
 
 
@@ -33,6 +33,28 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not command:
         return
     service: SecretaryService = context.application.bot_data["secretary_service"]
+    if command in {"person", "context", "prep", "project"}:
+        query = update.message.text.partition(" ")[2].strip() if update.message.text else ""
+        if not query:
+            prompts = {
+                "person": "Bạn muốn xem person nào? Dùng /person <tên>.",
+                "project": "Bạn muốn xem project nào? Dùng /project <tên>.",
+                "context": "Bạn muốn xem context nào? Dùng /context <person hoặc project>.",
+                "prep": "Bạn muốn chuẩn bị meeting nào? Dùng /prep <person hoặc project>.",
+            }
+            await _safe_reply_text(update, prompts[command])
+            return
+        if command == "person":
+            await _safe_reply_text(update, await service.person_context(query))
+            return
+        if command == "project":
+            await _safe_reply_text(update, await service.project_context(query))
+            return
+        if command == "context":
+            await _safe_reply_text(update, await service.context(query))
+            return
+        await _safe_reply_text(update, await service.meeting_prep(query))
+        return
     actions = {
         "today": service.today,
         "todays": service.today,
@@ -44,6 +66,8 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "memory": service.memories,
         "briefing": service.daily_briefing,
         "weekly": service.weekly_review,
+        "people": service.people,
+        "commitments": service.commitments,
     }
     action = actions.get(command)
     if action is None:
@@ -122,6 +146,12 @@ def register_handlers(
         "memory",
         "briefing",
         "weekly",
+        "people",
+        "person",
+        "project",
+        "commitments",
+        "context",
+        "prep",
     ):
         app.add_handler(CommandHandler(command, secretary_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))

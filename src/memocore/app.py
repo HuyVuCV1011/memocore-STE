@@ -11,6 +11,7 @@ from telegram.ext import Application
 from memocore.adapters.llm.provider_factory import create_provider_with_fallback
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
+    CommitmentRepository,
     EventLogRepository,
     FollowUpRepository,
     MeetingRepository,
@@ -52,11 +53,12 @@ async def create_app(settings: Settings | None = None) -> Application:
     reminder_repo = ReminderRepository(database)
     clarification_repo = ClarificationRequestRepository(database)
     project_repo = ProjectRepository(database)
-    PersonRepository(database)
+    person_repo = PersonRepository(database)
     meeting_repo = MeetingRepository(database)
     followup_repo = FollowUpRepository(database)
     memory_repo = MemoryItemRepository(database)
     event_repo = EventLogRepository(database)
+    commitment_repo = CommitmentRepository(database)
 
     event_service = EventService(event_repo)
     provider = create_provider_with_fallback(settings.model, settings.fallback)
@@ -90,6 +92,8 @@ async def create_app(settings: Settings | None = None) -> Application:
         memory_repo,
         display_timezone=ZoneInfo(settings.user_timezone),
         meeting_repo=meeting_repo,
+        person_repo=person_repo,
+        commitment_repo=commitment_repo,
     )
     conversation_service = ConversationService(
         capture_service,

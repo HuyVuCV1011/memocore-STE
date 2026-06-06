@@ -36,9 +36,10 @@ backend.
 | --- | --- |
 | Raw-note capture | Immutable raw notes with Telegram source idempotency. |
 | Conversation routing | Deterministic and model-assisted routing for capture, query, correction, clarification, and casual messages. |
-| Work extraction | Tasks, reminders, projects, people, meetings, follow-ups, memory candidates, and event logs. |
-| Secretary queries | `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`, `/projects`, and `/memory`. |
+| Work and context state | Tasks, reminders, projects, people, meetings, follow-ups, commitments, memory candidates, and event logs. |
+| Secretary queries | `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`, `/projects`, `/memory`, `/briefing`, `/weekly`, `/people`, `/commitments`, `/person`, `/project`, `/context`, and `/prep`. |
 | Memory lifecycle | Candidate, active, rejected, superseded, and delete/forget flows. |
+| V4 context retrieval | Person/project context, linked commitments, meeting preparation summaries, and SQLite retrieval by linked entities. |
 | Reliability | Schema validation, provider fallback, transactional derived writes, and audit events. |
 | Time handling | Python-resolved relative dates for prompts and agenda views. |
 | Reminder delivery | Leased reminder dispatch to avoid immediate duplicate sends. |
@@ -51,7 +52,8 @@ backend.
 | V1 | Delivered | Capture, extraction, SQLite storage, reminders, provider reliability, and memory hygiene. |
 | V2 | Delivered | Conversational secretary routing, natural-language SQLite queries, clarification, and safer corrections. |
 | V3 | Delivered | Daily briefings, recurring daily/weekly reminders, stale-loop nudges, quiet hours, and weekly reviews. |
-| V4 | Next | People, projects, meetings, linked commitments, and structured retrieval. |
+| V4 | Delivered | People, projects, meetings, linked commitments, meeting prep, and structured retrieval. |
+| V5 | Next | Bounded orchestration and specialist workers with approval boundaries. |
 
 V3 intentionally defers a few deeper behaviors to V4/V5 unless they become painful sooner:
 
@@ -60,6 +62,16 @@ V3 intentionally defers a few deeper behaviors to V4/V5 unless they become painf
 | Interval recurrence | Daily and weekly recurrence are supported. Rules like "every 2 days" or "every 3 weeks" are deferred. |
 | Nudge bundling | Quiet hours and cooldown exist. Bundling many low-priority nudges into one digest is deferred. |
 | Feedback signals | Correction feedback exists. Explicit accepted, edited, ignored, and rejected suggestion signals are deferred. |
+
+V4 adds linked operational context without importing private data automatically:
+
+| V4 capability | Current state |
+| --- | --- |
+| People and aliases | Stored in SQLite and retrievable through `/people` and `/person <name>`. |
+| Commitments | Tracks `user_owes`, `owed_to_user`, and `mutual` commitments by person/project. |
+| Meeting preparation | `/prep <person or project>` summarizes linked commitments, tasks, follow-ups, meetings, and memory. |
+| Linked retrieval | Tasks, meetings, follow-ups, commitments, and memory can be retrieved by person or project id. |
+| Personal context import | Still review-gated; large private context files should produce Markdown/import plans before any database write. |
 
 ## Quick Start
 
