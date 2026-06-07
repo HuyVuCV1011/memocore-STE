@@ -54,6 +54,16 @@ data/
 logs/
 *.jsonl
 
+# Private MemoCore profile/review artifacts
+personal_profile_review/
+personal_profile_review/**
+*personal_profile_seed*.md
+*personal_profile_review*.md
+*conversation_history*.md
+*memocore_import*_report.md
+*memocore_import_plan*.md
+*memocore_import_plan*.json
+
 # Editor and OS files
 .DS_Store
 Thumbs.db
