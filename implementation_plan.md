@@ -99,6 +99,11 @@ Delivered foundations:
   and memory.
 - V4 intent routing for people, commitments, context, and meeting-prep queries without turning
   them into captured notes.
+- Structured capture ingestion for explicitly named people, meetings, follow-ups, and directional
+  commitments, with safe person/project linking.
+- Ambiguous or low-confidence V4 operational candidates are skipped with audit warnings instead
+  of silently mutating durable state.
+- Failed transactional derived writes can be retried using the same source message id.
 
 Deferred from V4:
 
@@ -110,11 +115,17 @@ Deferred from V4:
 
 ### V5: Orchestration And Specialist Agents
 
-1. Add a supervisor layer for bounded delegation to specialist workers.
-2. Define worker roles for coding, research, drafting, document, and browsing tasks.
-3. Add structured handoff payloads, execution logs, retries, timeouts, fallback, and verification.
+V5 is delivered incrementally. The first `0.5.0` milestone proves the audited execution boundary
+with one read-only workflow before specialist workers are introduced.
+
+1. Add typed harness runs, registered tools, tool calls, execution policy, and append-only events.
+2. Add SQLite persistence, validation, timeout, failure, fallback, and audit coverage.
+3. Integrate one read-only calendar tool into meeting preparation.
 4. Keep durable memory ownership centralized in the main assistant.
-5. Require approval boundaries for high-impact or external actions.
+5. Add specialist worker roles only after the read-only harness acceptance gates pass.
+6. Require approval boundaries before any high-impact or external write action.
+
+See `docs/version-0.5-readiness.md` for the verified baseline and release gates.
 
 ### V6: Knowledge System And Productization
 

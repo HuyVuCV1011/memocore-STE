@@ -78,3 +78,7 @@ temp/
 coverage.xml
 *.bak
 *.tmp
+
+# Local agent orchestration
+.opencode/
+docs/opencode-workflow.md

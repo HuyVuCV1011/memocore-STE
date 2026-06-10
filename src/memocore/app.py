@@ -83,6 +83,10 @@ async def create_app(settings: Settings | None = None) -> Application:
         reminder_service,
         event_service,
         clarification_service,
+        person_repo,
+        meeting_repo,
+        followup_repo,
+        commitment_repo,
     )
     secretary_service = SecretaryService(
         task_repo,

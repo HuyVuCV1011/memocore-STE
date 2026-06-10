@@ -70,8 +70,9 @@ V4 deepens operational context:
 Delivered V4 scope includes people aliases, linked person/project ids on operational records,
 commitments with direction, meeting participant links, `/people`, `/commitments`, `/person`,
 `/project`, `/context`, and `/prep` secretary views, and structured SQLite retrieval for meeting
-preparation. Bulk personal-context import remains review-gated and separate from live database
-writes.
+preparation. Capture also ingests explicitly evidenced people, meetings, follow-ups, and
+directional commitments while skipping ambiguous durable writes. Bulk personal-context import
+remains review-gated and separate from live database writes.
 
 ## V5: Orchestration And Specialist Workers
 

@@ -102,6 +102,7 @@ class EventType(StrEnum):
     REMINDER_FAILED = "reminder_failed"
     MEMORY_CANDIDATE_CREATED = "memory_candidate_created"
     PROJECT_SEEN = "project_seen"
+    PERSON_CREATED = "person_created"
     MODEL_OUTPUT_INVALID = "model_output_invalid"
     EXTRACTION_LIKELY_INCOMPLETE = "extraction_likely_incomplete"
     FOLLOWUP_CREATED = "followup_created"

@@ -859,7 +859,11 @@ def format_capture_response(response: CaptureResponse) -> str:
         f"{response.tasks_created} task(s) | "
         f"{response.tasks_completed} completed | "
         f"{response.reminders_created} reminder(s) | "
-        f"{response.memories_created} memory item(s)"
+        f"{response.memories_created} memory item(s) | "
+        f"{response.people_created} people | "
+        f"{response.meetings_created} meeting(s) | "
+        f"{response.followups_created} follow-up(s) | "
+        f"{response.commitments_created} commitment(s)"
     )
     if response.memories_deleted:
         text += f" | {response.memories_deleted} memory deleted"

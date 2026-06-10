@@ -33,6 +33,24 @@ def _conversation_service(capture_service, repos, classifier=None) -> Conversati
     )
 
 
+def test_classifies_unaccented_vietnamese_queries():
+    assert classify_intent("hom nay toi can lam gi") == "query_today"
+    assert classify_intent("hom nay can lam gi") == "query_today"
+    assert classify_intent("ngay mai toi can lam gi") == "query_tomorrow"
+    assert classify_intent("toi da luu gi ve ban than") == "query_memory"
+    assert classify_intent("in ra cac ghi nho ve toi") == "query_memory"
+    assert classify_intent("task nao dang mo") == "query_tasks"
+    assert classify_intent("con gi chua xong") == "query_tasks"
+    assert classify_intent("danh sach nguoi") == "query_people"
+    assert classify_intent("toi no ai") == "query_commitments"
+    assert classify_intent("project memocore con gi chua xong") == "query_projects"
+    assert classify_intent("nhac nho chua lam") == "query_reminders"
+    assert classify_intent("ngu canh ve du an memocore") == "query_context"
+    assert classify_intent("chuan bi hop voi lan") == "query_meeting_prep"
+    assert classify_intent("ban co khoe khong") == "casual_or_noop"
+    assert classify_intent("hom nay troi nhu the nao") == "casual_or_noop"
+
+
 def test_classifies_vietnamese_and_english_examples():
     assert classify_intent("hôm nay tôi cần làm gì") == "query_today"
     assert classify_intent("mai tôi cần làm gì") == "query_tomorrow"

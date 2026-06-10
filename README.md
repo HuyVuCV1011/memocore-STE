@@ -67,8 +67,9 @@ V4 adds linked operational context without importing private data automatically:
 
 | V4 capability | Current state |
 | --- | --- |
-| People and aliases | Stored in SQLite and retrievable through `/people` and `/person <name>`. |
-| Commitments | Tracks `user_owes`, `owed_to_user`, and `mutual` commitments by person/project. |
+| People and aliases | Extracted from explicit named-person evidence, stored in SQLite, and retrievable through `/people` and `/person <name>`. |
+| Operational ingestion | Meetings, follow-ups, and directional commitments are extracted and linked when confidence and entity references are safe. |
+| Commitments | Tracks `user_owes`, `owed_to_user`, and `mutual` commitments by person/project without guessing an unclear direction. |
 | Meeting preparation | `/prep <person or project>` summarizes linked commitments, tasks, follow-ups, meetings, and memory. |
 | Linked retrieval | Tasks, meetings, follow-ups, commitments, and memory can be retrieved by person or project id. |
 | Personal context import | Still review-gated; large private context files should produce Markdown/import plans before any database write. |
@@ -217,6 +218,7 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | [Implementation Plan](implementation_plan.md) | Delivered V1/V2 scope and next-version plan. |
 | [Roadmap](docs/personal-assistant-version-roadmap.md) | Product version roadmap from V1 through controlled autonomy. |
 | [Agent Harness Direction](docs/agent-harness.md) | Future audited tool-use and approval boundary. |
+| [0.5.0 Readiness](docs/version-0.5-readiness.md) | Verified capability audit, release scope, risks, and acceptance gates. |
 | [Storage Migrations](docs/storage/README.md) | SQLite runtime and PostgreSQL/pgvector blueprint status. |
 | [V2 Manual Tests](docs/v2-manual-test-cases.md) | Telegram messages for conversational secretary verification. |
 

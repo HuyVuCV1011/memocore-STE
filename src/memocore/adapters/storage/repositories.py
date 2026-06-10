@@ -548,6 +548,13 @@ class MeetingRepository(BaseRepository):
         ).fetchall()
         return [_meeting_from_row(row) for row in rows]
 
+    async def list_by_note(self, note_id: str) -> list[Meeting]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute("SELECT * FROM meetings WHERE source_note_id = ?", (note_id,))
+        ).fetchall()
+        return [_meeting_from_row(row) for row in rows]
+
     async def list_by_person(self, person_id: str, limit: int = 10) -> list[Meeting]:
         conn = await self.database.connection()
         rows = await (
@@ -598,6 +605,13 @@ class FollowUpRepository(BaseRepository):
                 "SELECT * FROM followups WHERE status = ? ORDER BY due_at IS NULL, due_at, created_at",
                 (FollowUpStatus.OPEN.value,),
             )
+        ).fetchall()
+        return [_followup_from_row(row) for row in rows]
+
+    async def list_by_note(self, note_id: str) -> list[FollowUp]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute("SELECT * FROM followups WHERE source_note_id = ?", (note_id,))
         ).fetchall()
         return [_followup_from_row(row) for row in rows]
 
@@ -673,6 +687,13 @@ class CommitmentRepository(BaseRepository):
                 """,
                 (CommitmentStatus.OPEN.value,),
             )
+        ).fetchall()
+        return [_commitment_from_row(row) for row in rows]
+
+    async def list_by_note(self, note_id: str) -> list[Commitment]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute("SELECT * FROM commitments WHERE source_note_id = ?", (note_id,))
         ).fetchall()
         return [_commitment_from_row(row) for row in rows]
 

@@ -106,4 +106,8 @@ def capture_service(repos, fake_provider):
         reminder_service,
         event_service,
         clarification_service,
+        repos["people"],
+        repos["meetings"],
+        repos["followups"],
+        repos["commitments"],
     )

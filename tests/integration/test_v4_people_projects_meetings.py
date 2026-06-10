@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from memocore.domain.models import (
     Commitment,
     CommitmentDirection,
@@ -12,12 +14,14 @@ from memocore.domain.models import (
     MemoryKind,
     MemoryStatus,
     Note,
+    NoteStatus,
     Person,
     Task,
 )
 from memocore.domain.schemas import CaptureRequest
 from memocore.services.conversation_service import ConversationService, classify_intent
 from memocore.services.secretary_service import SecretaryService
+from tests.fixtures.extraction_responses import V4_NATURAL_CAPTURE
 
 
 def _secretary(repos) -> SecretaryService:
@@ -193,3 +197,223 @@ async def test_v44_conversation_routes_meeting_prep_without_capture(capture_serv
     assert "Meeting prep với Alex" in result.reply
     assert "Alex owes review notes" in result.reply
     assert fake_provider.calls == []
+
+
+async def test_v45_natural_capture_persists_v4_entities_and_retrieves_context(
+    capture_service, fake_provider, repos
+):
+    fake_provider.response = V4_NATURAL_CAPTURE
+
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text="Alex Nguyen is the MindX reviewer. Meet Alex Nguyen for MindX review on 2099-06-02. Alex Nguyen owes MindX feedback.",
+            source_chat_id="9001",
+            source_message_id="v45",
+        )
+    )
+
+    people = await repos["people"].list_all()
+    tasks = await repos["tasks"].list_by_note(response.note_id)
+    meetings = await repos["meetings"].list_by_note(response.note_id)
+    followups = await repos["followups"].list_by_note(response.note_id)
+    commitments = await repos["commitments"].list_by_note(response.note_id)
+    memories = await repos["memory"].list_by_note(response.note_id)
+    context = await _secretary(repos).person_context("Alex")
+
+    assert len(people) == 1
+    assert response.people_created == 1
+    assert response.meetings_created == 1
+    assert response.followups_created == 1
+    assert response.commitments_created == 1
+    assert tasks[0].person_id == people[0].id
+    assert meetings[0].person_id == people[0].id
+    assert followups[0].person_id == people[0].id
+    assert commitments[0].person_id == people[0].id
+    assert memories[0].person_id == people[0].id
+    assert "Alex Nguyen owes MindX feedback" in context
+    assert "MindX review with Alex Nguyen" in context
+
+    duplicate = await capture_service.capture(
+        CaptureRequest(
+            raw_text="duplicate",
+            source_chat_id="9001",
+            source_message_id="v45",
+        )
+    )
+    assert duplicate.duplicate is True
+    assert len(await repos["people"].list_all()) == 1
+    assert len(await repos["meetings"].list_by_note(response.note_id)) == 1
+
+
+async def test_v46_ambiguous_person_candidate_is_not_persisted_or_linked(
+    capture_service, fake_provider, repos
+):
+    extraction = V4_NATURAL_CAPTURE.model_copy(deep=True)
+    extraction.people[0].display_name = "client"
+    extraction.people[0].aliases = []
+    extraction.tasks[0].person_name = "client"
+    extraction.meetings[0].person_names = ["client"]
+    extraction.followups[0].person_name = "client"
+    extraction.commitments[0].person_name = "client"
+    extraction.memories[0].person_name = "client"
+    fake_provider.response = extraction
+
+    response = await capture_service.capture(
+        CaptureRequest(raw_text="The client mentioned MindX follow-up and feedback.")
+    )
+
+    assert await repos["people"].list_all() == []
+    assert (await repos["tasks"].list_by_note(response.note_id))[0].person_id is None
+    assert await repos["meetings"].list_by_note(response.note_id) == []
+    assert await repos["followups"].list_by_note(response.note_id) == []
+    assert await repos["commitments"].list_by_note(response.note_id) == []
+    assert (await repos["memory"].list_by_note(response.note_id))[0].person_id is None
+    assert response.meetings_created == 0
+    assert response.followups_created == 0
+    assert response.commitments_created == 0
+    events = await repos["events"].list_by_entity("note", response.note_id)
+    warning_events = [
+        event for event in events if event.event_type.value == "extraction_likely_incomplete"
+    ]
+    assert warning_events
+
+
+async def test_v47_explicit_person_candidate_uses_exact_match_not_substring(
+    capture_service, fake_provider, repos
+):
+    existing = await repos["people"].create(Person(display_name="Alex"))
+    extraction = V4_NATURAL_CAPTURE.model_copy(deep=True)
+    extraction.people[0].display_name = "Alexandra"
+    extraction.people[0].aliases = []
+    extraction.tasks[0].person_name = "Alexandra"
+    extraction.meetings[0].person_names = ["Alexandra"]
+    extraction.followups[0].person_name = "Alexandra"
+    extraction.commitments[0].person_name = "Alexandra"
+    extraction.memories[0].person_name = "Alexandra"
+    fake_provider.response = extraction
+
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text="Alexandra is the MindX reviewer and owes feedback.",
+            source_chat_id="9001",
+            source_message_id="v47",
+        )
+    )
+
+    people = await repos["people"].list_all()
+    alexandra = next(person for person in people if person.display_name == "Alexandra")
+    assert {person.display_name for person in people} == {"Alex", "Alexandra"}
+    assert alexandra.id != existing.id
+    assert (await repos["tasks"].list_by_note(response.note_id))[0].person_id == alexandra.id
+    assert (await repos["meetings"].list_by_note(response.note_id))[0].person_id == alexandra.id
+    assert (await repos["followups"].list_by_note(response.note_id))[0].person_id == alexandra.id
+    assert (await repos["commitments"].list_by_note(response.note_id))[0].person_id == alexandra.id
+    assert (await repos["memory"].list_by_note(response.note_id))[0].person_id == alexandra.id
+
+
+async def test_v48_v4_entities_without_project_name_do_not_inherit_explicit_project(
+    capture_service, fake_provider, repos
+):
+    extraction = V4_NATURAL_CAPTURE.model_copy(deep=True)
+    extraction.meetings[0].project_name = None
+    extraction.followups[0].project_name = None
+    extraction.commitments[0].project_name = None
+    fake_provider.response = extraction
+
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text="Alex Nguyen is the reviewer for MindX. Meet Alex Nguyen and ask for feedback.",
+            source_chat_id="9001",
+            source_message_id="v48",
+        )
+    )
+
+    assert (await repos["tasks"].list_by_note(response.note_id))[0].project_id is not None
+    assert (await repos["memory"].list_by_note(response.note_id))[0].project_id is not None
+    assert (await repos["meetings"].list_by_note(response.note_id))[0].project_id is None
+    assert (await repos["followups"].list_by_note(response.note_id))[0].project_id is None
+    assert (await repos["commitments"].list_by_note(response.note_id))[0].project_id is None
+
+
+async def test_v49_commitment_without_direction_is_not_persisted(
+    capture_service, fake_provider, repos
+):
+    extraction = V4_NATURAL_CAPTURE.model_copy(deep=True)
+    extraction.commitments[0].direction = None
+    fake_provider.response = extraction
+
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text="Alex Nguyen mentioned an unclear MindX obligation.",
+            source_chat_id="9001",
+            source_message_id="v49",
+        )
+    )
+
+    assert await repos["commitments"].list_by_note(response.note_id) == []
+    assert response.commitments_created == 0
+
+
+async def test_v410_vague_alias_does_not_link_entities(
+    capture_service, fake_provider, repos
+):
+    extraction = V4_NATURAL_CAPTURE.model_copy(deep=True)
+    extraction.people[0].aliases = ["client"]
+    extraction.meetings[0].person_names = ["client"]
+    extraction.followups[0].person_name = "client"
+    extraction.commitments[0].person_name = "client"
+    fake_provider.response = extraction
+
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text="Alex Nguyen is the client for MindX. The client owes feedback.",
+            source_chat_id="9001",
+            source_message_id="v410",
+        )
+    )
+
+    person = (await repos["people"].list_all())[0]
+    assert person.aliases == []
+    assert await repos["meetings"].list_by_note(response.note_id) == []
+    assert await repos["followups"].list_by_note(response.note_id) == []
+    assert await repos["commitments"].list_by_note(response.note_id) == []
+
+
+async def test_v411_failed_v4_persistence_rolls_back_and_same_message_can_retry(
+    capture_service, fake_provider, repos, monkeypatch
+):
+    fake_provider.response = V4_NATURAL_CAPTURE
+    original_create = repos["followups"].create
+    attempts = 0
+
+    async def fail_once(followup):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("injected follow-up failure")
+        return await original_create(followup)
+
+    monkeypatch.setattr(repos["followups"], "create", fail_once)
+    request = CaptureRequest(
+        raw_text="Alex Nguyen is the MindX reviewer and owes feedback.",
+        source_chat_id="9001",
+        source_message_id="v411",
+    )
+
+    with pytest.raises(RuntimeError, match="injected follow-up failure"):
+        await capture_service.capture(request)
+
+    failed_note = await repos["notes"].find_by_source_message("telegram", "9001", "v411")
+    assert failed_note is not None
+    assert failed_note.status == NoteStatus.FAILED
+    assert await repos["people"].list_all() == []
+    assert await repos["tasks"].list_by_note(failed_note.id) == []
+    assert await repos["meetings"].list_by_note(failed_note.id) == []
+
+    retry = await capture_service.capture(request)
+
+    assert retry.duplicate is False
+    assert retry.people_created == 1
+    assert retry.meetings_created == 1
+    assert retry.followups_created == 1
+    assert retry.commitments_created == 1

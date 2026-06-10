@@ -56,10 +56,16 @@ def test_format_capture_response_success():
         tasks_created=1,
         reminders_created=1,
         memories_created=0,
+        people_created=1,
+        meetings_created=1,
+        followups_created=1,
+        commitments_created=1,
     )
 
     assert "Saved" in format_capture_response(response)
     assert "1 task(s)" in format_capture_response(response)
+    assert "1 meeting(s)" in format_capture_response(response)
+    assert "1 commitment(s)" in format_capture_response(response)
 
 
 def test_format_capture_response_error():

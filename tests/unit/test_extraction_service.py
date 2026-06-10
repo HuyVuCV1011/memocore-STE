@@ -1,3 +1,6 @@
+import json
+
+from memocore.domain.schemas import CommitmentCandidate
 from memocore.services.task_extraction_service import ExtractionService
 from tests.conftest import FakeProvider
 from tests.fixtures.extraction_responses import NO_ACTION, PROFILE_MEMORY, TASK_AND_REMINDER
@@ -28,3 +31,23 @@ async def test_no_action_fixture():
 
     assert result.summary
     assert result.tasks == []
+
+
+def test_old_payload_without_v4_keys_remains_compatible():
+    service = ExtractionService(FakeProvider(NO_ACTION))
+
+    result = service._validate(
+        json.dumps({"summary": "old", "tags": [], "tasks": [], "reminders": [], "projects": [], "memories": []})
+    )
+
+    assert result.summary == "old"
+    assert result.people == []
+    assert result.meetings == []
+    assert result.followups == []
+    assert result.commitments == []
+
+
+def test_commitment_direction_is_not_guessed_when_missing():
+    candidate = CommitmentCandidate(title="Unclear obligation")
+
+    assert candidate.direction is None

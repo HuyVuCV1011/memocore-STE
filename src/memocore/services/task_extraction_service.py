@@ -91,7 +91,17 @@ class ExtractionService:
 def _coerce_extraction(decoded: Any) -> Any:
     if not isinstance(decoded, dict):
         return decoded
-    for key in ("tags", "tasks", "reminders", "projects", "memories"):
+    for key in (
+        "tags",
+        "tasks",
+        "reminders",
+        "projects",
+        "memories",
+        "people",
+        "meetings",
+        "followups",
+        "commitments",
+    ):
         value = decoded.get(key)
         if value is None:
             decoded[key] = []
@@ -100,6 +110,12 @@ def _coerce_extraction(decoded: Any) -> Any:
     for task in decoded.get("tasks", []):
         if isinstance(task, dict) and "priority" in task and not isinstance(task["priority"], str):
             task["priority"] = str(task["priority"])
+    for person in decoded.get("people", []):
+        if isinstance(person, dict) and isinstance(person.get("aliases"), str):
+            person["aliases"] = [person["aliases"]]
+    for meeting in decoded.get("meetings", []):
+        if isinstance(meeting, dict) and isinstance(meeting.get("person_names"), str):
+            meeting["person_names"] = [meeting["person_names"]]
     return decoded
 
 

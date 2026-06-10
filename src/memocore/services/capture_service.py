@@ -6,12 +6,29 @@ import unicodedata
 
 from memocore.adapters.llm.base import ExtractionError
 from memocore.adapters.storage.repositories import (
+    CommitmentRepository,
+    FollowUpRepository,
+    MeetingRepository,
     NoteRepository,
+    PersonRepository,
     ProjectRepository,
     TaskRepository,
+    normalize_lookup,
     parse_model_datetime,
 )
-from memocore.domain.models import EventType, Note, NoteStatus, Reminder, Task, TaskStatus
+from memocore.domain.models import (
+    Commitment,
+    CommitmentDirection,
+    EventType,
+    FollowUp,
+    Meeting,
+    Note,
+    NoteStatus,
+    Person,
+    Reminder,
+    Task,
+    TaskStatus,
+)
 from memocore.domain.schemas import CaptureRequest, CaptureResponse
 from memocore.services.event_service import EventService
 from memocore.services.clarification_service import ClarificationService
@@ -31,6 +48,10 @@ class CaptureService:
         reminder_service: ReminderService,
         event_service: EventService,
         clarification_service: ClarificationService | None = None,
+        person_repo: PersonRepository | None = None,
+        meeting_repo: MeetingRepository | None = None,
+        followup_repo: FollowUpRepository | None = None,
+        commitment_repo: CommitmentRepository | None = None,
     ):
         self.note_repo = note_repo
         self.task_repo = task_repo
@@ -40,32 +61,47 @@ class CaptureService:
         self.reminder_service = reminder_service
         self.event_service = event_service
         self.clarification_service = clarification_service
+        self.person_repo = person_repo
+        self.meeting_repo = meeting_repo
+        self.followup_repo = followup_repo
+        self.commitment_repo = commitment_repo
 
     async def capture(self, request: CaptureRequest) -> CaptureResponse:
         existing = await self.note_repo.find_by_source_message(
             request.source, request.source_chat_id, request.source_message_id
         )
-        if existing:
+        if existing and existing.status != NoteStatus.FAILED:
             tasks = await self.task_repo.list_by_note(existing.id)
             reminders = await self.reminder_service.reminder_repo.list_by_note(existing.id)
             memories = await self.memory_service.memory_repo.list_by_note(existing.id)
+            meetings = await self.meeting_repo.list_by_note(existing.id) if self.meeting_repo else []
+            followups = await self.followup_repo.list_by_note(existing.id) if self.followup_repo else []
+            commitments = (
+                await self.commitment_repo.list_by_note(existing.id) if self.commitment_repo else []
+            )
             return CaptureResponse(
                 note_id=existing.id,
                 summary=existing.summary or "Already captured.",
                 tasks_created=len(tasks),
                 reminders_created=len(reminders),
                 memories_created=len(memories),
+                meetings_created=len(meetings),
+                followups_created=len(followups),
+                commitments_created=len(commitments),
                 duplicate=True,
             )
 
-        note = Note(
-            source=request.source,
-            source_message_id=request.source_message_id,
-            source_chat_id=request.source_chat_id,
-            raw_text=request.raw_text,
-        )
-        await self.note_repo.create(note)
-        await self.event_service.append_event(EventType.NOTE_CAPTURED, "note", note.id)
+        if existing is None:
+            note = Note(
+                source=request.source,
+                source_message_id=request.source_message_id,
+                source_chat_id=request.source_chat_id,
+                raw_text=request.raw_text,
+            )
+            await self.note_repo.create(note)
+            await self.event_service.append_event(EventType.NOTE_CAPTURED, "note", note.id)
+        else:
+            note = existing
 
         if _is_state_query(request.raw_text):
             await self.note_repo.update_processed(
@@ -135,76 +171,125 @@ class CaptureService:
                 errors=[str(exc)],
             )
 
-        async with self.note_repo.database.transaction():
-            explicit_projects = [
-                hint for hint in extraction.projects if hint.name.lower() in request.raw_text.lower()
-            ]
-            project_id: str | None = None
-            for hint in explicit_projects:
-                project = await self.project_repo.find_or_create(hint.name)
-                await self.event_service.append_event(
-                    EventType.PROJECT_SEEN, "project", project.id,
-                    {"source_note_id": note.id, "confidence": hint.confidence},
-                )
-                if len(explicit_projects) == 1:
-                    project_id = project.id
-
-            tasks_created = 0
-            is_memory_correction = _is_memory_correction(request.raw_text)
-            if not is_memory_correction:
-                for candidate in extraction.tasks:
-                    task = Task(
-                        title=candidate.title, description=candidate.description,
-                        priority=candidate.priority, due_at=parse_model_datetime(candidate.due_at),
-                        project_id=project_id, source_note_id=note.id, confidence=candidate.confidence,
-                    )
-                    created_task = await self.task_repo.create(task)
+        try:
+            async with self.note_repo.database.transaction():
+                explicit_projects = [
+                    hint
+                    for hint in extraction.projects
+                    if _explicit_mention(hint.name, request.raw_text)
+                ]
+                project_id: str | None = None
+                projects_by_name: dict[str, str] = {}
+                for hint in explicit_projects:
+                    project = await self.project_repo.find_or_create(hint.name)
+                    projects_by_name[normalize_lookup(hint.name)] = project.id
                     await self.event_service.append_event(
-                        EventType.TASK_CANDIDATE_CREATED, "task", created_task.id,
-                        {"source_note_id": note.id},
+                        EventType.PROJECT_SEEN,
+                        "project",
+                        project.id,
+                        {"source_note_id": note.id, "confidence": hint.confidence},
                     )
-                    tasks_created += 1
+                    if len(explicit_projects) == 1:
+                        project_id = project.id
 
-            tasks_completed = await self._complete_matching_tasks(note.id, request.raw_text)
-
-            reminders = await self.reminder_service.persist_candidates(extraction.reminders, note.id)
-            clarification_question: str | None = None
-            for reminder in reminders:
-                if reminder.remind_at is not None and reminder.remind_at > datetime.now(UTC):
-                    await self.reminder_service.schedule_reminder(reminder.id)
-                elif (
-                    reminder.remind_at is None
-                    and self.clarification_service is not None
-                    and request.source_chat_id
-                    and clarification_question is None
-                ):
-                    clarification = await self.clarification_service.request_reminder_time(
-                        source_chat_id=request.source_chat_id,
-                        source_message_id=request.source_message_id,
-                        reminder_id=reminder.id,
-                        reminder_title=reminder.title,
-                    )
-                    clarification_question = clarification.question
-
-            memories = []
-            if not tasks_completed:
-                memories = await self.memory_service.persist_candidates(
-                    extraction.memories,
-                    note.id,
-                    project_id=project_id,
-                    supersede_related=is_memory_correction,
+                people_by_name, people_created = await self._resolve_people(
+                    extraction, request.raw_text, note.id
                 )
-            await self.note_repo.update_processed(note.id, extraction.summary, extraction.tags)
-            await self._record_quality_warnings(note.id, request.raw_text, extraction)
+
+                tasks_created = 0
+                is_memory_correction = _is_memory_correction(request.raw_text)
+                if not is_memory_correction:
+                    for candidate in extraction.tasks:
+                        task = Task(
+                            title=candidate.title,
+                            description=candidate.description,
+                            priority=candidate.priority,
+                            due_at=parse_model_datetime(candidate.due_at),
+                            project_id=self._resolve_project_id(
+                                candidate.project_name, projects_by_name, project_id
+                            ),
+                            person_id=self._resolve_person_id(
+                                candidate.person_name, people_by_name
+                            ),
+                            source_note_id=note.id,
+                            confidence=candidate.confidence,
+                        )
+                        created_task = await self.task_repo.create(task)
+                        await self.event_service.append_event(
+                            EventType.TASK_CANDIDATE_CREATED,
+                            "task",
+                            created_task.id,
+                            {"source_note_id": note.id},
+                        )
+                        tasks_created += 1
+
+                tasks_completed = await self._complete_matching_tasks(note.id, request.raw_text)
+
+                reminders = await self.reminder_service.persist_candidates(
+                    extraction.reminders, note.id
+                )
+                clarification_question: str | None = None
+                for reminder in reminders:
+                    if reminder.remind_at is not None and reminder.remind_at > datetime.now(UTC):
+                        await self.reminder_service.schedule_reminder(reminder.id)
+                    elif (
+                        reminder.remind_at is None
+                        and self.clarification_service is not None
+                        and request.source_chat_id
+                        and clarification_question is None
+                    ):
+                        clarification = await self.clarification_service.request_reminder_time(
+                            source_chat_id=request.source_chat_id,
+                            source_message_id=request.source_message_id,
+                            reminder_id=reminder.id,
+                            reminder_title=reminder.title,
+                        )
+                        clarification_question = clarification.question
+
+                memories = []
+                if not tasks_completed:
+                    for candidate in extraction.memories:
+                        memories.extend(
+                            await self.memory_service.persist_candidates(
+                                [candidate],
+                                note.id,
+                                project_id=self._resolve_project_id(
+                                    candidate.project_name, projects_by_name, project_id
+                                ),
+                                person_id=self._resolve_person_id(
+                                    candidate.person_name, people_by_name
+                                ),
+                                supersede_related=is_memory_correction,
+                            )
+                        )
+                v4_counts, v4_warnings = await self._persist_v4_entities(
+                    extraction, note.id, projects_by_name, people_by_name
+                )
+                await self.note_repo.update_processed(note.id, extraction.summary, extraction.tags)
+                await self._record_quality_warnings(
+                    note.id, request.raw_text, extraction, v4_warnings
+                )
+                await self.event_service.append_event(
+                    EventType.NOTE_PROCESSED,
+                    "note",
+                    note.id,
+                    {
+                        "tasks_created": tasks_created,
+                        "tasks_completed": tasks_completed,
+                        "reminders_created": len(reminders),
+                        "memories_created": len(memories),
+                        **v4_counts,
+                    },
+                )
+        except Exception as exc:
+            await self.note_repo.update_status(note.id, NoteStatus.FAILED)
             await self.event_service.append_event(
-                EventType.NOTE_PROCESSED, "note", note.id,
-                {
-                    "tasks_created": tasks_created,
-                    "tasks_completed": tasks_completed,
-                    "reminders_created": len(reminders),
-                    "memories_created": len(memories),
-                },
+                EventType.NOTE_FAILED,
+                "note",
+                note.id,
+                {"error": type(exc).__name__},
             )
+            raise
 
         return CaptureResponse(
             note_id=note.id,
@@ -213,8 +298,178 @@ class CaptureService:
             tasks_completed=tasks_completed,
             reminders_created=len(reminders),
             memories_created=len(memories),
+            people_created=people_created,
+            meetings_created=v4_counts["meetings_created"],
+            followups_created=v4_counts["followups_created"],
+            commitments_created=v4_counts["commitments_created"],
             clarification_question=clarification_question,
         )
+
+    async def _resolve_people(
+        self, extraction, raw_text: str, note_id: str
+    ) -> tuple[dict[str, str], int]:
+        people_by_name: dict[str, str] = {}
+        if self.person_repo is None:
+            return people_by_name, 0
+        created_count = 0
+        existing_people_by_name: dict[str, Person] = {}
+        for person in await self.person_repo.list_all():
+            for name in [person.display_name, *person.aliases]:
+                if name:
+                    existing_people_by_name[normalize_lookup(name)] = person
+                if _explicit_mention(name, raw_text):
+                    people_by_name[normalize_lookup(name)] = person.id
+        for candidate in extraction.people:
+            if (
+                candidate.confidence < _MIN_V4_CONFIDENCE
+                or not _safe_person_candidate(candidate.display_name, raw_text)
+            ):
+                continue
+            existing = existing_people_by_name.get(normalize_lookup(candidate.display_name))
+            person = existing or await self.person_repo.create(
+                Person(
+                    display_name=candidate.display_name,
+                    aliases=[alias for alias in candidate.aliases if _safe_alias(alias)],
+                    relationship=candidate.relationship,
+                    notes=candidate.notes,
+                )
+            )
+            if existing is None:
+                created_count += 1
+                await self.event_service.append_event(
+                    EventType.PERSON_CREATED,
+                    "person",
+                    person.id,
+                    {"source_note_id": note_id, "confidence": candidate.confidence},
+                )
+            safe_candidate_aliases = [alias for alias in candidate.aliases if _safe_alias(alias)]
+            for name in [
+                person.display_name,
+                *person.aliases,
+                candidate.display_name,
+                *safe_candidate_aliases,
+            ]:
+                if name:
+                    existing_people_by_name[normalize_lookup(name)] = person
+                if name and _explicit_mention(name, raw_text):
+                    people_by_name[normalize_lookup(name)] = person.id
+        return people_by_name, created_count
+
+    def _resolve_project_id(
+        self, name: str | None, projects_by_name: dict[str, str], default_project_id: str | None
+    ) -> str | None:
+        if name:
+            return projects_by_name.get(normalize_lookup(name))
+        return default_project_id
+
+    def _resolve_person_id(self, name: str | None, people_by_name: dict[str, str]) -> str | None:
+        return people_by_name.get(normalize_lookup(name)) if name else None
+
+    async def _persist_v4_entities(
+        self,
+        extraction,
+        note_id: str,
+        projects_by_name: dict[str, str],
+        people_by_name: dict[str, str],
+    ) -> tuple[dict[str, int], list[str]]:
+        counts = {
+            "meetings_created": 0,
+            "followups_created": 0,
+            "commitments_created": 0,
+        }
+        warnings: list[str] = []
+        if self.meeting_repo is not None:
+            for candidate in extraction.meetings:
+                if candidate.confidence < _MIN_V4_CONFIDENCE:
+                    warnings.append("low_confidence_meeting_skipped")
+                    continue
+                person_ids = [
+                    person_id for name in candidate.person_names
+                    if (person_id := self._resolve_person_id(name, people_by_name)) is not None
+                ]
+                if (
+                    (candidate.person_names and len(person_ids) != len(candidate.person_names))
+                    or (
+                        candidate.project_name
+                        and self._resolve_project_id(
+                            candidate.project_name, projects_by_name, None
+                        )
+                        is None
+                    )
+                ):
+                    warnings.append("unresolved_meeting_link_skipped")
+                    continue
+                meeting = await self.meeting_repo.create(Meeting(
+                    title=candidate.title,
+                    starts_at=parse_model_datetime(candidate.starts_at),
+                    ends_at=parse_model_datetime(candidate.ends_at),
+                    project_id=self._resolve_project_id(candidate.project_name, projects_by_name, None),
+                    person_id=person_ids[0] if len(person_ids) == 1 else None,
+                    source_note_id=note_id,
+                    notes=candidate.notes,
+                ))
+                for person_id in person_ids:
+                    await self.meeting_repo.add_person(meeting.id, person_id)
+                await self.event_service.append_event(
+                    EventType.MEETING_CREATED, "meeting", meeting.id,
+                    {"source_note_id": note_id, "confidence": candidate.confidence},
+                )
+                counts["meetings_created"] += 1
+        if self.followup_repo is not None:
+            for candidate in extraction.followups:
+                person_id = self._resolve_person_id(candidate.person_name, people_by_name)
+                project_id = self._resolve_project_id(
+                    candidate.project_name, projects_by_name, None
+                )
+                if (
+                    candidate.confidence < _MIN_V4_CONFIDENCE
+                    or person_id is None
+                    or (candidate.project_name and project_id is None)
+                ):
+                    warnings.append("ambiguous_followup_skipped")
+                    continue
+                followup = await self.followup_repo.create(FollowUp(
+                    title=candidate.title,
+                    due_at=parse_model_datetime(candidate.due_at),
+                    person_id=person_id,
+                    project_id=project_id,
+                    source_note_id=note_id,
+                    notes=candidate.notes,
+                ))
+                await self.event_service.append_event(
+                    EventType.FOLLOWUP_CREATED, "followup", followup.id,
+                    {"source_note_id": note_id, "confidence": candidate.confidence},
+                )
+                counts["followups_created"] += 1
+        if self.commitment_repo is not None:
+            for candidate in extraction.commitments:
+                person_id = self._resolve_person_id(candidate.person_name, people_by_name)
+                project_id = self._resolve_project_id(
+                    candidate.project_name, projects_by_name, None
+                )
+                if (
+                    candidate.confidence < _MIN_V4_CONFIDENCE
+                    or candidate.direction is None
+                    or person_id is None
+                    or (candidate.project_name and project_id is None)
+                ):
+                    warnings.append("ambiguous_commitment_skipped")
+                    continue
+                commitment = await self.commitment_repo.create(Commitment(
+                    title=candidate.title,
+                    direction=CommitmentDirection(candidate.direction),
+                    due_at=parse_model_datetime(candidate.due_at),
+                    person_id=person_id,
+                    project_id=project_id,
+                    source_note_id=note_id,
+                    notes=candidate.notes,
+                ))
+                await self.event_service.append_event(
+                    EventType.COMMITMENT_CREATED, "commitment", commitment.id,
+                    {"source_note_id": note_id, "confidence": candidate.confidence},
+                )
+                counts["commitments_created"] += 1
+        return counts, warnings
 
     async def _complete_matching_tasks(self, note_id: str, raw_text: str) -> int:
         if not _is_completion_note(raw_text):
@@ -231,9 +486,15 @@ class CaptureService:
             )
         return len(matched)
 
-    async def _record_quality_warnings(self, note_id: str, raw_text: str, extraction) -> None:
+    async def _record_quality_warnings(
+        self,
+        note_id: str,
+        raw_text: str,
+        extraction,
+        additional_warnings: list[str] | None = None,
+    ) -> None:
         lowered = raw_text.lower()
-        warnings: list[str] = []
+        warnings = list(additional_warnings or [])
         if any(signal in lowered for signal in ("remind me", "nhắc tôi", "nhắc")) and not extraction.reminders:
             warnings.append("reminder_language_without_reminder")
         if any(signal in lowered for signal in ("remember that", "nhớ rằng")) and not extraction.memories:
@@ -260,6 +521,47 @@ def _is_completion_note(raw_text: str) -> bool:
     return bool(re.search(r"\bda\s+.+\s+xong\b", normalized)) or any(
         signal in normalized for signal in signals
     )
+
+
+def _explicit_mention(name: str, raw_text: str) -> bool:
+    normalized_name = normalize_lookup(name)
+    normalized_text = normalize_lookup(raw_text)
+    if not normalized_name or not normalized_text:
+        return False
+    return re.search(rf"(?<!\w){re.escape(normalized_name)}(?!\w)", normalized_text) is not None
+
+
+def _safe_alias(alias: str) -> bool:
+    normalized = normalize_lookup(alias)
+    return bool(normalized) and normalized not in _VAGUE_PERSON_TERMS
+
+
+def _safe_person_candidate(name: str, raw_text: str) -> bool:
+    normalized = normalize_lookup(name)
+    if normalized in _VAGUE_PERSON_TERMS:
+        return False
+    if len(normalized) < 2:
+        return False
+    return _explicit_mention(name, raw_text)
+
+
+_VAGUE_PERSON_TERMS = {
+    "ai do",
+    "anyone",
+    "ban",
+    "boss",
+    "client",
+    "customer",
+    "doi tac",
+    "khach hang",
+    "manager",
+    "nguoi do",
+    "someone",
+    "team",
+    "teammate",
+}
+
+_MIN_V4_CONFIDENCE = 0.7
 
 
 def _is_memory_correction(raw_text: str) -> bool:

@@ -25,6 +25,8 @@ class TaskCandidate(BaseModel):
     description: str = ""
     priority: str = "medium"
     due_at: str | None = None
+    person_name: str | None = None
+    project_name: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("confidence", mode="before")
@@ -48,6 +50,8 @@ class MemoryCandidate(BaseModel):
     bucket: MemoryBucket
     kind: MemoryKind
     content: str
+    person_name: str | None = None
+    project_name: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("confidence", mode="before")
@@ -66,6 +70,63 @@ class ProjectHint(BaseModel):
         return normalize_confidence(value)
 
 
+class PersonCandidate(BaseModel):
+    display_name: str
+    aliases: list[str] = Field(default_factory=list)
+    relationship: str = ""
+    notes: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, value: Any) -> float:
+        return normalize_confidence(value)
+
+
+class MeetingCandidate(BaseModel):
+    title: str
+    starts_at: str | None = None
+    ends_at: str | None = None
+    person_names: list[str] = Field(default_factory=list)
+    project_name: str | None = None
+    notes: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, value: Any) -> float:
+        return normalize_confidence(value)
+
+
+class FollowUpCandidate(BaseModel):
+    title: str
+    due_at: str | None = None
+    person_name: str | None = None
+    project_name: str | None = None
+    notes: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, value: Any) -> float:
+        return normalize_confidence(value)
+
+
+class CommitmentCandidate(BaseModel):
+    title: str
+    direction: Literal["user_owes", "owed_to_user", "mutual"] | None = None
+    due_at: str | None = None
+    person_name: str | None = None
+    project_name: str | None = None
+    notes: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, value: Any) -> float:
+        return normalize_confidence(value)
+
+
 class NoteExtraction(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
@@ -73,6 +134,10 @@ class NoteExtraction(BaseModel):
     reminders: list[ReminderCandidate] = Field(default_factory=list)
     projects: list[ProjectHint] = Field(default_factory=list)
     memories: list[MemoryCandidate] = Field(default_factory=list)
+    people: list[PersonCandidate] = Field(default_factory=list)
+    meetings: list[MeetingCandidate] = Field(default_factory=list)
+    followups: list[FollowUpCandidate] = Field(default_factory=list)
+    commitments: list[CommitmentCandidate] = Field(default_factory=list)
 
 
 class CaptureRequest(BaseModel):
@@ -89,6 +154,10 @@ class CaptureResponse(BaseModel):
     tasks_completed: int = 0
     reminders_created: int = 0
     memories_created: int = 0
+    people_created: int = 0
+    meetings_created: int = 0
+    followups_created: int = 0
+    commitments_created: int = 0
     memories_deleted: int = 0
     duplicate: bool = False
     clarification_question: str | None = None

@@ -1,7 +1,11 @@
 from memocore.domain.models import MemoryBucket, MemoryKind
 from memocore.domain.schemas import (
+    CommitmentCandidate,
+    FollowUpCandidate,
+    MeetingCandidate,
     MemoryCandidate,
     NoteExtraction,
+    PersonCandidate,
     ProjectHint,
     ReminderCandidate,
     TaskCandidate,
@@ -52,6 +56,71 @@ MISSING_REMINDER_TIME = NoteExtraction(
         ReminderCandidate(
             title="Call John",
             remind_at=None,
+            confidence=0.9,
+        )
+    ],
+)
+
+
+V4_NATURAL_CAPTURE = NoteExtraction(
+    summary="Alex Nguyen will review MindX with follow-up and commitments.",
+    tags=["alex", "mindx", "review"],
+    projects=[ProjectHint(name="MindX", confidence=0.9)],
+    people=[
+        PersonCandidate(
+            display_name="Alex Nguyen",
+            aliases=["Alex"],
+            relationship="MindX reviewer",
+            confidence=0.95,
+        )
+    ],
+    tasks=[
+        TaskCandidate(
+            title="Send Alex Nguyen the MindX brief",
+            description="Share the brief before the review meeting.",
+            priority="medium",
+            due_at="2099-06-01T09:00:00+00:00",
+            person_name="Alex Nguyen",
+            project_name="MindX",
+            confidence=0.9,
+        )
+    ],
+    memories=[
+        MemoryCandidate(
+            bucket=MemoryBucket.PROJECT,
+            kind=MemoryKind.PROJECT_STATE,
+            content="Alex Nguyen prefers concise MindX review notes.",
+            person_name="Alex Nguyen",
+            project_name="MindX",
+            confidence=0.9,
+        )
+    ],
+    meetings=[
+        MeetingCandidate(
+            title="MindX review with Alex Nguyen",
+            starts_at="2099-06-02T10:00:00+00:00",
+            person_names=["Alex Nguyen"],
+            project_name="MindX",
+            notes="Review MindX scope.",
+            confidence=0.9,
+        )
+    ],
+    followups=[
+        FollowUpCandidate(
+            title="Ask Alex Nguyen for MindX review slot",
+            due_at="2099-06-03T09:00:00+00:00",
+            person_name="Alex Nguyen",
+            project_name="MindX",
+            confidence=0.9,
+        )
+    ],
+    commitments=[
+        CommitmentCandidate(
+            title="Alex Nguyen owes MindX feedback",
+            direction="owed_to_user",
+            due_at="2099-06-04T09:00:00+00:00",
+            person_name="Alex Nguyen",
+            project_name="MindX",
             confidence=0.9,
         )
     ],
