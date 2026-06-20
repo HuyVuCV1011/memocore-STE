@@ -205,11 +205,12 @@ MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_b
 - Ask clarification questions for ambiguous task updates or reminder times.
 - Handle task completion, deadline updates, bulk cancellation, memory deletion, and correction
   feedback with guardrails.
-- Provide Telegram commands: `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`,
-  `/projects`, `/memory`, `/briefing`, `/weekly`, `/people`, `/commitments`, `/person`,
-  `/project`, `/context`, and `/prep`.
-- Keep capture/query semantics explicit: `/task <content>` creates a task, `/tasks` lists tasks,
-  `/project <name>` shows one project, and `/projects` lists projects.
+- Keep the visible Telegram slash menu compact: `/today`, `/work`, `/memory`, `/context`,
+  `/briefing`, and `/capture`.
+- Keep power-user shortcuts available but out of the visible menu: `/task`, `/t`, `/mem`, `/m`,
+  `/li`, `/linkedin`, `/tasks`, `/reminders`, `/waiting`, `/projects`, `/people`, `/person`,
+  `/project`, `/context <name>`, `/prep`, `/weekly`, `/endday`, `/goals`, `/people review`,
+  `/projects review`, `/memory review`, and `/memory stale`.
 - Send scheduled morning briefings, weekly reviews, recurring daily/weekly reminders, and
   cooldown-protected proactive nudges that respect quiet hours.
 - Generate person/project context and meeting-prep summaries from linked tasks, follow-ups,
@@ -231,7 +232,7 @@ virtual environments, caches, or generated build artifacts.
 - Bundled low-priority nudge digests.
 - Explicit accepted, edited, ignored, and rejected suggestion feedback signals beyond correction
   feedback.
-- Optional end-of-day review and pre-deadline warnings.
+- Pre-deadline warnings before a task becomes overdue.
 - Automatic bulk import of personal Markdown or Telegram exports into the live database.
 - Dedicated review UI for personal context seed approval.
 - Calendar, email, file, browser, and voice integrations.

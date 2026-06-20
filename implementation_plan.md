@@ -30,7 +30,7 @@ Delivered foundations:
 - First-class meeting and follow-up storage.
 - Task states include waiting and blocked work.
 - Memory candidates support activation and supersession.
-- Telegram commands: `/today`, `/waiting`, `/projects`, `/memory`.
+- Telegram command handlers for daily work, waiting items, projects, and memory.
 - PostgreSQL and pgvector migration blueprint for long-distance storage.
 
 V1 closeout focus:
@@ -79,10 +79,9 @@ Deferred from V3:
 - Interval recurrence such as "every 2 days" or "every 3 weeks".
 - Bundling many low-priority nudges into one digest.
 - Explicit accepted, edited, ignored, and rejected suggestion feedback signals beyond existing correction feedback.
-- Optional end-of-day review.
 - Pre-deadline warnings before a task becomes overdue.
 
-## Delivered V4: People, Projects, And Meetings
+## Active V4: Trustworthy Daily Secretary
 
 V4 deepens operational context without importing private datasets automatically.
 
@@ -104,6 +103,16 @@ Delivered foundations:
 - Ambiguous or low-confidence V4 operational candidates are skipped with audit warnings instead
   of silently mutating durable state.
 - Failed transactional derived writes can be retried using the same source message id.
+- Compact visible Telegram menu: `/today`, `/work`, `/memory`, `/context`, `/briefing`, and
+  `/capture`; existing specialist commands remain available as hidden shortcuts.
+- Inline hubs for work, context, capture, and high-volume memory navigation.
+- Ranked open-loop views, including top priorities, overdue work, waiting items, commitments, and
+  goal-aware daily selection.
+- Evidence metadata in person, project, context, meeting-preparation, and memory review views.
+- Review-gated person/project alias decisions without automatic silent merges.
+- Memory review/stale/topic slices with pagination and audited keep/reject/stale/supersede actions.
+- Morning briefing, end-of-day review, weekly review, and lightweight goal tracking.
+- Runtime preflight through `memocore doctor` before PM2 restart.
 
 Deferred from V4:
 
@@ -111,12 +120,15 @@ Deferred from V4:
 - Dedicated review UI for approving personal context seed items.
 - Cross-entity graph database; SQLite links are enough for the current secretary workflows.
 
-## Next Versions
+V4 remains the active product track. Real Telegram usage and memory/entity review quality should be
+validated before orchestration work starts.
+
+## Held Versions
 
 ### V5: Orchestration And Specialist Agents
 
-V5 is delivered incrementally. The first `0.5.0` milestone proves the audited execution boundary
-with one read-only workflow before specialist workers are introduced.
+V5 is intentionally postponed. When resumed, the first `0.5.0` milestone should prove the audited
+execution boundary with one read-only workflow before specialist workers are introduced.
 
 1. Add typed harness runs, registered tools, tool calls, execution policy, and append-only events.
 2. Add SQLite persistence, validation, timeout, failure, fallback, and audit coverage.

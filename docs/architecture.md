@@ -85,7 +85,9 @@ tests exist.
 ## Runtime Direction
 
 The primary live runtime is the Windows PC. The Telegram bot should run through the PM2 process
-`memocore-ste` as a single polling instance. See [Windows Runtime Guide](windows-runtime.md).
+`memocore-ste` as a single polling instance. `memocore doctor` is the preflight boundary for
+configuration, provider settings, SQLite integrity, Telegram command registration, runtime data,
+and PM2 state. See [Windows Runtime Guide](windows-runtime.md).
 
 ## Agent Harness Direction
 

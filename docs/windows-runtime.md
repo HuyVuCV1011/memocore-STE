@@ -33,11 +33,21 @@ pm2 list
 .\scripts\windows\restart-memocore.ps1
 .\scripts\windows\logs-memocore.ps1
 .\.venv\Scripts\memocore models
+.\.venv\Scripts\memocore doctor
 ```
 
 ## Preflight Check
 
-Before starting or restarting MemoCore, check for duplicate runtimes:
+Before starting or restarting MemoCore, run the doctor command:
+
+```powershell
+.\.venv\Scripts\memocore doctor
+```
+
+It checks config, SQLite integrity, invalid Telegram chat ids, provider config, PM2 status, and
+the Telegram slash command menu. The restart script runs this automatically before reloading PM2.
+
+If you suspect a duplicate runtime, also inspect processes manually:
 
 ```powershell
 pm2 list
@@ -59,7 +69,7 @@ Use the project script:
 ```
 
 The script verifies PM2 and the virtualenv entrypoint, starts or restarts `memocore-ste`, and saves
-the PM2 process list.
+the PM2 process list. It also runs Python compilation and `memocore doctor` before reload.
 
 ## Mac Remote Use
 
@@ -83,4 +93,3 @@ Keep these local and untracked:
 - SQLite database files and WAL/SHM files
 - API keys and Telegram tokens
 - cookies, browser sessions, and generated runtime logs
-

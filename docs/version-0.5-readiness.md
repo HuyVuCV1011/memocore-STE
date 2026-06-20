@@ -4,7 +4,7 @@
 
 - Current package version: `0.4.1`.
 - Current branch baseline: V1-V4 are documented as delivered.
-- Automated verification on June 11, 2026: `195 passed, 1 skipped`.
+- Automated verification on June 20, 2026: `198 passed, 1 skipped`.
 - Python compilation check: passed for `src` and `tests`.
 - Live provider benchmark and live Telegram polling were not exercised because they require
   external services and credentials.
@@ -20,7 +20,7 @@
 | People/project context retrieval | Ready | Linked repositories and `/person`, `/project`, `/context`, and `/prep` views. |
 | Commitments and meeting retrieval | Ready | Storage, linked views, and V4 integration tests are present. |
 | People/meeting/follow-up/commitment ingestion | Ready | Typed extraction and transactional capture persistence are implemented with ambiguity guards. |
-| Runtime operations | Partial | PM2 single-process guidance exists; no automated health/preflight command. |
+| Runtime operations | Ready | PM2 single-process guidance exists; `memocore doctor` checks config, SQLite, Telegram commands, runtime data, provider config, and PM2 before restart. |
 | Release automation | Missing | No CI workflow, release tags, coverage gate, or migration smoke job. |
 | V5 harness/orchestration | Missing | Direction is documented, but there are no run, tool, policy, approval, or worker contracts. |
 
@@ -103,7 +103,7 @@ content into durable MemoCore state. The harness must not write memory directly.
 
 ## Delivery Order
 
-1. Release hygiene: CI, migration smoke fixture, and version/release notes.
+1. Release hygiene: CI, version/release notes, and ongoing doctor/migration smoke coverage.
 2. Harness contracts and persistence.
 3. Registry, policy, timeout, and audit execution.
 4. Read-only calendar adapter and meeting-prep integration.

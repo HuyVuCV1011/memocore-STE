@@ -13,8 +13,8 @@ approval boundaries.
 | V1 | Delivered | Capture and memory foundation |
 | V2 | Delivered | Conversational secretary |
 | V3 | Delivered | Daily and recurring secretary |
-| V4 | Delivered | People, projects, and meetings |
-| V5 | Next | Orchestration and specialist workers |
+| V4 | Active | Trustworthy daily secretary workflows |
+| V5 | Held | Orchestration and specialist workers |
 | V6 | Future | Knowledge system and productization |
 | V7 | Future | Controlled autonomy |
 
@@ -53,8 +53,8 @@ V3 makes MemoCore proactive:
 - Audit events for proactive sends and recurring reminder reschedules.
 
 Delivered V3 scope includes manual and scheduled briefings, weekly reviews, daily/weekly recurring
-reminders, stale-loop nudges, quiet hours, cooldowns, and audit events. Interval recurrence,
-bundled nudge digests, explicit suggestion feedback signals, end-of-day review, and pre-deadline
+reminders, stale-loop nudges, quiet hours, cooldowns, audit events, and an end-of-day review.
+Interval recurrence, bundled nudge digests, explicit suggestion feedback signals, and pre-deadline
 warnings are intentionally deferred.
 
 ## V4: People, Projects, And Meetings
@@ -74,9 +74,23 @@ preparation. Capture also ingests explicitly evidenced people, meetings, follow-
 directional commitments while skipping ambiguous durable writes. Bulk personal-context import
 remains review-gated and separate from live database writes.
 
+The active V4 deepening track adds:
+
+- A compact six-command Telegram menu with inline hubs and hidden power-user shortcuts.
+- Ranked `/today`, `/work`, `/briefing`, and `/weekly` views for priorities and open loops.
+- Evidence-backed person, project, context, and meeting-preparation views.
+- Review-gated person/project alias hygiene; no silent entity merges.
+- Paginated memory overview, topic slices, review/stale queues, and audited memory actions.
+- Morning, end-of-day, and weekly rituals plus lightweight goal-aware prioritization.
+- `memocore doctor` as the runtime/SQLite/Telegram preflight before PM2 restart.
+
+V4 remains active until these workflows are stable with real Telegram usage and the remaining
+manual review paths are proven. V5 should not begin merely because the underlying harness design
+exists.
+
 ## V5: Orchestration And Specialist Workers
 
-V5 introduces bounded delegation:
+V5 is intentionally held while V4 is deepened. When resumed, it introduces bounded delegation:
 
 - Supervisor service and structured worker handoffs.
 - Specialist workers for repository analysis, research, drafting, documents, or browsing.

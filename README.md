@@ -37,7 +37,7 @@ backend.
 | Raw-note capture | Immutable raw notes with Telegram source idempotency. |
 | Conversation routing | Deterministic and model-assisted routing for capture, query, correction, clarification, and casual messages. |
 | Work and context state | Tasks, reminders, projects, people, meetings, follow-ups, commitments, memory candidates, and event logs. |
-| Secretary queries | `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`, `/projects`, `/memory`, `/briefing`, `/weekly`, `/people`, `/commitments`, `/person`, `/project`, `/context`, and `/prep`. |
+| Secretary queries | Compact `/` menu for `/today`, `/work`, `/memory`, `/context`, `/briefing`, and `/capture`; power-user shortcuts remain available. |
 | Memory lifecycle | Candidate, active, rejected, superseded, and delete/forget flows. |
 | V4 context retrieval | Person/project context, linked commitments, meeting preparation summaries, and SQLite retrieval by linked entities. |
 | Reliability | Schema validation, provider fallback, transactional derived writes, and audit events. |
@@ -75,8 +75,8 @@ Trailing action hashtags also force deterministic capture when placed at the end
 | V1 | Delivered | Capture, extraction, SQLite storage, reminders, provider reliability, and memory hygiene. |
 | V2 | Delivered | Conversational secretary routing, natural-language SQLite queries, clarification, and safer corrections. |
 | V3 | Delivered | Daily briefings, recurring daily/weekly reminders, stale-loop nudges, quiet hours, and weekly reviews. |
-| V4 | Delivered | People, projects, meetings, linked commitments, meeting prep, and structured retrieval. |
-| V5 | Next | Bounded orchestration and specialist workers with approval boundaries. |
+| V4 | Active | Telegram UX, open-loop intelligence, evidence-backed context, entity/memory hygiene, daily rituals, and goals. |
+| V5 | Held | Bounded orchestration remains intentionally postponed while V4 is deepened and validated. |
 
 V3 intentionally defers a few deeper behaviors to V4/V5 unless they become painful sooner:
 
@@ -96,6 +96,10 @@ V4 adds linked operational context without importing private data automatically:
 | Meeting preparation | `/prep <person or project>` summarizes linked commitments, tasks, follow-ups, meetings, and memory. |
 | Linked retrieval | Tasks, meetings, follow-ups, commitments, and memory can be retrieved by person or project id. |
 | Personal context import | Still review-gated; large private context files should produce Markdown/import plans before any database write. |
+
+Current V4 deepening also includes a six-command Telegram menu, inline navigation hubs, ranked work
+priorities, evidence metadata in context/prep views, review-gated entity matching, paginated memory
+triage, end-of-day and weekly rituals, lightweight goals, and a runtime `doctor` preflight.
 
 ## Quick Start
 
@@ -240,7 +244,8 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | [Engineering Guide](agent.md) | Code ownership boundaries, runtime rules, and engineering conventions. |
 | [Architecture](docs/architecture.md) | Layering, capture flow, conversation flow, model boundary, and storage direction. |
 | [Windows Runtime Guide](docs/windows-runtime.md) | Single-instance PM2 runtime policy for the primary Windows machine. |
-| [Implementation Plan](implementation_plan.md) | Delivered V1/V2 scope and next-version plan. |
+| [Telegram Command Model](docs/telegram-command-model.md) | Visible command menu, hidden shortcuts, inline hubs, and verification rules. |
+| [Implementation Plan](implementation_plan.md) | Delivered foundations, active V4 work, and held future versions. |
 | [Roadmap](docs/personal-assistant-version-roadmap.md) | Product version roadmap from V1 through controlled autonomy. |
 | [Agent Harness Direction](docs/agent-harness.md) | Future audited tool-use and approval boundary. |
 | [0.5.0 Readiness](docs/version-0.5-readiness.md) | Verified capability audit, release scope, risks, and acceptance gates. |
