@@ -4,7 +4,7 @@
 
 - Current package version: `0.4.1`.
 - Current branch baseline: V1-V4 are documented as delivered.
-- Automated verification on June 10, 2026: `150 passed, 1 skipped`.
+- Automated verification on June 11, 2026: `195 passed, 1 skipped`.
 - Python compilation check: passed for `src` and `tests`.
 - Live provider benchmark and live Telegram polling were not exercised because they require
   external services and credentials.

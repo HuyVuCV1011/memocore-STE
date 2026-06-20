@@ -45,6 +45,29 @@ backend.
 | Reminder delivery | Leased reminder dispatch to avoid immediate duplicate sends. |
 | Storage | SQLite verified runtime; PostgreSQL plus `pgvector` remains a blueprint. |
 
+## Telegram Command Model
+
+Telegram shows a small command menu. The visible `/` menu is intentionally limited to the main
+entry points:
+
+| Command | Behavior |
+| --- | --- |
+| `/today` | Show the day's top priorities, due work, reminders, and meetings. |
+| `/work` | Open a work dashboard with tasks, reminders, waiting items, and commitments. |
+| `/memory` | Open the memory dashboard with review/stale/topic slices. |
+| `/context` | Open people, projects, meeting prep, and memory navigation. |
+| `/briefing` | Generate the current daily briefing. |
+| `/capture` | Show quick capture patterns for tasks, memory, and content notes. |
+
+Power-user shortcuts still work but are kept out of the visible command menu:
+`/task`, `/t`, `/mem`, `/m`, `/li`, `/linkedin`, `/tasks`, `/reminders`, `/waiting`,
+`/projects`, `/people`, `/person <name>`, `/project <name>`, `/context <name>`,
+`/prep <name>`, `/weekly`, `/endday`, `/goals`, `/people review`, `/projects review`,
+`/memory review`, and `/memory stale`.
+
+Trailing action hashtags also force deterministic capture when placed at the end of a message:
+`#li`, `#linkedin`, `#task`, `#t`, `#remind`, `#r`, `#mem`, and `#m`.
+
 ## Current Status
 
 | Version | Status | Focus |
@@ -221,6 +244,8 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | [0.5.0 Readiness](docs/version-0.5-readiness.md) | Verified capability audit, release scope, risks, and acceptance gates. |
 | [Storage Migrations](docs/storage/README.md) | SQLite runtime and PostgreSQL/pgvector blueprint status. |
 | [V2 Manual Tests](docs/v2-manual-test-cases.md) | Telegram messages for conversational secretary verification. |
+| [Content Integration Bridge](docs/content_integration_bridge.md) | Read-only SQLite contract for the LinkedIn content engine. |
+| [Telegram Memory UX](docs/telegram-memory-ux-spec.md) | Dashboard, slice, and review model for high-volume Telegram memory browsing. |
 
 ## Data Safety
 

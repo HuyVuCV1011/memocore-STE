@@ -75,6 +75,7 @@ class MemoryKind(StrEnum):
     FACT = "fact"
     CORRECTION = "correction"
     PROJECT_STATE = "project_state"
+    GOAL = "goal"
 
 
 class MemoryStatus(StrEnum):
@@ -121,6 +122,11 @@ class EventType(StrEnum):
     BRIEFING_SENT = "briefing_sent"
     WEEKLY_REVIEW_SENT = "weekly_review_sent"
     NUDGE_SENT = "nudge_sent"
+    WORK_ITEM_CHANGED = "work_item_changed"
+    WORK_ITEM_UNDONE = "work_item_undone"
+    MEMORY_DUPLICATE_SUGGESTED = "memory_duplicate_suggested"
+    ENTITY_ALIAS_SUGGESTED = "entity_alias_suggested"
+    ENTITY_ALIAS_CONFIRMED = "entity_alias_confirmed"
 
 
 class TimestampedModel(BaseModel):
@@ -167,6 +173,7 @@ class Reminder(TimestampedModel):
 
 class Project(TimestampedModel):
     name: str
+    aliases: list[str] = Field(default_factory=list)
     summary: str = ""
     status: ProjectStatus = ProjectStatus.ACTIVE
     tags: list[str] = Field(default_factory=list)
@@ -220,6 +227,13 @@ class MemoryItem(TimestampedModel):
     person_id: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     status: MemoryStatus = MemoryStatus.CANDIDATE
+    source_type: str = "user_note"
+    observed_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    last_confirmed_at: datetime | None = None
+    sensitivity: str = "normal"
+    revision_of_id: str | None = None
 
 
 class ClarificationRequest(TimestampedModel):

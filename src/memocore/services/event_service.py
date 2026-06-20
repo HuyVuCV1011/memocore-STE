@@ -28,6 +28,21 @@ class EventService:
     async def list_events_for_entity(self, entity_type: str, entity_id: str) -> list[EventLog]:
         return await self.event_repo.list_by_entity(entity_type, entity_id)
 
+    async def get_event(self, event_id: str) -> EventLog | None:
+        return await self.event_repo.get_by_id(event_id)
+
+    async def list_recent(
+        self,
+        event_type: EventType | None = None,
+        since: datetime | None = None,
+        limit: int = 50,
+    ) -> list[EventLog]:
+        return await self.event_repo.list_recent(event_type=event_type, since=since, limit=limit)
+
+    async def was_undone(self, event_id: str) -> bool:
+        events = await self.event_repo.list_by_entity("work_event", event_id)
+        return any(event.event_type == EventType.WORK_ITEM_UNDONE for event in events)
+
     async def exists_recent(
         self,
         event_type: EventType,

@@ -31,10 +31,14 @@ from memocore.services.clarification_service import ClarificationService
 from memocore.services.conversation_service import ConversationService
 from memocore.services.event_service import EventService
 from memocore.services.memory_service import MemoryService
+from memocore.services.memory_view_service import MemoryViewService
 from memocore.services.reminder_service import ReminderService
 from memocore.services.secretary_service import SecretaryService
 from memocore.services.task_extraction_service import ExtractionService
 from memocore.services.intent_classifier_service import IntentClassifierService
+from memocore.services.knowledge_query_service import KnowledgeQueryService
+from memocore.services.work_action_service import WorkActionService
+from memocore.services.entity_confirmation_service import EntityConfirmationService
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +68,19 @@ async def create_app(settings: Settings | None = None) -> Application:
     provider = create_provider_with_fallback(settings.model, settings.fallback)
     extraction_service = ExtractionService(provider, temperature=settings.model.temperature)
     intent_classifier_service = IntentClassifierService(provider, temperature=settings.model.temperature)
+    knowledge_query_service = KnowledgeQueryService(
+        provider,
+        memory_repo,
+        project_repo,
+        person_repo,
+        task_repo,
+        followup_repo,
+        commitment_repo,
+        meeting_repo,
+        reminder_repo,
+    )
     memory_service = MemoryService(memory_repo, event_service)
+    memory_view_service = MemoryViewService(memory_repo, project_repo, person_repo, event_service)
     reminder_service = ReminderService(reminder_repo, event_service)
     clarification_service = ClarificationService(
         clarification_repo,
@@ -98,6 +114,19 @@ async def create_app(settings: Settings | None = None) -> Application:
         meeting_repo=meeting_repo,
         person_repo=person_repo,
         commitment_repo=commitment_repo,
+        note_repo=note_repo,
+        event_service=event_service,
+    )
+    work_action_service = WorkActionService(
+        task_repo,
+        reminder_repo,
+        event_service,
+        display_timezone=ZoneInfo(settings.user_timezone),
+    )
+    entity_confirmation_service = EntityConfirmationService(
+        person_repo,
+        project_repo,
+        event_service,
     )
     conversation_service = ConversationService(
         capture_service,
@@ -107,6 +136,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         memory_service,
         event_service,
         intent_classifier_service=intent_classifier_service,
+        knowledge_query_service=knowledge_query_service,
     )
 
     app = create_bot(
@@ -115,6 +145,9 @@ async def create_app(settings: Settings | None = None) -> Application:
         secretary_service,
         clarification_service,
         conversation_service,
+        memory_view_service,
+        work_action_service,
+        entity_confirmation_service,
     )
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(
@@ -145,9 +178,13 @@ async def reminder_dispatch_loop(
             if not note or not note.source_chat_id:
                 await reminder_service.mark_failed(reminder.id, "missing_chat_id")
                 continue
+            chat_id = _chat_id_to_int(note.source_chat_id)
+            if chat_id is None:
+                await reminder_service.mark_failed(reminder.id, "invalid_chat_id")
+                continue
             try:
                 await bot.send_message(
-                    chat_id=int(note.source_chat_id),
+                    chat_id=chat_id,
                     text=f"Reminder: {reminder.title}",
                 )
                 await reminder_service.mark_sent(reminder.id)
@@ -213,10 +250,14 @@ async def send_due_morning_briefings(
     day_start = datetime.combine(local_now.date(), time.min, tzinfo=timezone).astimezone(UTC)
     sent = 0
     for chat_id in await note_repo.list_source_chat_ids():
+        numeric_chat_id = _chat_id_to_int(chat_id)
+        if numeric_chat_id is None:
+            logger.warning("Skipping morning briefing for invalid chat id %s", chat_id)
+            continue
         if await event_service.exists_recent(EventType.BRIEFING_SENT, "telegram_chat", chat_id, day_start):
             continue
         try:
-            await bot.send_message(chat_id=int(chat_id), text=await secretary_service.daily_briefing(now))
+            await bot.send_message(chat_id=numeric_chat_id, text=await secretary_service.daily_briefing(now))
         except Exception:
             logger.exception("Failed to send morning briefing to chat %s", chat_id)
             continue
@@ -251,10 +292,14 @@ async def send_due_weekly_reviews(
     day_start = datetime.combine(local_now.date(), time.min, tzinfo=timezone).astimezone(UTC)
     sent = 0
     for chat_id in await note_repo.list_source_chat_ids():
+        numeric_chat_id = _chat_id_to_int(chat_id)
+        if numeric_chat_id is None:
+            logger.warning("Skipping weekly review for invalid chat id %s", chat_id)
+            continue
         if await event_service.exists_recent(EventType.WEEKLY_REVIEW_SENT, "telegram_chat", chat_id, day_start):
             continue
         try:
-            await bot.send_message(chat_id=int(chat_id), text=await secretary_service.weekly_review(now))
+            await bot.send_message(chat_id=numeric_chat_id, text=await secretary_service.weekly_review(now))
         except Exception:
             logger.exception("Failed to send weekly review to chat %s", chat_id)
             continue
@@ -295,8 +340,12 @@ async def send_due_nudges(
             continue
         delivered = False
         for chat_id in chat_ids:
+            numeric_chat_id = _chat_id_to_int(chat_id)
+            if numeric_chat_id is None:
+                logger.warning("Skipping nudge for invalid chat id %s", chat_id)
+                continue
             try:
-                await bot.send_message(chat_id=int(chat_id), text=text_body)
+                await bot.send_message(chat_id=numeric_chat_id, text=text_body)
                 delivered = True
                 sent += 1
             except Exception:
@@ -335,6 +384,16 @@ async def shutdown_app(app: Application) -> None:
                 await task
             except asyncio.CancelledError:
                 pass
+
     database = app.bot_data.get("database")
     if database:
         await database.close()
+
+
+def _chat_id_to_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None

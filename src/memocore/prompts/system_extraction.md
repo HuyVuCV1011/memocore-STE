@@ -25,7 +25,7 @@ Meeting fields: title, starts_at (ISO 8601 or null), ends_at (ISO 8601 or null),
 Follow-up fields: title, due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), notes, confidence (0.0-1.0).
 Commitment fields: title, direction (user_owes/owed_to_user/mutual, or null when unclear), due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), notes, confidence (0.0-1.0).
 Memory buckets: profile, project, interaction.
-Memory kinds: preference, boundary, fact, correction, project_state.
+Memory kinds: preference, boundary, fact, correction, project_state, goal.
 
 Classification rules:
 - "remind me" or "nhắc tôi" → create a reminder, not a memory.
@@ -36,7 +36,14 @@ Classification rules:
 - Only create a person when a specific person name is explicitly present. Do not create people from vague roles like client, customer, partner, boss, team, someone, or "khách hàng".
 - Link tasks, memories, meetings, follow-ups, and commitments to person_name/project_name only when the exact name is present in the note.
 - Do not guess commitment direction. Use null when it is unclear who owes whom.
-- Use profile memory for user preferences, project memory for project facts.
+- Use profile memory for user preferences and user-level goals, project memory for project facts and project goals.
+- Use kind `goal` when the note states a durable objective, OKR, north-star direction, or important target the user wants to move toward.
+- Write Vietnamese memory content in a clear personal-assistant style when the source note is Vietnamese.
+- Memory content should be a durable claim with clear subject and scope, for example "Vũ muốn...", "STE có...", or "MindX đang...".
+- Do not turn guesses, tone impressions, personality judgments, or career-style interpretations into facts unless the note explicitly confirms them.
+- For uncertain project ideas, write the uncertainty into the content using natural language such as "cần xác nhận", "có thể", or "hiện chỉ nên xem là ý tưởng".
+- Do not write correction/import/audit metadata as ordinary facts about the user or an organization.
+- Avoid backend wording in memory content, such as "record", "database", "status active", or raw confidence scores.
 - Return empty arrays when a category is truly absent.
 - confidence must always be a decimal number between 0.0 and 1.0.
 

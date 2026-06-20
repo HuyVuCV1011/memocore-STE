@@ -19,6 +19,7 @@ from memocore.domain.models import (
     Meeting,
     MemoryBucket,
     MemoryItem,
+    MemoryStatus,
     Note,
     NoteStatus,
     Person,
@@ -125,6 +126,16 @@ class NoteRepository(BaseRepository):
                 LIMIT ?
                 """,
                 (source, source_chat_id, limit),
+            )
+        ).fetchall()
+        return [_note_from_row(row) for row in rows]
+
+    async def list_recent(self, limit: int = 100) -> list[Note]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM notes ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (limit,),
             )
         ).fetchall()
         return [_note_from_row(row) for row in rows]
@@ -277,6 +288,18 @@ class TaskRepository(BaseRepository):
             (_dt(due_at), _dt(utc_now()), task_id),
         )
 
+    async def update_title(self, task_id: str, title: str) -> None:
+        await self._execute(
+            "UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?",
+            (title, _dt(utc_now()), task_id),
+        )
+
+    async def update_priority(self, task_id: str, priority: str) -> None:
+        await self._execute(
+            "UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?",
+            (priority, _dt(utc_now()), task_id),
+        )
+
 
 class ReminderRepository(BaseRepository):
     async def create(self, reminder: Reminder) -> Reminder:
@@ -418,6 +441,21 @@ class ProjectRepository(BaseRepository):
     async def find_or_create(self, name: str) -> Project:
         conn = await self.database.connection()
         row = await (await conn.execute("SELECT * FROM projects WHERE name = ?", (name,))).fetchone()
+        if row is None:
+            rows = await (await conn.execute("SELECT * FROM projects")).fetchall()
+            normalized = normalize_lookup(name)
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if normalized
+                    in {
+                        normalize_lookup(alias)
+                        for alias in _loads(candidate["aliases"])
+                    }
+                ),
+                None,
+            )
         if row:
             project = _project_from_row(row)
             now = utc_now()
@@ -433,12 +471,13 @@ class ProjectRepository(BaseRepository):
         await self._execute(
             """
             INSERT INTO projects (
-                id, name, summary, status, tags, last_seen_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, name, aliases, summary, status, tags, last_seen_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project.id,
                 project.name,
+                _json(project.aliases),
                 project.summary,
                 project.status.value,
                 _json(project.tags),
@@ -458,6 +497,12 @@ class ProjectRepository(BaseRepository):
         conn = await self.database.connection()
         row = await (await conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,))).fetchone()
         return _project_from_row(row) if row else None
+
+    async def update_aliases(self, project_id: str, aliases: list[str]) -> None:
+        await self._execute(
+            "UPDATE projects SET aliases = ?, updated_at = ? WHERE id = ?",
+            (_json(aliases), _dt(utc_now()), project_id),
+        )
 
 
 class PersonRepository(BaseRepository):
@@ -500,6 +545,12 @@ class PersonRepository(BaseRepository):
                 return person
         return None
 
+    async def update_aliases(self, person_id: str, aliases: list[str]) -> None:
+        await self._execute(
+            "UPDATE people SET aliases = ?, updated_at = ? WHERE id = ?",
+            (_json(aliases), _dt(utc_now()), person_id),
+        )
+
     async def list_all(self) -> list[Person]:
         conn = await self.database.connection()
         rows = await (await conn.execute("SELECT * FROM people ORDER BY display_name")).fetchall()
@@ -522,6 +573,11 @@ class MeetingRepository(BaseRepository):
             ),
         )
         return meeting
+
+    async def list_all(self) -> list[Meeting]:
+        conn = await self.database.connection()
+        rows = await (await conn.execute("SELECT * FROM meetings ORDER BY starts_at DESC")).fetchall()
+        return [_meeting_from_row(row) for row in rows]
 
     async def list_upcoming(self, now: datetime) -> list[Meeting]:
         conn = await self.database.connection()
@@ -738,8 +794,10 @@ class MemoryItemRepository(BaseRepository):
             """
             INSERT INTO memory_items (
                 id, bucket, kind, content, source_note_id, project_id,
-                person_id, confidence, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                person_id, confidence, status, source_type, observed_at, valid_from,
+                valid_until, last_confirmed_at, sensitivity, revision_of_id,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -751,6 +809,13 @@ class MemoryItemRepository(BaseRepository):
                 item.person_id,
                 item.confidence,
                 item.status.value,
+                item.source_type,
+                _dt(item.observed_at),
+                _dt(item.valid_from),
+                _dt(item.valid_until),
+                _dt(item.last_confirmed_at),
+                item.sensitivity,
+                item.revision_of_id,
                 _dt(item.created_at),
                 _dt(item.updated_at),
             ),
@@ -823,7 +888,28 @@ class MemoryItemRepository(BaseRepository):
             (status, _dt(utc_now()), item_id),
         )
 
+    async def get_by_id(self, item_id: str) -> MemoryItem | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute("SELECT * FROM memory_items WHERE id = ?", (item_id,))
+        ).fetchone()
+        return _memory_from_row(row) if row else None
+
+    async def confirm(self, item_id: str, confirmed_at: datetime) -> None:
+        await self._execute(
+            """
+            UPDATE memory_items
+            SET status = ?, last_confirmed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (MemoryStatus.ACTIVE.value, _dt(confirmed_at), _dt(utc_now()), item_id),
+        )
+
     async def delete(self, item_id: str) -> None:
+        await self._execute(
+            "UPDATE memory_items SET revision_of_id = NULL WHERE revision_of_id = ?",
+            (item_id,),
+        )
         await self._execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
 
 
@@ -924,6 +1010,13 @@ class EventLogRepository(BaseRepository):
             )
         ).fetchall()
         return [_event_from_row(row) for row in rows]
+
+    async def get_by_id(self, event_id: str) -> EventLog | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute("SELECT * FROM event_logs WHERE id = ?", (event_id,))
+        ).fetchone()
+        return _event_from_row(row) if row else None
 
     async def list_recent(
         self,
@@ -1047,6 +1140,7 @@ def _project_from_row(row: Any) -> Project:
     return Project(
         id=row["id"],
         name=row["name"],
+        aliases=_loads(row["aliases"]) if "aliases" in row.keys() else [],
         summary=row["summary"],
         status=row["status"],
         tags=_loads(row["tags"]),
@@ -1125,6 +1219,17 @@ def _memory_from_row(row: Any) -> MemoryItem:
         person_id=row["person_id"] if "person_id" in row.keys() else None,
         confidence=row["confidence"],
         status=row["status"],
+        source_type=row["source_type"] if "source_type" in row.keys() else "user_note",
+        observed_at=_parse_dt(row["observed_at"]) if "observed_at" in row.keys() else None,
+        valid_from=_parse_dt(row["valid_from"]) if "valid_from" in row.keys() else None,
+        valid_until=_parse_dt(row["valid_until"]) if "valid_until" in row.keys() else None,
+        last_confirmed_at=(
+            _parse_dt(row["last_confirmed_at"])
+            if "last_confirmed_at" in row.keys()
+            else None
+        ),
+        sensitivity=row["sensitivity"] if "sensitivity" in row.keys() else "normal",
+        revision_of_id=row["revision_of_id"] if "revision_of_id" in row.keys() else None,
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )

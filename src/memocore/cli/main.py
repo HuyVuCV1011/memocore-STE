@@ -22,6 +22,8 @@ def main(argv: Sequence[str] | None = None) -> None:
 async def _run(settings: Settings) -> None:
     app = await create_app(settings)
     await app.initialize()
+    if app.post_init:
+        await app.post_init(app)
     try:
         await app.start()
         if app.updater is None:

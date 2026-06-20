@@ -1,8 +1,9 @@
 import re
 import unicodedata
+from datetime import timedelta
 
 from memocore.adapters.storage.repositories import MemoryItemRepository
-from memocore.domain.models import EventType, MemoryItem, MemoryStatus
+from memocore.domain.models import EventType, MemoryItem, MemoryKind, MemoryStatus, utc_now
 from memocore.domain.schemas import MemoryCandidate
 from memocore.services.event_service import EventService
 
@@ -22,8 +23,10 @@ class MemoryService:
     ) -> list[MemoryItem]:
         created: list[MemoryItem] = []
         for candidate in candidates:
+            related = await self.related_items(candidate)
             if supersede_related or await self.has_related_conflict(candidate):
                 await self.supersede_related(candidate)
+            now = utc_now()
             item = MemoryItem(
                 bucket=candidate.bucket,
                 kind=candidate.kind,
@@ -32,6 +35,15 @@ class MemoryService:
                 project_id=project_id if candidate.bucket == "project" else None,
                 person_id=person_id,
                 confidence=candidate.confidence,
+                observed_at=now,
+                valid_from=now,
+                valid_until=(
+                    now + timedelta(days=90)
+                    if candidate.kind == MemoryKind.PROJECT_STATE
+                    else None
+                ),
+                last_confirmed_at=now if candidate.confidence >= 0.85 else None,
+                revision_of_id=related[0].id if related else None,
             )
             created_item = await self.memory_repo.create(item)
             await self.event_service.append_event(
@@ -42,6 +54,17 @@ class MemoryService:
             )
             created.append(created_item)
         return created
+
+    async def find_similar(self, candidate: MemoryCandidate) -> list[MemoryItem]:
+        existing = await self.memory_repo.list_by_bucket(candidate.bucket)
+        return [
+            item
+            for item in existing
+            if item.status in {MemoryStatus.CANDIDATE.value, MemoryStatus.ACTIVE.value}
+            and item.kind == candidate.kind
+            and item.content != candidate.content
+            and _semantic_similarity(candidate.content, item.content) >= 0.65
+        ][:3]
 
     async def list_active(self) -> list[MemoryItem]:
         return await self.memory_repo.list_active()
@@ -69,8 +92,14 @@ class MemoryService:
         return len(matches)
 
     async def supersede_related(self, candidate: MemoryCandidate) -> int:
+        matches = await self.related_items(candidate)
+        for item in matches:
+            await self.forget(item.id)
+        return len(matches)
+
+    async def related_items(self, candidate: MemoryCandidate) -> list[MemoryItem]:
         existing = await self.memory_repo.list_by_bucket(candidate.bucket)
-        matches = [
+        return [
             item
             for item in existing
             if item.status in {MemoryStatus.CANDIDATE.value, MemoryStatus.ACTIVE.value}
@@ -78,9 +107,6 @@ class MemoryService:
             and item.content != candidate.content
             and _related_memory(candidate.content, item.content)
         ]
-        for item in matches:
-            await self.forget(item.id)
-        return len(matches)
 
     async def has_related_conflict(self, candidate: MemoryCandidate) -> bool:
         existing = await self.memory_repo.list_by_bucket(candidate.bucket)
@@ -123,6 +149,15 @@ def _related_memory(new_content: str, existing_content: str) -> bool:
     if _numbers(new_content) != _numbers(existing_content) and len(overlap) >= 2:
         return True
     return len(overlap) >= 2 and len(overlap) / min(len(new_tokens), len(existing_tokens)) >= 0.4
+
+
+def _semantic_similarity(left: str, right: str) -> float:
+    left_tokens = _meaningful_tokens(left)
+    right_tokens = _meaningful_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    overlap = len(left_tokens & right_tokens)
+    return overlap / len(left_tokens | right_tokens)
 
 
 def _memory_slot(value: str) -> str | None:

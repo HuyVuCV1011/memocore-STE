@@ -18,6 +18,8 @@ You must return a valid JSON object matching the following structure:
    - Examples: "mai tôi cần làm gì", "ngày mai có việc gì", "/tomorrow", "tomorrow's plan"
 3. `query_memory`: User wants to retrieve/see saved memories.
    - Examples: "tôi đã lưu gì về bản thân", "/memory", "what do you remember about me", "in ra các ghi nhớ"
+4. `query_profile`: User asks what they do, their profession, role, identity, strengths, or working profile based on saved memory.
+   - Examples: "tôi đang làm nghề gì", "tôi đang làm công việc gì", "vai trò nghề nghiệp của tôi là gì", "what do I do for work?"
 4. `query_tasks`: User wants to view active/open tasks.
    - Examples: "tasks đang mở", "danh sách việc cần làm", "open tasks", "/tasks"
 5. `query_tasks_due`: User wants tasks filtered by due timing.

@@ -23,6 +23,8 @@ class Database:
         await conn.executescript(MIGRATION_LEDGER_SCHEMA)
         await conn.executescript(SCHEMA)
         await self._upgrade_existing_schema(conn)
+        await self._normalize_legacy_values(conn)
+        await conn.executescript(POST_UPGRADE_INDEXES)
         await self._apply_migrations(conn)
         await conn.commit()
 
@@ -47,8 +49,21 @@ class Database:
         if "recurrence_rule" not in columns:
             await conn.execute("ALTER TABLE reminders ADD COLUMN recurrence_rule TEXT")
         await self._ensure_column(conn, "tasks", "person_id", "TEXT REFERENCES people(id)")
+        await self._ensure_column(conn, "projects", "aliases", "TEXT NOT NULL DEFAULT '[]'")
         await self._ensure_column(conn, "meetings", "person_id", "TEXT REFERENCES people(id)")
         await self._ensure_column(conn, "memory_items", "person_id", "TEXT REFERENCES people(id)")
+        await self._ensure_column(conn, "memory_items", "source_type", "TEXT NOT NULL DEFAULT 'user_note'")
+        await self._ensure_column(conn, "memory_items", "observed_at", "TEXT")
+        await self._ensure_column(conn, "memory_items", "valid_from", "TEXT")
+        await self._ensure_column(conn, "memory_items", "valid_until", "TEXT")
+        await self._ensure_column(conn, "memory_items", "last_confirmed_at", "TEXT")
+        await self._ensure_column(conn, "memory_items", "sensitivity", "TEXT NOT NULL DEFAULT 'normal'")
+        await self._ensure_column(
+            conn,
+            "memory_items",
+            "revision_of_id",
+            "TEXT REFERENCES memory_items(id)",
+        )
 
     async def _ensure_column(
         self,
@@ -80,6 +95,9 @@ class Database:
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))",
                 (migration.name,),
             )
+
+    async def _normalize_legacy_values(self, conn: aiosqlite.Connection) -> None:
+        await conn.execute("UPDATE projects SET status = 'active' WHERE status = 'candidate'")
 
     async def commit_if_needed(self) -> None:
         if self._transaction_depth == 0:
@@ -131,6 +149,7 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
+    aliases TEXT NOT NULL DEFAULT '[]',
     summary TEXT NOT NULL,
     status TEXT NOT NULL,
     tags TEXT NOT NULL,
@@ -238,6 +257,13 @@ CREATE TABLE IF NOT EXISTS memory_items (
     person_id TEXT REFERENCES people(id),
     confidence REAL NOT NULL,
     status TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'user_note',
+    observed_at TEXT,
+    valid_from TEXT,
+    valid_until TEXT,
+    last_confirmed_at TEXT,
+    sensitivity TEXT NOT NULL DEFAULT 'normal',
+    revision_of_id TEXT REFERENCES memory_items(id),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -258,12 +284,16 @@ CREATE INDEX IF NOT EXISTS idx_reminders_source_note_id ON reminders(source_note
 CREATE INDEX IF NOT EXISTS idx_memory_items_bucket ON memory_items(bucket);
 CREATE INDEX IF NOT EXISTS idx_event_logs_entity ON event_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_followups_status_due ON followups(status, due_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_source_message
+ON notes(source, source_chat_id, source_message_id)
+WHERE source_message_id IS NOT NULL;
+"""
+
+
+POST_UPGRADE_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_tasks_person ON tasks(person_id);
 CREATE INDEX IF NOT EXISTS idx_meetings_person ON meetings(person_id);
 CREATE INDEX IF NOT EXISTS idx_memory_items_person ON memory_items(person_id);
 CREATE INDEX IF NOT EXISTS idx_commitments_person_status ON commitments(person_id, status);
 CREATE INDEX IF NOT EXISTS idx_commitments_project_status ON commitments(project_id, status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_source_message
-ON notes(source, source_chat_id, source_message_id)
-WHERE source_message_id IS NOT NULL;
 """

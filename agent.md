@@ -202,6 +202,8 @@ MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_b
 - Provide Telegram commands: `/today`, `/tomorrow`, `/tasks`, `/reminders`, `/waiting`,
   `/projects`, `/memory`, `/briefing`, `/weekly`, `/people`, `/commitments`, `/person`,
   `/project`, `/context`, and `/prep`.
+- Keep capture/query semantics explicit: `/task <content>` creates a task, `/tasks` lists tasks,
+  `/project <name>` shows one project, and `/projects` lists projects.
 - Send scheduled morning briefings, weekly reviews, recurring daily/weekly reminders, and
   cooldown-protected proactive nudges that respect quiet hours.
 - Generate person/project context and meeting-prep summaries from linked tasks, follow-ups,

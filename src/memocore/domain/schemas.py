@@ -161,6 +161,8 @@ class CaptureResponse(BaseModel):
     memories_deleted: int = 0
     duplicate: bool = False
     clarification_question: str | None = None
+    duplicate_suggestions: list[str] = Field(default_factory=list)
+    entity_suggestion_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 
@@ -169,6 +171,7 @@ class IntentClassification(BaseModel):
         "query_today",
         "query_tomorrow",
         "query_memory",
+        "query_profile",
         "query_tasks",
         "query_tasks_due",
         "query_reminders",
@@ -195,3 +198,41 @@ class IntentClassification(BaseModel):
     target_entity_hints: str | None = None
     ambiguity_detected: bool = False
     clarification_question: str | None = None
+
+
+class KnowledgeQueryPlan(BaseModel):
+    entities: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
+    record_types: list[
+        Literal[
+            "memory",
+            "project",
+            "person",
+            "task",
+            "followup",
+            "commitment",
+            "meeting",
+            "reminder",
+        ]
+    ] = Field(default_factory=list)
+    time_scope: Literal["past", "current", "today", "tomorrow", "future", "any"] = "current"
+    answer_style: Literal["direct", "summary", "list"] = "direct"
+
+
+class AssistantAction(BaseModel):
+    label: str
+    action_id: str
+    row: int = 0
+
+
+class AssistantSection(BaseModel):
+    heading: str | None = None
+    lines: list[str] = Field(default_factory=list)
+
+
+class AssistantResponse(BaseModel):
+    title: str
+    summary: str | None = None
+    sections: list[AssistantSection] = Field(default_factory=list)
+    footer: str | None = None
+    actions: list[AssistantAction] = Field(default_factory=list)

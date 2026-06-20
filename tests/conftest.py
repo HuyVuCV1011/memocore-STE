@@ -96,6 +96,7 @@ def capture_service(repos, fake_provider):
         repos["reminders"],
         reminder_service,
         event_service,
+        task_repo=repos["tasks"],
     )
     return CaptureService(
         repos["notes"],

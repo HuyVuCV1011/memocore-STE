@@ -19,6 +19,107 @@ async def test_capture_flow_persists_extracted_objects(capture_service, repos):
     assert [event.event_type for event in events]
 
 
+async def test_memory_capture_reports_semantic_duplicate_without_merging(
+    capture_service, fake_provider, repos
+):
+    note = await repos["notes"].create(Note(raw_text="memory source"))
+    await capture_service.memory_service.persist_candidates(
+        [
+            MemoryCandidate(
+                bucket=MemoryBucket.PROFILE,
+                kind=MemoryKind.PREFERENCE,
+                content="Vũ thích câu trả lời ngắn gọn và trực tiếp",
+                confidence=0.9,
+            )
+        ],
+        note.id,
+    )
+    fake_provider.response = NoteExtraction(
+        summary="Ưu tiên câu trả lời trực tiếp",
+        memories=[
+            MemoryCandidate(
+                bucket=MemoryBucket.PROFILE,
+                kind=MemoryKind.PREFERENCE,
+                content="Vũ thích câu trả lời trực tiếp và ngắn gọn",
+                confidence=0.9,
+            )
+        ],
+    )
+
+    response = await capture_service.capture(
+        CaptureRequest(raw_text="Tôi thích câu trả lời trực tiếp và ngắn gọn #mem")
+    )
+
+    assert response.duplicate_suggestions
+    assert "Mình chưa tự gộp" in response.duplicate_suggestions[0]
+
+
+async def test_linkedin_capture_suggests_similar_existing_note(
+    capture_service, fake_provider, repos
+):
+    existing = await repos["notes"].create(
+        Note(
+            raw_text="Ba bài học quản lý nhân sự từ dự án STE #li",
+            summary="Ba bài học quản lý nhân sự",
+            tags=["li", "linkedin"],
+            status=NoteStatus.PROCESSED,
+        )
+    )
+    fake_provider.response = NoteExtraction(
+        summary="Bài học quản lý nhân sự ở STE",
+        tags=["li", "linkedin"],
+    )
+
+    response = await capture_service.capture(
+        CaptureRequest(raw_text="Ba bài học quản lý nhân sự trong dự án STE #li")
+    )
+
+    assert response.note_id != existing.id
+    assert response.duplicate_suggestions
+    assert "note LinkedIn đã có" in response.duplicate_suggestions[0]
+
+
+async def test_project_state_memory_has_lifecycle_metadata(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="project memory source"))
+    created = await capture_service.memory_service.persist_candidates(
+        [
+            MemoryCandidate(
+                bucket=MemoryBucket.PROJECT,
+                kind=MemoryKind.PROJECT_STATE,
+                content="STE Dashboard đang ở giai đoạn beta",
+                confidence=0.9,
+            )
+        ],
+        note.id,
+    )
+
+    item = created[0]
+    assert item.source_type == "user_note"
+    assert item.observed_at is not None
+    assert item.valid_from is not None
+    assert item.valid_until is not None
+    assert item.last_confirmed_at is not None
+
+
+async def test_remind_tag_injects_candidate_when_model_omits_it(
+    capture_service, fake_provider, repos
+):
+    fake_provider.response = NoteExtraction(summary="Chuẩn bị họp", tags=[])
+
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text="Chuẩn bị họp với team #remind",
+            source_chat_id="chat-1",
+            source_message_id="message-1",
+        )
+    )
+
+    reminders = await repos["reminders"].list_by_note(response.note_id)
+    assert response.reminders_created == 1
+    assert reminders[0].title == "Chuẩn bị họp với team"
+    assert response.clarification_question is not None
+
+
 async def test_completion_note_marks_matching_task_done_without_memory(
     capture_service, fake_provider, repos
 ):

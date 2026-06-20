@@ -29,9 +29,19 @@ from memocore.domain.models import (
     Task,
     TaskStatus,
 )
-from memocore.domain.schemas import CaptureRequest, CaptureResponse
+from memocore.domain.schemas import (
+    CaptureRequest,
+    CaptureResponse,
+    MemoryCandidate,
+    NoteExtraction,
+    ReminderCandidate,
+    TaskCandidate,
+)
 from memocore.services.event_service import EventService
-from memocore.services.clarification_service import ClarificationService
+from memocore.services.clarification_service import (
+    ClarificationService,
+    parse_clarification_datetime,
+)
 from memocore.services.memory_service import MemoryService
 from memocore.services.reminder_service import ReminderService
 from memocore.services.task_extraction_service import ExtractionService
@@ -158,18 +168,128 @@ class CaptureService:
         try:
             extraction = await self.extraction_service.extract(request.raw_text)
         except ExtractionError as exc:
-            await self.note_repo.update_status(note.id, NoteStatus.FAILED)
-            await self.event_service.append_event(
-                EventType.MODEL_OUTPUT_INVALID,
-                "note",
-                note.id,
-                {"error": str(exc)},
+            # Rescue deterministic/explicit routing notes
+            action_tag = _trailing_action_tag(request.raw_text)
+            command = _capture_command(request.raw_text)
+            is_deterministic = action_tag is not None or command is not None
+            if is_deterministic:
+                fallback_tags = []
+                if action_tag in {"li", "linkedin"} or command in {"li", "linkedin"}:
+                    fallback_tags.extend(["li", "linkedin"])
+                if action_tag in {"task", "t"} or command in {"task", "t"}:
+                    fallback_tags.append("task")
+                if action_tag in {"remind", "r"}:
+                    fallback_tags.append("reminder")
+                if action_tag in {"mem", "m"} or command in {"mem", "m"}:
+                    fallback_tags.append("memory")
+
+                clean_summary = request.raw_text
+                for cmd in ("/li", "/linkedin", "/task", "/t", "/mem", "/m"):
+                    if clean_summary.lower().startswith(cmd):
+                        parts = clean_summary.split(maxsplit=1)
+                        if len(parts) > 1:
+                            clean_summary = parts[1]
+                        break
+
+                extraction = NoteExtraction(
+                    summary=clean_summary,
+                    tags=fallback_tags,
+                )
+            else:
+                await self.note_repo.update_status(note.id, NoteStatus.FAILED)
+                await self.event_service.append_event(
+                    EventType.MODEL_OUTPUT_INVALID,
+                    "note",
+                    note.id,
+                    {"error": str(exc)},
+                )
+                return CaptureResponse(
+                    note_id=note.id,
+                    summary="Raw note saved, but extraction failed.",
+                    errors=[str(exc)],
+                )
+
+        # Force tag presence if explicit tags are found in raw text or command
+        action_tag = _trailing_action_tag(request.raw_text)
+        command = _capture_command(request.raw_text)
+
+        # Check LinkedIn tags
+        if action_tag in {"li", "linkedin"} or command in {"li", "linkedin"}:
+            for tag in ("li", "linkedin"):
+                if tag not in extraction.tags:
+                    extraction.tags.append(tag)
+
+        # Check Task tags
+        if action_tag in {"task", "t"} or command in {"task", "t"}:
+            if "task" not in extraction.tags:
+                extraction.tags.append("task")
+
+        # Check Reminder tags
+        if action_tag in {"remind", "r"} and "reminder" not in extraction.tags:
+            extraction.tags.append("reminder")
+
+        # Check Memory tags
+        if action_tag in {"mem", "m"} or command in {"mem", "m"}:
+            if "memory" not in extraction.tags:
+                extraction.tags.append("memory")
+
+        # Force candidate injection if explicitly routed as task/memory but none extracted
+        is_task_intent = action_tag in {"task", "t"} or command in {"task", "t"}
+        if is_task_intent and not extraction.tasks:
+            clean_title = _clean_capture_text(request.raw_text)
+            extraction.tasks.append(
+                TaskCandidate(
+                    title=clean_title,
+                    priority="medium",
+                    confidence=1.0
+                )
             )
-            return CaptureResponse(
-                note_id=note.id,
-                summary="Raw note saved, but extraction failed.",
-                errors=[str(exc)],
+
+        is_reminder_intent = action_tag in {"remind", "r"}
+        if is_reminder_intent and not extraction.reminders:
+            clean_title = _clean_capture_text(request.raw_text)
+            remind_at = parse_clarification_datetime(clean_title)
+            extraction.reminders.append(
+                ReminderCandidate(
+                    title=clean_title,
+                    remind_at=remind_at.isoformat() if remind_at else None,
+                    confidence=1.0,
+                )
             )
+
+        is_memory_intent = action_tag in {"mem", "m"} or command in {"mem", "m"}
+        if is_memory_intent and not extraction.memories:
+            clean_content = _clean_capture_text(request.raw_text)
+            from memocore.domain.models import MemoryBucket, MemoryKind
+            extraction.memories.append(
+                MemoryCandidate(
+                    bucket=MemoryBucket.FACT,
+                    kind=MemoryKind.FACT,
+                    content=clean_content,
+                    confidence=1.0
+                )
+            )
+
+        duplicate_suggestions: list[str] = []
+        if {"li", "linkedin"} & set(extraction.tags):
+            for existing_note in await self.note_repo.list_recent():
+                if existing_note.id == note.id or not {"li", "linkedin"} & set(existing_note.tags):
+                    continue
+                if _text_similarity(request.raw_text, existing_note.raw_text) >= 0.55:
+                    duplicate_suggestions.append(
+                        f"Ý tưởng này gần với note LinkedIn đã có: “{existing_note.summary or existing_note.raw_text}”. "
+                        "Mình chưa tự gộp."
+                    )
+                    await self.event_service.append_event(
+                        EventType.MEMORY_DUPLICATE_SUGGESTED,
+                        "note",
+                        existing_note.id,
+                        {
+                            "source_note_id": note.id,
+                            "candidate_content": request.raw_text,
+                        },
+                    )
+                    break
 
         try:
             async with self.note_repo.database.transaction():
@@ -180,8 +300,27 @@ class CaptureService:
                 ]
                 project_id: str | None = None
                 projects_by_name: dict[str, str] = {}
+                entity_suggestion_ids: list[str] = []
+                known_projects = await self.project_repo.list_all()
                 for hint in explicit_projects:
-                    project = await self.project_repo.find_or_create(hint.name)
+                    project = _similar_named_entity(hint.name, known_projects, "name", "aliases")
+                    if project is not None and normalize_lookup(hint.name) not in {
+                        normalize_lookup(project.name),
+                        *(normalize_lookup(alias) for alias in project.aliases),
+                    }:
+                        suggestion = await self.event_service.append_event(
+                            EventType.ENTITY_ALIAS_SUGGESTED,
+                            "project",
+                            project.id,
+                            {
+                                "alias": hint.name,
+                                "canonical_name": project.name,
+                                "source_note_id": note.id,
+                            },
+                        )
+                        entity_suggestion_ids.append(suggestion.id)
+                    else:
+                        project = await self.project_repo.find_or_create(hint.name)
                     projects_by_name[normalize_lookup(hint.name)] = project.id
                     await self.event_service.append_event(
                         EventType.PROJECT_SEEN,
@@ -192,9 +331,10 @@ class CaptureService:
                     if len(explicit_projects) == 1:
                         project_id = project.id
 
-                people_by_name, people_created = await self._resolve_people(
+                people_by_name, people_created, person_suggestions = await self._resolve_people(
                     extraction, request.raw_text, note.id
                 )
+                entity_suggestion_ids.extend(person_suggestions)
 
                 tasks_created = 0
                 is_memory_correction = _is_memory_correction(request.raw_text)
@@ -249,6 +389,22 @@ class CaptureService:
                 memories = []
                 if not tasks_completed:
                     for candidate in extraction.memories:
+                        similar = await self.memory_service.find_similar(candidate)
+                        for item in similar:
+                            suggestion = (
+                                f"“{candidate.content}” gần với memory đã có: “{item.content}”. "
+                                "Mình chưa tự gộp."
+                            )
+                            duplicate_suggestions.append(suggestion)
+                            await self.event_service.append_event(
+                                EventType.MEMORY_DUPLICATE_SUGGESTED,
+                                "memory_item",
+                                item.id,
+                                {
+                                    "source_note_id": note.id,
+                                    "candidate_content": candidate.content,
+                                },
+                            )
                         memories.extend(
                             await self.memory_service.persist_candidates(
                                 [candidate],
@@ -303,15 +459,18 @@ class CaptureService:
             followups_created=v4_counts["followups_created"],
             commitments_created=v4_counts["commitments_created"],
             clarification_question=clarification_question,
+            duplicate_suggestions=duplicate_suggestions,
+            entity_suggestion_ids=entity_suggestion_ids,
         )
 
     async def _resolve_people(
         self, extraction, raw_text: str, note_id: str
-    ) -> tuple[dict[str, str], int]:
+    ) -> tuple[dict[str, str], int, list[str]]:
         people_by_name: dict[str, str] = {}
         if self.person_repo is None:
-            return people_by_name, 0
+            return people_by_name, 0, []
         created_count = 0
+        suggestion_ids: list[str] = []
         existing_people_by_name: dict[str, Person] = {}
         for person in await self.person_repo.list_all():
             for name in [person.display_name, *person.aliases]:
@@ -343,6 +502,28 @@ class CaptureService:
                     {"source_note_id": note_id, "confidence": candidate.confidence},
                 )
             safe_candidate_aliases = [alias for alias in candidate.aliases if _safe_alias(alias)]
+            if existing is not None:
+                new_aliases = [
+                    alias
+                    for alias in safe_candidate_aliases
+                    if normalize_lookup(alias)
+                    not in {
+                        normalize_lookup(person.display_name),
+                        *(normalize_lookup(value) for value in person.aliases),
+                    }
+                ]
+                for alias in new_aliases:
+                    suggestion = await self.event_service.append_event(
+                        EventType.ENTITY_ALIAS_SUGGESTED,
+                        "person",
+                        person.id,
+                        {
+                            "alias": alias,
+                            "canonical_name": person.display_name,
+                            "source_note_id": note_id,
+                        },
+                    )
+                    suggestion_ids.append(suggestion.id)
             for name in [
                 person.display_name,
                 *person.aliases,
@@ -353,7 +534,7 @@ class CaptureService:
                     existing_people_by_name[normalize_lookup(name)] = person
                 if name and _explicit_mention(name, raw_text):
                     people_by_name[normalize_lookup(name)] = person.id
-        return people_by_name, created_count
+        return people_by_name, created_count, suggestion_ids
 
     def _resolve_project_id(
         self, name: str | None, projects_by_name: dict[str, str], default_project_id: str | None
@@ -769,3 +950,61 @@ def _recurring_title(raw_text: str) -> str:
     title = re.sub(r"\b\d{1,2}\s*(?:am|pm)\b", " ", title, flags=re.IGNORECASE)
     title = " ".join(title.split())
     return title or "Recurring reminder"
+
+
+def _trailing_action_tag(text: str) -> str | None:
+    match = re.search(
+        r"(?:^|\s)#(linkedin|li|task|t|remind|r|mem|m)\s*[.,!?;:]*\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).lower() if match else None
+
+
+def _capture_command(text: str) -> str | None:
+    match = re.match(r"^/(linkedin|li|task|t|mem|m)(?:@\w+)?(?:\s|$)", text, flags=re.IGNORECASE)
+    return match.group(1).lower() if match else None
+
+
+def _clean_capture_text(text: str) -> str:
+    cleaned = re.sub(
+        r"^/(?:linkedin|li|task|t|mem|m)(?:@\w+)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\s*#(?:linkedin|li|task|t|remind|r|mem|m)\s*[.,!?;:]*\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned.strip()
+
+
+def _similar_named_entity(name: str, entities: list, name_field: str, aliases_field: str):
+    normalized = normalize_lookup(name)
+    tokens = set(normalized.split())
+    if len(tokens) < 2:
+        return None
+    best = None
+    best_score = 0.0
+    for entity in entities:
+        values = [getattr(entity, name_field), *getattr(entity, aliases_field)]
+        for value in values:
+            candidate_tokens = set(normalize_lookup(value).split())
+            if not candidate_tokens:
+                continue
+            score = len(tokens & candidate_tokens) / len(tokens | candidate_tokens)
+            if score > best_score:
+                best = entity
+                best_score = score
+    return best if best_score >= 0.75 else None
+
+
+def _text_similarity(left: str, right: str) -> float:
+    left_tokens = set(normalize_lookup(_clean_capture_text(left)).split())
+    right_tokens = set(normalize_lookup(_clean_capture_text(right)).split())
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)

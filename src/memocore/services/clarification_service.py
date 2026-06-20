@@ -90,6 +90,30 @@ class ClarificationService:
             )
 
         # Check for task / status confirmations
+        if pending.entity_type == "task_due_missing" and self.task_repo:
+            due_at = parse_clarification_datetime(answer_text, default_timezone=self.default_timezone)
+            if due_at is None:
+                return ClarificationResult(
+                    handled=True,
+                    message=_localized(
+                        answer_text,
+                        "Mình chưa hiểu thời gian đó. Bạn nói kiểu 'hôm nay 19h' hoặc 'mai 9h' giúp mình nhé.",
+                        "I could not understand that time. Please use a format like 'today 7pm' or 'tomorrow 9am'.",
+                    ),
+                )
+            await self.task_repo.update_due_at(pending.entity_id, due_at)
+            await self.clarification_repo.resolve(pending.id, answer_text)
+            task = await self.task_repo.get_by_id(pending.entity_id)
+            title = task.title if task else ""
+            return ClarificationResult(
+                handled=True,
+                message=_localized(
+                    answer_text,
+                    f"Mình đã đổi hạn task '{title}' sang {due_at.astimezone(self.default_timezone).strftime('%H:%M %d/%m/%Y')}.",
+                    f"Updated the deadline for task '{title}' to {due_at.astimezone(self.default_timezone).strftime('%H:%M %d/%m/%Y')}.",
+                ),
+            )
+
         if pending.entity_type == "task" and self.task_repo:
             if pending.field_name.startswith("due_at|"):
                 if _is_yes(answer_text):
@@ -169,7 +193,7 @@ class ClarificationService:
                     )
 
         # Check for task selection confirmation (multiple options)
-        if pending.entity_type in {"task_selection_done", "task_selection_due_update"} and self.task_repo:
+        if pending.entity_type in {"task_selection_done", "task_selection_due_update", "task_selection_rename"} and self.task_repo:
             if _is_no(answer_text):
                 await self.clarification_repo.cancel(pending.id, answer_text)
                 return ClarificationResult(
@@ -230,6 +254,27 @@ class ClarificationService:
                                 answer_text,
                                 f"Đã rõ. Đã cập nhật hạn chót cho task: {task.title}.",
                                 f"Got it. Updated deadline for task: {task.title}.",
+                            ),
+                        )
+                    elif pending.entity_type == "task_selection_rename":
+                        new_title = pending.field_name.split("|", 1)[1]
+                        await self.task_repo.update_title(target_task_id, new_title)
+                        await self.event_service.append_event(
+                            EventType.NOTE_PROCESSED,
+                            "task",
+                            target_task_id,
+                            {
+                                "transition": "renamed_from_selection_confirmation",
+                                "new_title": new_title,
+                            },
+                        )
+                        await self.clarification_repo.resolve(pending.id, answer_text)
+                        return ClarificationResult(
+                            handled=True,
+                            message=_localized(
+                                answer_text,
+                                f"Đã rõ. Đã sửa tên task thành: {new_title}.",
+                                f"Got it. Renamed task to: {new_title}.",
                             ),
                         )
             
@@ -367,7 +412,7 @@ def parse_clarification_datetime(
     target_date = None
     if "tomorrow" in lowered or "ngay mai" in lowered or _has_word(lowered, "mai"):
         target_date = now.date() + timedelta(days=1)
-    elif "today" in lowered or "hom nay" in lowered:
+    elif "today" in lowered or "hom nay" in lowered or "toi nay" in lowered:
         target_date = now.date()
     else:
         target_date = _next_named_weekday(lowered, now)

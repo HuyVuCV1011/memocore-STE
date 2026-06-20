@@ -11,11 +11,16 @@ if (-not (Test-Path ".\.venv\Scripts\memocore.exe")) {
     throw "Missing .venv\Scripts\memocore.exe. Run: .\.venv\Scripts\pip install -e `".[dev]`""
 }
 
-pm2 describe memocore-ste *> $null
-if ($LASTEXITCODE -eq 0) {
-    pm2 restart memocore-ste --update-env
-} else {
-    pm2 start ecosystem.config.cjs --only memocore-ste
+if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
+    throw "Missing .venv\Scripts\python.exe. Run: py -m venv .venv"
 }
+
+Write-Host "Checking Python syntax before restarting PM2..."
+& ".\.venv\Scripts\python.exe" -m compileall -q "src\memocore"
+if ($LASTEXITCODE -ne 0) {
+    throw "Python compile check failed. Fix the syntax/import errors before restarting memocore-ste."
+}
+
+pm2 startOrReload ecosystem.config.cjs --only memocore-ste --update-env
 
 pm2 save

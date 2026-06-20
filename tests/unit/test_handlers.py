@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -9,11 +10,18 @@ from telegram.error import NetworkError
 from telegram.ext import ApplicationBuilder, CallbackContext
 
 from memocore.adapters.telegram.handlers import (
+    _apply_light_tone,
     format_capture_response,
+    memory_callback_handler,
     message_handler,
     secretary_handler,
     start_handler,
+    tag_prompt_callback_handler,
 )
+from datetime import UTC
+from memocore.domain.models import Note
+from memocore.domain.schemas import NoteExtraction
+from memocore.domain.schemas import AssistantResponse
 from memocore.domain.schemas import CaptureResponse
 from tests.fixtures.telegram_updates import (
     COMMAND_UPDATE,
@@ -63,15 +71,22 @@ def test_format_capture_response_success():
     )
 
     assert "Saved" in format_capture_response(response)
-    assert "1 task(s)" in format_capture_response(response)
-    assert "1 meeting(s)" in format_capture_response(response)
-    assert "1 commitment(s)" in format_capture_response(response)
+    assert "1 task" in format_capture_response(response)
+    assert "1 meeting" in format_capture_response(response)
+    assert "1 commitment" in format_capture_response(response)
+
+
+def test_light_tone_responds_to_fatigue_without_persisting_state():
+    reply = _apply_light_tone("Đã ghi nhận.", "Tôi hơi mệt", UTC)
+
+    assert reply.startswith("Đã ghi nhận.")
+    assert "thật ngắn" in reply
 
 
 def test_format_capture_response_error():
     response = CaptureResponse(note_id="note-1", summary="Failed", errors=["bad json"])
 
-    assert "raw note saved" in format_capture_response(response)
+    assert "ghi chú gốc đã được lưu" in format_capture_response(response)
 
 
 def test_format_capture_response_includes_clarification_question():
@@ -194,6 +209,84 @@ async def test_secretary_handler_accepts_briefing_command(monkeypatch):
     assert send_message.await_args.kwargs["text"] == "briefing view"
 
 
+async def test_memory_command_uses_compact_presenter(monkeypatch):
+    class FakeMemoryView:
+        async def overview(self):
+            return AssistantResponse(title="Ghi nhớ của bạn")
+
+    update_dict = deepcopy(COMMAND_UPDATE)
+    update_dict["message"]["text"] = "/memory"
+    update_dict["message"]["entities"] = [{"offset": 0, "length": 7, "type": "bot_command"}]
+    update = build_real_update(update_dict)
+    context = build_context(
+        {"secretary_service": object(), "memory_view_service": FakeMemoryView()}
+    )
+    send_message = patch_send_message(monkeypatch, update)
+
+    await secretary_handler(update, context)
+
+    assert send_message.await_args.kwargs["text"] == "Ghi nhớ của bạn"
+
+
+async def test_memory_callback_edits_message_and_answers(monkeypatch):
+    class FakeMemoryView:
+        async def topic(self, topic: str, page: int):
+            assert (topic, page) == ("ste", 1)
+            return AssistantResponse(title="Ghi nhớ: STE")
+
+    update_dict = {
+        "update_id": 999,
+        "callback_query": {
+            "id": "callback-1",
+            "from": {"id": 42, "is_bot": False, "first_name": "Vu"},
+            "chat_instance": "chat-instance",
+            "data": "mem:t:ste:1",
+            "message": deepcopy(COMMAND_UPDATE["message"]),
+        },
+    }
+    update = build_real_update(update_dict)
+    context = build_context({"memory_view_service": FakeMemoryView()})
+    answer_callback_query = AsyncMock(return_value=True)
+    edit_message_text = AsyncMock(return_value=True)
+    bot_type = type(update.callback_query.get_bot())
+    monkeypatch.setattr(bot_type, "answer_callback_query", answer_callback_query)
+    monkeypatch.setattr(bot_type, "edit_message_text", edit_message_text)
+
+    await memory_callback_handler(update, context)
+
+    answer_callback_query.assert_awaited_once()
+    assert edit_message_text.await_args.kwargs["text"] == "Ghi nhớ: STE"
+
+
+async def test_stale_memory_callback_returns_recovery_feedback(monkeypatch):
+    class FakeMemoryView:
+        async def topic(self, topic: str, page: int):
+            return None
+
+    update_dict = {
+        "update_id": 1000,
+        "callback_query": {
+            "id": "callback-2",
+            "from": {"id": 42, "is_bot": False, "first_name": "Vu"},
+            "chat_instance": "chat-instance",
+            "data": "mem:t:missing:0",
+            "message": deepcopy(COMMAND_UPDATE["message"]),
+        },
+    }
+    update = build_real_update(update_dict)
+    context = build_context({"memory_view_service": FakeMemoryView()})
+    answer_callback_query = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        type(update.callback_query.get_bot()),
+        "answer_callback_query",
+        answer_callback_query,
+    )
+
+    await memory_callback_handler(update, context)
+
+    assert "hết hiệu lực" in answer_callback_query.await_args.kwargs["text"]
+
+
 async def test_secretary_handler_accepts_v4_prep_command_with_query(monkeypatch):
     class FakeSecretary:
         async def people(self) -> str:
@@ -218,6 +311,24 @@ async def test_secretary_handler_accepts_v4_prep_command_with_query(monkeypatch)
     assert send_message.await_args.kwargs["text"] == "prep view Alex"
 
 
+async def test_secretary_handler_project_prompt_mentions_projects_list(monkeypatch):
+    class FakeSecretary:
+        pass
+
+    update_dict = deepcopy(COMMAND_UPDATE)
+    update_dict["message"]["text"] = "/project"
+    update_dict["message"]["entities"] = [{"offset": 0, "length": 8, "type": "bot_command"}]
+    update = build_real_update(update_dict)
+    context = build_context({"secretary_service": FakeSecretary()})
+    send_message = patch_send_message(monkeypatch, update)
+
+    await secretary_handler(update, context)
+
+    send_message.assert_awaited_once()
+    assert "/project <tên>" in send_message.await_args.kwargs["text"]
+    assert "/projects" in send_message.await_args.kwargs["text"]
+
+
 async def test_start_handler_reply(monkeypatch):
     update = build_real_update(START_UPDATE)
     context = build_context()
@@ -227,7 +338,42 @@ async def test_start_handler_reply(monkeypatch):
 
     send_message.assert_awaited_once()
     assert send_message.await_args.kwargs["chat_id"] == 9001
-    assert "MemoCore is ready" in send_message.await_args.kwargs["text"]
+    assert "MemoCore đã sẵn sàng" in send_message.await_args.kwargs["text"]
+
+
+async def test_tag_prompt_reprocesses_without_deleting_raw_note(
+    capture_service, fake_provider, repos
+):
+    note = await repos["notes"].create(
+        Note(
+            source="telegram",
+            source_chat_id="9001",
+            source_message_id="501",
+            raw_text="Giao Nguyên làm outline",
+        )
+    )
+    fake_provider.response = NoteExtraction(summary="Giao Nguyên làm outline")
+    query = SimpleNamespace(
+        data=f"tag_prompt:task:{note.id}",
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    update = SimpleNamespace(callback_query=query)
+    conversation_service = SimpleNamespace(note_repo=repos["notes"])
+    context = build_context(
+        {
+            "conversation_service": conversation_service,
+            "capture_service": capture_service,
+        }
+    )
+
+    await tag_prompt_callback_handler(update, context)
+
+    preserved = await repos["notes"].get_by_id(note.id)
+    tasks = await repos["tasks"].list_by_note(note.id)
+    assert preserved is not None
+    assert preserved.raw_text == "Giao Nguyên làm outline"
+    assert tasks[0].title == "Giao Nguyên làm outline"
 
 
 async def test_message_handler_calls_capture(monkeypatch, capture_service, fake_provider):
