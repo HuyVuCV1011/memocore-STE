@@ -138,7 +138,9 @@ ollama pull qwen3:14b
 | Command | Purpose |
 | --- | --- |
 | `.venv/bin/memocore models` | List configured provider profiles on Linux/macOS. |
+| `.venv/bin/memocore doctor` | Check config, SQLite, Telegram slash menu, PM2, and runtime data. |
 | `.\.venv\Scripts\memocore models` | List configured provider profiles on Windows. |
+| `.\.venv\Scripts\memocore doctor` | Check config, SQLite, Telegram slash menu, PM2, and runtime data on Windows. |
 | `.venv/bin/memocore run --provider ollama` | Run the bot with Ollama. |
 | `.venv/bin/memocore run --provider groq` | Run the bot with Groq. |
 | `.venv/bin/pytest -q` | Run the test suite on Linux/macOS. |

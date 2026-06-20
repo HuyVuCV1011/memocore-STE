@@ -173,6 +173,12 @@ Provider profile check:
 .\.venv\Scripts\memocore models
 ```
 
+Runtime health check:
+
+```powershell
+.\.venv\Scripts\memocore doctor
+```
+
 The live extraction benchmark is opt-in because it can call real providers:
 
 ```bash

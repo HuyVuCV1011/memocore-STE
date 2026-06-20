@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 from memocore.app import create_app, shutdown_app
 from memocore.adapters.llm.provider_factory import PROVIDER_DEFAULTS
+from memocore.cli.doctor import has_failures, print_doctor_report, run_doctor
 from memocore.config import Settings, get_settings
 
 
@@ -14,6 +15,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     settings = get_settings()
     if args.command == "models":
         _print_models(settings)
+        return
+    if args.command == "doctor":
+        results = asyncio.run(run_doctor(settings, live_provider=args.live_provider))
+        print_doctor_report(results)
+        if has_failures(results):
+            raise SystemExit(1)
         return
     settings = settings.with_model_override(provider=args.provider, name=args.model)
     asyncio.run(_run(settings))
@@ -48,6 +55,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument("--provider", choices=sorted(PROVIDER_DEFAULTS))
     run_parser.add_argument("--model", help="Override the selected provider's default model.")
     subparsers.add_parser("models", help="List available provider profiles.")
+    doctor_parser = subparsers.add_parser("doctor", help="Check runtime, DB, Telegram, and provider config.")
+    doctor_parser.add_argument(
+        "--live-provider",
+        action="store_true",
+        help="Also call the configured model provider health check.",
+    )
     args = parser.parse_args(argv)
     if args.command is None:
         args.command = "run"

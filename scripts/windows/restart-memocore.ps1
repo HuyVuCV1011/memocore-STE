@@ -21,6 +21,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Python compile check failed. Fix the syntax/import errors before restarting memocore-ste."
 }
 
+Write-Host "Running MemoCore doctor before restarting PM2..."
+& ".\.venv\Scripts\memocore.exe" doctor
+if ($LASTEXITCODE -ne 0) {
+    throw "MemoCore doctor failed. Fix the reported issue before restarting memocore-ste."
+}
+
 pm2 startOrReload ecosystem.config.cjs --only memocore-ste --update-env
 
 pm2 save
