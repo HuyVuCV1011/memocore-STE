@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from memocore.adapters.storage.repositories import PersonRepository, ProjectRepository
+from memocore.adapters.storage.repositories import (
+    PersonRepository,
+    ProjectRepository,
+    normalize_lookup,
+)
 from memocore.domain.models import EventType
 from memocore.domain.schemas import AssistantAction, AssistantResponse
 from memocore.services.event_service import EventService
@@ -29,7 +33,7 @@ class EntityConfirmationService:
             return None
         return AssistantResponse(
             title="Xác nhận biệt danh",
-            summary=f"“{alias}” có phải là cách bạn gọi “{canonical}” không?",
+            summary=f"“{alias}” có phải là cách anh gọi “{canonical}” không?",
             actions=[
                 AssistantAction(
                     label="Đúng, ghi nhớ",
@@ -41,15 +45,37 @@ class EntityConfirmationService:
         )
 
     async def review(self, entity_type: str) -> AssistantResponse:
-        events = [
+        recent_since = datetime.now(UTC) - timedelta(days=30)
+        confirmed_suggestion_ids = {
+            event.payload.get("suggestion_event_id")
+            for event in await self.event_service.list_recent(
+                EventType.ENTITY_ALIAS_CONFIRMED,
+                since=recent_since,
+                limit=200,
+            )
+            if event.payload.get("suggestion_event_id")
+        }
+        candidates = [
             event
             for event in await self.event_service.list_recent(
                 EventType.ENTITY_ALIAS_SUGGESTED,
-                since=datetime.now(UTC) - timedelta(days=30),
+                since=recent_since,
                 limit=50,
             )
             if event.entity_type == entity_type
+            and event.id not in confirmed_suggestion_ids
         ]
+        events = []
+        seen: set[tuple[str, str]] = set()
+        for event in candidates:
+            alias = str(event.payload.get("alias", "")).strip()
+            if not alias or await self._alias_is_already_known(event.entity_type, event.entity_id, alias):
+                continue
+            key = (event.entity_id, normalize_lookup(alias))
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append(event)
         if not events:
             label = "people" if entity_type == "person" else "projects"
             return AssistantResponse(
@@ -71,11 +97,25 @@ class EntityConfirmationService:
             )
         return AssistantResponse(
             title="People review" if entity_type == "person" else "Projects review",
-            summary="Mình chỉ lưu alias khi bạn xác nhận.",
+            summary="Em chỉ lưu alias khi anh xác nhận.",
             sections=[],
             footer="\n".join(lines),
             actions=actions,
         )
+
+    async def _alias_is_already_known(
+        self, entity_type: str, entity_id: str, alias: str
+    ) -> bool:
+        if entity_type == "person":
+            entity = await self.person_repo.get_by_id(entity_id)
+            values = [entity.display_name, *entity.aliases] if entity else []
+        elif entity_type == "project":
+            entity = await self.project_repo.get_by_id(entity_id)
+            values = [entity.name, *entity.aliases] if entity else []
+        else:
+            return True
+        normalized_alias = normalize_lookup(alias)
+        return not entity or normalized_alias in {normalize_lookup(value) for value in values}
 
     async def confirm(self, event_id: str) -> AssistantResponse | None:
         event = await self.event_service.get_event(event_id)

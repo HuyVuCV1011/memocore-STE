@@ -15,4 +15,5 @@ async def test_memory_candidates_are_persisted(repos):
 
     assert created[0].source_note_id == note.id
     assert created[0].bucket == "profile"
+    assert created[0].last_confirmed_at is None
     assert events[0].event_type == EventType.MEMORY_CANDIDATE_CREATED

@@ -90,14 +90,10 @@ class SecretaryService:
             ]
         heading = title or _day_label(target_date, now.astimezone(self.display_timezone).date()).capitalize()
         lines = [f"{heading} - {_weekday_label(target_date)}, {target_date:%d/%m/%Y}"]
-        top = await self._top_priority_tasks(tasks, now, limit=3)
-        if target_date <= now.astimezone(self.display_timezone).date() and top:
-            lines.extend(["", "Top 3 nên xử lý trước"])
-            lines.extend(_scored_task_lines(top, self.display_timezone))
         if due:
             lines.append("")
             lines.append("Cần làm")
-            lines.extend(_task_lines(due, display_timezone=self.display_timezone))
+            lines.extend(_agenda_task_lines(due, display_timezone=self.display_timezone))
         else:
             lines.append("")
             lines.append("Cần làm")
@@ -112,7 +108,8 @@ class SecretaryService:
             lines.extend(_meeting_lines(meetings, self.display_timezone))
         if waiting:
             lines.append("")
-            lines.append(f"Đang chờ hoặc bị chặn: {len(waiting)}")
+            lines.append("Đang chờ hoặc bị chặn")
+            lines.extend(_agenda_task_lines(waiting, display_timezone=self.display_timezone))
         return "\n".join(lines)
 
     async def work_dashboard(self, now: datetime | None = None) -> str:
@@ -144,7 +141,7 @@ class SecretaryService:
         tasks = await self.task_repo.list_active()
         lines = ["Tasks đang mở"]
         if tasks:
-            lines.extend(_task_lines(tasks, display_timezone=self.display_timezone))
+            lines.extend(_agenda_task_lines(tasks, display_timezone=self.display_timezone))
         else:
             lines.append("Không có task đang mở.")
         return "\n".join(lines)
@@ -179,7 +176,7 @@ class SecretaryService:
             ]
         if not projects:
             suffix = f" liên quan đến {scope}" if scope else ""
-            return f"Projects\nMình chưa thấy project nào{suffix}."
+            return f"Projects\nEm chưa thấy project nào{suffix}."
         active_tasks = await self.task_repo.list_active()
         tasks_by_project = defaultdict(list)
         for task in active_tasks:
@@ -187,7 +184,7 @@ class SecretaryService:
         core_projects = [project for project in projects if not _is_project_idea_or_low_priority(project.name)]
         idea_projects = [project for project in projects if _is_project_idea_or_low_priority(project.name)]
         title = f"Projects {scope.upper()}" if scope else "Projects"
-        lines = [title, f"Mình đang theo dõi {len(projects)} project/năng lực. Nhóm ý tưởng hoặc ưu tiên thấp được tách riêng để tránh lẫn với project chính."]
+        lines = [title, f"Em đang theo dõi {len(projects)} project/năng lực. Nhóm ý tưởng hoặc ưu tiên thấp được tách riêng để tránh lẫn với project chính."]
         lines.append("")
         lines.append("Đang theo dõi chính")
         for index, project in enumerate(core_projects, 1):
@@ -207,19 +204,40 @@ class SecretaryService:
                 lines.append(f"{index}. {project.name} - {len(project_tasks)} task mở")
         return "\n".join(lines)
 
+    async def ordered_task_ids_for_view(self, source_view: str) -> list[str]:
+        normalized = source_view.removeprefix("query_")
+        tasks = await self.task_repo.list_active()
+        if normalized == "briefing":
+            top = await self._top_priority_tasks(tasks, datetime.now(UTC), limit=3)
+            return [task.id for task, _score, _reasons in top]
+        if normalized in {"today", "todays"}:
+            local_today = datetime.now(UTC).astimezone(self.display_timezone).date()
+            day_start = datetime.combine(
+                local_today, time.min, tzinfo=self.display_timezone
+            ).astimezone(UTC)
+            day_end = datetime.combine(
+                local_today, time.max, tzinfo=self.display_timezone
+            ).astimezone(UTC)
+            now = datetime.now(UTC)
+            due = [
+                task
+                for task in tasks
+                if task.due_at and (task.due_at <= now or day_start <= task.due_at <= day_end)
+            ]
+            waiting = [
+                task for task in tasks if str(task.status) in {"waiting", "blocked"}
+            ]
+            return list(dict.fromkeys([task.id for task in [*due, *waiting]]))
+        if normalized == "tasks":
+            return [task.id for task in tasks[:5]]
+        return []
+
     async def project_tasks(self, project_name: str) -> str:
-        projects = await self.project_repo.list_all()
-        matches = [
-            project
-            for project in projects
-            if _normalize_text(project_name) in _normalize_text(project.name)
-            or _normalize_text(project.name) in _normalize_text(project_name)
-        ]
+        matches = await self.project_repo.find_matches(project_name)
         if not matches:
-            return f"Project {project_name}\nMình chưa thấy project này trong dữ liệu."
+            return f"Project {project_name}\nEm chưa thấy project này trong dữ liệu."
         if len(matches) > 1:
-            names = "\n".join(f"{index}. {project.name}" for index, project in enumerate(matches, 1))
-            return f"Mình thấy vài project khớp. Bạn muốn xem project nào?\n{names}"
+            return _ambiguous_entity_message("project", matches)
         project = matches[0]
         tasks = [
             task
@@ -264,6 +282,11 @@ class SecretaryService:
         top = await self._top_priority_tasks(tasks, now, limit=3)
         overdue = [task for task in tasks if task.due_at and task.due_at < day_start]
         due_today = [task for task in tasks if task.due_at and day_start <= task.due_at <= day_end]
+        upcoming_top = [
+            task
+            for task, _score, _reasons in top
+            if task.due_at and task.due_at > day_end
+        ]
         undated_priority = [task for task in tasks if task.due_at is None][:5]
         waiting = [task for task in tasks if task.status in {"waiting", "blocked"}]
         reminders = [
@@ -272,6 +295,7 @@ class SecretaryService:
             if reminder.remind_at and day_start <= reminder.remind_at <= day_end
         ]
         followups = await self.followup_repo.list_open()
+        commitments = await self.commitment_repo.list_open() if self.commitment_repo else []
         meetings = []
         if self.meeting_repo is not None:
             meetings = [
@@ -280,38 +304,53 @@ class SecretaryService:
                 if meeting.starts_at and day_start <= meeting.starts_at <= day_end
             ]
 
-        lines = [f"Briefing hôm nay - {local_now.date():%d/%m/%Y}"]
-        lines.append("")
-        lines.append(f"Tổng quan: {len(due_today)} task hôm nay, {len(overdue)} quá hạn, {len(reminders)} reminder, {len(followups)} follow-up mở.")
-        lines.append("")
-        lines.append("Top 3 nên xử lý trước")
-        lines.extend(_scored_task_lines(top, self.display_timezone) if top else ["Không có task mở."])
-        lines.append("")
-        lines.append("Quá hạn")
-        lines.extend(_task_lines(overdue, self.display_timezone) if overdue else ["Không có task quá hạn."])
-        lines.append("")
-        lines.append("Hôm nay")
-        lines.extend(_task_lines(due_today, self.display_timezone) if due_today else ["Không có task đến hạn hôm nay."])
-        if reminders:
-            lines.append("")
-            lines.append("Reminder hôm nay")
-            lines.extend(_reminder_lines(reminders, self.display_timezone))
-        if meetings:
-            lines.append("")
-            lines.append("Lịch/meeting hôm nay")
-            lines.extend(_meeting_lines(meetings, self.display_timezone))
-        if followups:
-            lines.append("")
-            lines.append("Follow-up đang mở")
-            lines.extend(_followup_lines(followups, self.display_timezone))
-        if waiting:
-            lines.append("")
-            lines.append("Đang chờ hoặc bị chặn")
-            lines.extend(_task_lines(waiting, self.display_timezone))
-        if undated_priority:
-            lines.append("")
-            lines.append("Không có hạn nhưng nên rà soát")
-            lines.extend(_task_lines(undated_priority, self.display_timezone))
+        overdue_followups = [
+            item for item in followups if item.due_at is not None and item.due_at < now
+        ]
+        due_commitments = [
+            item
+            for item in commitments
+            if item.due_at is not None and item.due_at <= day_end
+        ]
+        lines = [f"Briefing hôm nay - {local_now.date():%d/%m/%Y}", ""]
+        lines.append("Nhận định")
+        lines.append(
+            _briefing_assessment(
+                overdue=overdue,
+                due_today=due_today,
+                meetings=meetings,
+                waiting=waiting,
+                overdue_followups=overdue_followups,
+                due_commitments=due_commitments,
+                display_timezone=self.display_timezone,
+            )
+        )
+        lines.extend(["", "Điểm cần chú ý"])
+        signals = _briefing_signals(
+            overdue=overdue,
+            due_today=due_today,
+            reminders=reminders,
+            meetings=meetings,
+            waiting=waiting,
+            overdue_followups=overdue_followups,
+            due_commitments=due_commitments,
+            upcoming_top=upcoming_top,
+            display_timezone=self.display_timezone,
+        )
+        lines.extend(signals or ["- Chưa thấy deadline, meeting hay open loop cấp bách hôm nay."])
+        lines.extend(["", "Nên làm tiếp"])
+        if top:
+            lines.extend(_briefing_action_lines(top, self.display_timezone))
+        elif meetings:
+            lines.append(f"1. Chuẩn bị trước cho meeting “{meetings[0].title}”.")
+        elif followups:
+            lines.append(f"1. Chọn một follow-up để khép lại: {followups[0].title}.")
+        elif undated_priority:
+            lines.append(f"1. Gắn hạn hoặc quyết định bước tiếp theo cho: {undated_priority[0].title}.")
+        else:
+            lines.append(
+                "1. Lịch đang thoáng. Chọn một ưu tiên chủ động hoặc ghi việc mới bằng /task."
+            )
         return "\n".join(lines)
 
     async def people(self) -> str:
@@ -341,9 +380,12 @@ class SecretaryService:
     async def person_context(self, query: str) -> str:
         if self.person_repo is None:
             return "Person context\nPeople repository chưa được cấu hình."
-        person = await self.person_repo.find_by_name_or_alias(query)
-        if person is None:
-            return f"Person {query}\nMình chưa thấy person này trong dữ liệu."
+        matches = await self.person_repo.find_matches(query)
+        if not matches:
+            return f"Person {query}\nEm chưa thấy person này trong dữ liệu."
+        if len(matches) > 1:
+            return _ambiguous_entity_message("person", matches)
+        person = matches[0]
         tasks = await self.task_repo.list_active_by_person(person.id)
         followups = await self.followup_repo.list_open_by_person(person.id)
         memories = await self.memory_repo.list_active_by_person(person.id)
@@ -393,9 +435,12 @@ class SecretaryService:
         return "\n".join(lines)
 
     async def project_context(self, query: str) -> str:
-        project = await self._find_project(query)
-        if project is None:
-            return f"Project {query}\nMình chưa thấy project này trong dữ liệu."
+        matches = await self.project_repo.find_matches(query)
+        if not matches:
+            return f"Project {query}\nEm chưa thấy project này trong dữ liệu."
+        if len(matches) > 1:
+            return _ambiguous_entity_message("project", matches)
+        project = matches[0]
         tasks = await self.task_repo.list_active_by_project(project.id)
         followups = await self.followup_repo.list_open_by_project(project.id)
         memories = await self.memory_repo.list_active_by_project(project.id)
@@ -443,8 +488,13 @@ class SecretaryService:
         return "\n".join(lines)
 
     async def meeting_prep(self, query: str) -> str:
-        person = await self.person_repo.find_by_name_or_alias(query) if self.person_repo else None
-        project = await self._find_project(query)
+        people = await self.person_repo.find_matches(query) if self.person_repo else []
+        projects = await self.project_repo.find_matches(query)
+        combined_count = len(people) + len(projects)
+        if combined_count > 1:
+            return _ambiguous_prep_message(people, projects)
+        person = people[0] if people else None
+        project = projects[0] if projects else None
         if person is not None:
             heading = f"Meeting prep với {person.display_name}"
             tasks = await self.task_repo.list_active_by_person(person.id)
@@ -460,7 +510,7 @@ class SecretaryService:
             commitments = await self.commitment_repo.list_open_by_project(project.id) if self.commitment_repo else []
             meetings = await self.meeting_repo.list_by_project(project.id) if self.meeting_repo else []
         else:
-            return f"Meeting prep {query}\nMình chưa tìm thấy person hoặc project khớp."
+            return f"Meeting prep {query}\nEm chưa tìm thấy person hoặc project khớp."
         note_map = await self._note_map(
             [
                 *(item.source_note_id for item in tasks),
@@ -487,23 +537,19 @@ class SecretaryService:
         return "\n".join(lines)
 
     async def context(self, query: str) -> str:
-        if self.person_repo is not None and await self.person_repo.find_by_name_or_alias(query):
-            return await self.person_context(query)
-        if await self._find_project(query):
-            return await self.project_context(query)
-        return f"Context {query}\nMình chưa tìm thấy person hoặc project khớp."
+        people = await self.person_repo.find_matches(query) if self.person_repo else []
+        projects = await self.project_repo.find_matches(query)
+        if len(people) + len(projects) > 1:
+            return _ambiguous_prep_message(people, projects)
+        if people:
+            return await self.person_context(people[0].display_name)
+        if projects:
+            return await self.project_context(projects[0].name)
+        return f"Context {query}\nEm chưa tìm thấy person hoặc project khớp."
 
     async def _find_project(self, query: str):
-        normalized_query = _normalize_text(query)
-        for project in await self.project_repo.list_all():
-            normalized_name = _normalize_text(project.name)
-            if (
-                normalized_query == normalized_name
-                or normalized_query in normalized_name
-                or normalized_name in normalized_query
-            ):
-                return project
-        return None
+        matches = await self.project_repo.find_matches(query)
+        return matches[0] if len(matches) == 1 else None
 
     async def weekly_review(self, now: datetime | None = None) -> str:
         now = now or datetime.now(UTC)
@@ -676,6 +722,171 @@ class SecretaryService:
         ]
 
 
+def _briefing_assessment(
+    *,
+    overdue,
+    due_today,
+    meetings,
+    waiting,
+    overdue_followups,
+    due_commitments,
+    display_timezone: tzinfo,
+) -> str:
+    pressure = (
+        len(overdue) * 3
+        + len(overdue_followups) * 2
+        + len(due_commitments) * 2
+        + len(due_today)
+        + len(meetings)
+        + len(waiting)
+    )
+    if pressure == 0:
+        return (
+            "Hôm nay chưa có áp lực bắt buộc trong hệ thống. Đây là khoảng trống tốt để "
+            "chọn một ưu tiên chủ động thay vì chỉ phản ứng theo deadline."
+        )
+    if overdue or overdue_followups or due_commitments:
+        overdue_names = _task_title_list(overdue)
+        if overdue_names:
+            return (
+                f"Rủi ro lớn nhất là {overdue_names} đã quá hạn. Nên xử lý hoặc chốt lại "
+                "cam kết trước khi mở thêm việc mới."
+            )
+        return (
+            "Ngày có rủi ro trễ cam kết. Nên xử lý phần đã quá hạn hoặc liên quan người khác "
+            "trước khi mở thêm việc mới."
+        )
+    if len(due_today) >= 2:
+        task_names = _task_title_list(due_today)
+        return (
+            f"Các deadline hôm nay là {task_names}. Em chưa biết mỗi việc tốn bao lâu, "
+            "nên anh chọn thứ tự và chừa buffer nha."
+        )
+    if len(due_today) == 1:
+        task = due_today[0]
+        return (
+            f"Việc cần chốt hôm nay là “{task.title}”, hạn "
+            f"{_format_due(task.due_at, display_timezone)}. Khối lượng hiện vẫn ở mức "
+            "kiểm soát được nếu anh bảo vệ thời gian cho việc này."
+        )
+    if pressure >= 5:
+        return (
+            "Khối lượng hôm nay tương đối dày. Nên khóa một việc quan trọng trước, rồi mới "
+            "chuyển sang meeting và các việc nhỏ."
+        )
+    return (
+        "Khối lượng hôm nay ở mức kiểm soát được. Chọn một kết quả chính và bảo vệ thời gian "
+        "để hoàn thành nó."
+    )
+
+
+def _briefing_signals(
+    *,
+    overdue,
+    due_today,
+    reminders,
+    meetings,
+    waiting,
+    overdue_followups,
+    due_commitments,
+    upcoming_top,
+    display_timezone: tzinfo,
+) -> list[str]:
+    signals: list[str] = []
+    if overdue:
+        signals.append(
+            f"- Quá hạn: {_task_title_list(overdue)}."
+        )
+    if overdue_followups:
+        signals.append(f"- {len(overdue_followups)} follow-up đã qua hạn, dễ làm đứt mạch phối hợp.")
+    if due_commitments:
+        signals.append(f"- {len(due_commitments)} cam kết đến hạn hoặc đã trễ, nên phản hồi sớm.")
+    if due_today:
+        signals.append(
+            f"- Hôm nay: {_task_due_list(due_today, display_timezone)}."
+        )
+    if upcoming_top:
+        signals.append(
+            f"- Sắp tới: {_task_due_list(upcoming_top, display_timezone)}."
+        )
+    if meetings:
+        first = min(
+            meetings,
+            key=lambda item: item.starts_at or datetime.max.replace(tzinfo=UTC),
+        )
+        signals.append(
+            f"- {len(meetings)} meeting; lịch gần nhất là “{first.title}” lúc "
+            f"{_format_time(first.starts_at, display_timezone)}."
+        )
+    if reminders:
+        signals.append(f"- {len(reminders)} lời nhắc sẽ đến trong ngày.")
+    if waiting:
+        signals.append(f"- {len(waiting)} task đang chờ hoặc bị chặn; cần quyết định có thúc đẩy không.")
+    return signals
+
+
+def _task_title_list(tasks) -> str:
+    titles = [f"“{task.title}”" for task in tasks]
+    if len(titles) <= 1:
+        return titles[0] if titles else ""
+    return ", ".join(titles[:-1]) + f" và {titles[-1]}"
+
+
+def _task_due_list(tasks, display_timezone: tzinfo) -> str:
+    return "; ".join(
+        f"“{task.title}” hạn {_format_due(task.due_at, display_timezone)}"
+        for task in tasks
+    )
+
+
+def _briefing_action_lines(scored_tasks, display_timezone: tzinfo) -> list[str]:
+    lines: list[str] = []
+    for index, (task, _score, reasons) in enumerate(scored_tasks, 1):
+        reason = _briefing_reason(reasons)
+        due = _format_due(task.due_at, display_timezone)
+        lines.append(
+            f"{index}. {task.title}{_task_recurrence_badge(task)} — {reason}; hạn {due}."
+        )
+    return lines
+
+
+def _briefing_reason(reasons: list[str]) -> str:
+    labels = {
+        "overdue": "đã quá hạn",
+        "due soon": "sắp đến hạn",
+        "waiting": "đang chờ",
+        "blocked": "đang bị chặn",
+        "high priority": "được đặt ưu tiên cao",
+        "stale 7d+": "đã lâu chưa tiến triển",
+        "has commitment": "có cam kết liên quan",
+        "person-linked": "liên quan một người cụ thể",
+        "project-linked": "liên quan dự án",
+        "nudged": "đã được nhắc nhưng vẫn còn mở",
+        "open": "đang mở",
+    }
+    meaningful = [labels[reason] for reason in reasons if reason in labels]
+    return ", ".join(meaningful[:2]) or "đang mở"
+
+
+def _ambiguous_entity_message(entity_type: str, matches) -> str:
+    label = "person" if entity_type == "person" else "project"
+    names = [
+        match.display_name if entity_type == "person" else match.name
+        for match in matches
+    ]
+    lines = "\n".join(f"{index}. {name}" for index, name in enumerate(names, 1))
+    return f"Em thấy nhiều {label} cùng khớp. Anh chọn tên đầy đủ giúp em:\n{lines}"
+
+
+def _ambiguous_prep_message(people, projects) -> str:
+    lines: list[str] = []
+    for person in people:
+        lines.append(f"- Person: {person.display_name}")
+    for project in projects:
+        lines.append(f"- Project: {project.name}")
+    return "Em thấy nhiều kết quả cùng khớp. Anh chọn tên đầy đủ giúp em:\n" + "\n".join(lines)
+
+
 def _task_lines(tasks, display_timezone: tzinfo = UTC, note_map: dict | None = None) -> list[str]:
     lines: list[str] = []
     for index, task in enumerate(tasks, 1):
@@ -684,19 +895,32 @@ def _task_lines(tasks, display_timezone: tzinfo = UTC, note_map: dict | None = N
         if task.priority:
             details.append(f"Ưu tiên: {_label_priority(task.priority)}")
         details.append(_evidence("task", task.source_note_id, task.confidence, note_map))
-        lines.append(f"{index}. {task.title}")
+        lines.append(f"{index}. {task.title}{_task_recurrence_badge(task)}")
         lines.append(f"   {' | '.join(details)}")
     return lines
+
+
+def _agenda_task_lines(tasks, display_timezone: tzinfo = UTC) -> list[str]:
+    return [
+        f"{index}. {task.title}{_task_recurrence_badge(task)} — hạn {_format_due(task.due_at, display_timezone)}"
+        for index, task in enumerate(tasks, 1)
+    ]
 
 
 def _scored_task_lines(scored_tasks, display_timezone: tzinfo = UTC) -> list[str]:
     lines: list[str] = []
     for index, (task, score, reasons) in enumerate(scored_tasks, 1):
-        lines.append(f"{index}. {task.title}")
+        lines.append(f"{index}. {task.title}{_task_recurrence_badge(task)}")
         lines.append(
             f"   Score: {score} | Lý do: {', '.join(reasons)} | Hạn: {_format_due(task.due_at, display_timezone)}"
         )
     return lines
+
+
+def _task_recurrence_badge(task) -> str:
+    labels = {"daily": "Hằng ngày", "weekly": "Hằng tuần"}
+    label = labels.get(task.recurrence_rule)
+    return f" · 🔁 {label}" if label else ""
 
 
 def _format_time(value: datetime | None, display_timezone: tzinfo) -> str:
@@ -873,8 +1097,8 @@ def _label_priority(value: str) -> str:
 
 def _label_commitment_direction(value) -> str:
     labels = {
-        "user_owes": "mình nợ người khác",
-        "owed_to_user": "người khác nợ mình",
+        "user_owes": "anh nợ người khác",
+        "owed_to_user": "người khác nợ anh",
         "mutual": "hai bên",
     }
     return labels.get(str(value), str(value))

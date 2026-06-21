@@ -20,6 +20,7 @@ def test_cli_accepts_provider_and_model():
 
 def test_models_command_marks_configured_provider(monkeypatch, capsys):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_OWNER_ID", "9001")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
 
     _print_models(Settings(_env_file=None))

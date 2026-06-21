@@ -98,6 +98,8 @@ def _coerce_extraction(decoded: Any) -> Any:
         "projects",
         "memories",
         "people",
+        "organizations",
+        "decisions",
         "meetings",
         "followups",
         "commitments",

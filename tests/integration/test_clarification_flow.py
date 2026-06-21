@@ -75,7 +75,7 @@ async def test_capture_requests_clarification_for_missing_reminder_time(
     pending = await repos["clarifications"].find_pending_for_chat("123")
     reminders = await repos["reminders"].list_by_note(response.note_id)
 
-    assert response.clarification_question == 'Khi nào bạn muốn được nhắc về "Call John"?'
+    assert response.clarification_question == 'Khi nào anh muốn được nhắc về "Call John"?'
     assert pending.status == ClarificationStatus.PENDING
     assert reminders[0].status == ReminderStatus.CANDIDATE
     assert reminders[0].remind_at is None

@@ -50,6 +50,34 @@ async def test_initialize_adds_person_columns_before_creating_indexes(tmp_path):
         for row in await (await conn.execute("PRAGMA table_info(memory_items)")).fetchall()
     }
     assert "aliases" in project_columns
+    task_columns = {
+        row["name"]
+        for row in await (await conn.execute("PRAGMA table_info(tasks)")).fetchall()
+    }
+    assert {
+        "recurrence_rule",
+        "recurrence_series_id",
+        "recurrence_occurrence_at",
+    } <= task_columns
+    task_list_table = await (
+        await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_list_contexts'"
+        )
+    ).fetchone()
+    assert task_list_table is not None
+    context_tables = {
+        row["name"]
+        for row in await (
+            await conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN ('chat_contexts', 'conversation_turns')
+                """
+            )
+        ).fetchall()
+    }
+    assert context_tables == {"chat_contexts", "conversation_turns"}
     assert {
         "source_type",
         "observed_at",

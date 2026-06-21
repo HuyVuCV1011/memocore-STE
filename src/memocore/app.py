@@ -11,6 +11,7 @@ from telegram.ext import Application
 from memocore.adapters.llm.provider_factory import create_provider_with_fallback
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
+    ChatContextRepository,
     CommitmentRepository,
     EventLogRepository,
     FollowUpRepository,
@@ -21,6 +22,11 @@ from memocore.adapters.storage.repositories import (
     ProjectRepository,
     ReminderRepository,
     TaskRepository,
+    TaskListContextRepository,
+)
+from memocore.adapters.storage.knowledge_repositories import (
+    DecisionRepository,
+    OrganizationRepository,
 )
 from memocore.adapters.storage.sqlite import Database
 from memocore.adapters.telegram.bot import create_bot
@@ -39,6 +45,8 @@ from memocore.services.intent_classifier_service import IntentClassifierService
 from memocore.services.knowledge_query_service import KnowledgeQueryService
 from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
+from memocore.services.reference_resolver import ReferenceResolver
+from memocore.services.task_operation_service import TaskOperationService
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +62,8 @@ async def create_app(settings: Settings | None = None) -> Application:
 
     note_repo = NoteRepository(database)
     task_repo = TaskRepository(database)
+    task_list_context_repo = TaskListContextRepository(database)
+    chat_context_repo = ChatContextRepository(database)
     reminder_repo = ReminderRepository(database)
     clarification_repo = ClarificationRequestRepository(database)
     project_repo = ProjectRepository(database)
@@ -63,8 +73,11 @@ async def create_app(settings: Settings | None = None) -> Application:
     memory_repo = MemoryItemRepository(database)
     event_repo = EventLogRepository(database)
     commitment_repo = CommitmentRepository(database)
+    organization_repo = OrganizationRepository(database)
+    decision_repo = DecisionRepository(database)
 
     event_service = EventService(event_repo)
+    task_operation_service = TaskOperationService(task_repo, event_service)
     provider = create_provider_with_fallback(settings.model, settings.fallback)
     extraction_service = ExtractionService(provider, temperature=settings.model.temperature)
     intent_classifier_service = IntentClassifierService(provider, temperature=settings.model.temperature)
@@ -78,6 +91,8 @@ async def create_app(settings: Settings | None = None) -> Application:
         commitment_repo,
         meeting_repo,
         reminder_repo,
+        organization_repo,
+        decision_repo,
     )
     memory_service = MemoryService(memory_repo, event_service)
     memory_view_service = MemoryViewService(memory_repo, project_repo, person_repo, event_service)
@@ -89,6 +104,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         event_service,
         default_timezone=ZoneInfo(settings.user_timezone),
         task_repo=task_repo,
+        task_operation_service=task_operation_service,
     )
     capture_service = CaptureService(
         note_repo,
@@ -103,6 +119,8 @@ async def create_app(settings: Settings | None = None) -> Application:
         meeting_repo,
         followup_repo,
         commitment_repo,
+        organization_repo,
+        decision_repo,
     )
     secretary_service = SecretaryService(
         task_repo,
@@ -128,6 +146,13 @@ async def create_app(settings: Settings | None = None) -> Application:
         project_repo,
         event_service,
     )
+    reference_resolver = ReferenceResolver(
+        chat_context_repo,
+        project_repo,
+        person_repo,
+        task_repo,
+        organization_repo,
+    )
     conversation_service = ConversationService(
         capture_service,
         secretary_service,
@@ -137,10 +162,14 @@ async def create_app(settings: Settings | None = None) -> Application:
         event_service,
         intent_classifier_service=intent_classifier_service,
         knowledge_query_service=knowledge_query_service,
+        task_list_context_repo=task_list_context_repo,
+        reference_resolver=reference_resolver,
+        task_operation_service=task_operation_service,
     )
 
     app = create_bot(
         settings.telegram_bot_token,
+        settings.telegram_owner_id,
         capture_service,
         secretary_service,
         clarification_service,
@@ -151,90 +180,89 @@ async def create_app(settings: Settings | None = None) -> Application:
     )
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(
-        reminder_dispatch_loop(reminder_service, note_repo, app.bot)
+        reminder_dispatch_loop(reminder_service, app.bot, settings.telegram_owner_id)
     )
     app.bot_data["morning_briefing_task"] = asyncio.create_task(
-        scheduled_morning_briefing_loop(secretary_service, note_repo, event_service, app.bot, settings)
+        scheduled_morning_briefing_loop(secretary_service, event_service, app.bot, settings)
     )
     app.bot_data["nudge_task"] = asyncio.create_task(
-        proactive_nudge_loop(secretary_service, note_repo, event_service, app.bot, settings)
+        proactive_nudge_loop(secretary_service, event_service, app.bot, settings)
     )
     app.bot_data["weekly_review_task"] = asyncio.create_task(
-        scheduled_weekly_review_loop(secretary_service, note_repo, event_service, app.bot, settings)
+        scheduled_weekly_review_loop(secretary_service, event_service, app.bot, settings)
     )
     return app
 
 
 async def reminder_dispatch_loop(
     reminder_service: ReminderService,
-    note_repo: NoteRepository,
     bot: Bot,
+    owner_id: int,
     interval: int = 30,
 ) -> None:
     while True:
-        due = await reminder_service.claim_due_reminders(datetime.now(UTC))
-        for reminder in due:
-            note = await note_repo.get_by_id(reminder.source_note_id)
-            if not note or not note.source_chat_id:
-                await reminder_service.mark_failed(reminder.id, "missing_chat_id")
-                continue
-            chat_id = _chat_id_to_int(note.source_chat_id)
-            if chat_id is None:
-                await reminder_service.mark_failed(reminder.id, "invalid_chat_id")
-                continue
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"Reminder: {reminder.title}",
-                )
-                await reminder_service.mark_sent(reminder.id)
-            except Exception:
-                logger.exception("Failed to send reminder %s", reminder.id)
-                await reminder_service.mark_failed(reminder.id, "telegram_send_error")
+        await send_due_reminders(reminder_service, bot, owner_id)
         await asyncio.sleep(interval)
+
+
+async def send_due_reminders(
+    reminder_service: ReminderService,
+    bot: Bot,
+    owner_id: int,
+    now: datetime | None = None,
+) -> int:
+    sent = 0
+    for reminder in await reminder_service.claim_due_reminders(now or datetime.now(UTC)):
+        try:
+            await bot.send_message(
+                chat_id=owner_id,
+                text=f"Reminder: {reminder.title}",
+            )
+            await reminder_service.mark_sent(reminder.id)
+            sent += 1
+        except Exception:
+            logger.exception("Failed to send reminder %s", reminder.id)
+            await reminder_service.mark_failed(reminder.id, "telegram_send_error")
+    return sent
 
 
 async def scheduled_morning_briefing_loop(
     secretary_service: SecretaryService,
-    note_repo: NoteRepository,
     event_service: EventService,
     bot: Bot,
     settings: Settings,
     interval: int = 60,
 ) -> None:
     while True:
-        await send_due_morning_briefings(secretary_service, note_repo, event_service, bot, settings)
+        await send_due_morning_briefings(secretary_service, event_service, bot, settings)
         await asyncio.sleep(interval)
 
 
 async def proactive_nudge_loop(
     secretary_service: SecretaryService,
-    note_repo: NoteRepository,
     event_service: EventService,
     bot: Bot,
     settings: Settings,
 ) -> None:
     while True:
-        await send_due_nudges(secretary_service, note_repo, event_service, bot, settings)
+        await send_due_nudges(secretary_service, event_service, bot, settings)
         await asyncio.sleep(max(60, settings.proactive_nudge_interval_minutes * 60))
 
 
 async def scheduled_weekly_review_loop(
     secretary_service: SecretaryService,
-    note_repo: NoteRepository,
     event_service: EventService,
     bot: Bot,
     settings: Settings,
     interval: int = 60,
 ) -> None:
     while True:
-        await send_due_weekly_reviews(secretary_service, note_repo, event_service, bot, settings)
+        await send_due_weekly_reviews(secretary_service, event_service, bot, settings)
         await asyncio.sleep(interval)
 
 
 async def send_due_morning_briefings(
     secretary_service: SecretaryService,
-    note_repo: NoteRepository,
     event_service: EventService,
     bot: Bot,
     settings: Settings,
@@ -248,33 +276,29 @@ async def send_due_morning_briefings(
     if local_now.time() < _parse_clock(settings.morning_briefing_time):
         return 0
     day_start = datetime.combine(local_now.date(), time.min, tzinfo=timezone).astimezone(UTC)
-    sent = 0
-    for chat_id in await note_repo.list_source_chat_ids():
-        numeric_chat_id = _chat_id_to_int(chat_id)
-        if numeric_chat_id is None:
-            logger.warning("Skipping morning briefing for invalid chat id %s", chat_id)
-            continue
-        if await event_service.exists_recent(EventType.BRIEFING_SENT, "telegram_chat", chat_id, day_start):
-            continue
-        try:
-            await bot.send_message(chat_id=numeric_chat_id, text=await secretary_service.daily_briefing(now))
-        except Exception:
-            logger.exception("Failed to send morning briefing to chat %s", chat_id)
-            continue
-        await event_service.append_event(
-            EventType.BRIEFING_SENT,
-            "telegram_chat",
-            chat_id,
-            {"date": local_now.date().isoformat()},
-            created_at=now,
+    chat_id = str(settings.telegram_owner_id)
+    if await event_service.exists_recent(EventType.BRIEFING_SENT, "telegram_chat", chat_id, day_start):
+        return 0
+    try:
+        await bot.send_message(
+            chat_id=settings.telegram_owner_id,
+            text=await secretary_service.daily_briefing(now),
         )
-        sent += 1
-    return sent
+    except Exception:
+        logger.exception("Failed to send morning briefing to owner chat %s", chat_id)
+        return 0
+    await event_service.append_event(
+        EventType.BRIEFING_SENT,
+        "telegram_chat",
+        chat_id,
+        {"date": local_now.date().isoformat()},
+        created_at=now,
+    )
+    return 1
 
 
 async def send_due_weekly_reviews(
     secretary_service: SecretaryService,
-    note_repo: NoteRepository,
     event_service: EventService,
     bot: Bot,
     settings: Settings,
@@ -290,33 +314,31 @@ async def send_due_weekly_reviews(
     if local_now.time() < _parse_clock(settings.weekly_review_time):
         return 0
     day_start = datetime.combine(local_now.date(), time.min, tzinfo=timezone).astimezone(UTC)
-    sent = 0
-    for chat_id in await note_repo.list_source_chat_ids():
-        numeric_chat_id = _chat_id_to_int(chat_id)
-        if numeric_chat_id is None:
-            logger.warning("Skipping weekly review for invalid chat id %s", chat_id)
-            continue
-        if await event_service.exists_recent(EventType.WEEKLY_REVIEW_SENT, "telegram_chat", chat_id, day_start):
-            continue
-        try:
-            await bot.send_message(chat_id=numeric_chat_id, text=await secretary_service.weekly_review(now))
-        except Exception:
-            logger.exception("Failed to send weekly review to chat %s", chat_id)
-            continue
-        await event_service.append_event(
-            EventType.WEEKLY_REVIEW_SENT,
-            "telegram_chat",
-            chat_id,
-            {"date": local_now.date().isoformat()},
-            created_at=now,
+    chat_id = str(settings.telegram_owner_id)
+    if await event_service.exists_recent(
+        EventType.WEEKLY_REVIEW_SENT, "telegram_chat", chat_id, day_start
+    ):
+        return 0
+    try:
+        await bot.send_message(
+            chat_id=settings.telegram_owner_id,
+            text=await secretary_service.weekly_review(now),
         )
-        sent += 1
-    return sent
+    except Exception:
+        logger.exception("Failed to send weekly review to owner chat %s", chat_id)
+        return 0
+    await event_service.append_event(
+        EventType.WEEKLY_REVIEW_SENT,
+        "telegram_chat",
+        chat_id,
+        {"date": local_now.date().isoformat()},
+        created_at=now,
+    )
+    return 1
 
 
 async def send_due_nudges(
     secretary_service: SecretaryService,
-    note_repo: NoteRepository,
     event_service: EventService,
     bot: Bot,
     settings: Settings,
@@ -328,9 +350,6 @@ async def send_due_nudges(
     timezone = ZoneInfo(settings.user_timezone)
     if _is_in_quiet_hours(now.astimezone(timezone).time(), settings.quiet_hours_start, settings.quiet_hours_end):
         return 0
-    chat_ids = await note_repo.list_source_chat_ids()
-    if not chat_ids:
-        return 0
     cooldown_since = now - timedelta(hours=settings.proactive_nudge_cooldown_hours)
     sent = 0
     for entity_type, entity_id, text_body in await secretary_service.deadline_nudges(
@@ -338,20 +357,18 @@ async def send_due_nudges(
     ):
         if await event_service.exists_recent(EventType.NUDGE_SENT, entity_type, entity_id, cooldown_since):
             continue
-        delivered = False
-        for chat_id in chat_ids:
-            numeric_chat_id = _chat_id_to_int(chat_id)
-            if numeric_chat_id is None:
-                logger.warning("Skipping nudge for invalid chat id %s", chat_id)
-                continue
-            try:
-                await bot.send_message(chat_id=numeric_chat_id, text=text_body)
-                delivered = True
-                sent += 1
-            except Exception:
-                logger.exception("Failed to send nudge %s:%s to chat %s", entity_type, entity_id, chat_id)
-        if delivered:
-            await event_service.append_event(EventType.NUDGE_SENT, entity_type, entity_id, created_at=now)
+        try:
+            await bot.send_message(chat_id=settings.telegram_owner_id, text=text_body)
+        except Exception:
+            logger.exception(
+                "Failed to send nudge %s:%s to owner chat %s",
+                entity_type,
+                entity_id,
+                settings.telegram_owner_id,
+            )
+            continue
+        sent += 1
+        await event_service.append_event(EventType.NUDGE_SENT, entity_type, entity_id, created_at=now)
     return sent
 
 
@@ -388,12 +405,3 @@ async def shutdown_app(app: Application) -> None:
     database = app.bot_data.get("database")
     if database:
         await database.close()
-
-
-def _chat_id_to_int(value: str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None

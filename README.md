@@ -36,7 +36,9 @@ backend.
 | --- | --- |
 | Raw-note capture | Immutable raw notes with Telegram source idempotency. |
 | Conversation routing | Deterministic and model-assisted routing for capture, query, correction, clarification, and casual messages. |
+| Conversation pipeline | Separate Router, Planner, Context Resolver, Executor, and Composer boundaries with transcript regression evaluation. |
 | Work and context state | Tasks, reminders, projects, people, meetings, follow-ups, commitments, memory candidates, and event logs. |
+| Knowledge model | Canonical projects, people, organizations, decisions, and source-linked memory claims. |
 | Secretary queries | Compact `/` menu for `/today`, `/work`, `/memory`, `/context`, `/briefing`, and `/capture`; power-user shortcuts remain available. |
 | Memory lifecycle | Candidate, active, rejected, superseded, and delete/forget flows. |
 | V4 context retrieval | Person/project context, linked commitments, meeting preparation summaries, and SQLite retrieval by linked entities. |
@@ -101,6 +103,9 @@ Current V4 deepening also includes a six-command Telegram menu, inline navigatio
 priorities, evidence metadata in context/prep views, review-gated entity matching, paginated memory
 triage, end-of-day and weekly rituals, lightweight goals, and a runtime `doctor` preflight.
 
+Tool orchestration, calendar, email, and multi-agent workers remain intentionally held until the
+[conversation stability gates](docs/conversation-stability-gates.md) pass in real Telegram usage.
+
 ## Quick Start
 
 ### Linux or macOS Development
@@ -125,6 +130,7 @@ Edit `.env` with local secrets. Do not commit `.env`.
 
 ```env
 TELEGRAM_BOT_TOKEN=your-token
+TELEGRAM_OWNER_ID=123456789
 DATABASE_PATH=data/memocore.db
 USER_TIMEZONE=Asia/Ho_Chi_Minh
 MODEL_PROVIDER=ollama
@@ -219,6 +225,52 @@ Legacy `OLLAMA_BASE_URL` and `OLLAMA_MODEL` are still accepted during migration.
 | Tests | `pytest`, `pytest-asyncio` |
 | Windows service | PM2 process `memocore-ste` |
 
+### Task references and recurrence
+
+After `/briefing`, `/today`, `/tasks`, or a task-choice list, MemoCore stores the ordered task IDs
+for that Telegram chat. Natural actions can then refer to `task 2`, `việc 2`, `cái thứ 2`, or
+`số 2` for deadline, completion, cancellation, priority, and recurrence changes.
+
+Tasks support `daily` and `weekly` recurrence as task data, independently from recurring reminders.
+Completing a recurring occurrence marks that occurrence done and creates exactly one next occurrence
+while preserving title, priority, project, and person links.
+
+### Vietnamese assistant voice
+
+The voice source of truth is
+[`src/memocore/prompts/assistant_voice_vi.md`](src/memocore/prompts/assistant_voice_vi.md).
+MemoCore uses `em`–`anh`, favors the Southern Vietnamese particles `dạ` and `nha` where they serve
+a conversational purpose, and avoids `nhé`. Keep particles sparse: warmth should not make action
+confirmations vague or verbose.
+
+This setup follows the linguistic role of Vietnamese final/modal particles and politeness markers,
+rather than treating Southern voice as a word-substitution gimmick. Background references:
+
+- [SVFF: nhé / nha](https://svff.online/grammar-essentials/nh%C3%A9-nha)
+- [Patterns of polite expressions in Vietnamese](https://sealang.net/sala/archives/pdf8/sophana2008srichampa.pdf)
+- [Intonational phrase marking in Southern Vietnamese](https://www.isca-archive.org/tal_2016/brunelle16_tal.pdf)
+
+### Stateful conversation references
+
+MemoCore persists a short-lived canonical focus per Telegram chat in `chat_contexts` and records
+resolved turns in `conversation_turns`. Follow-ups such as `dự án đó`, `task này`, and `người đó`
+resolve to entity IDs before retrieval. Knowledge retrieval is then constrained to that project or
+person ID, preventing evidence from unrelated projects from leaking into the response.
+
+Task mutations also pass through `TaskOperationService`, which is the shared boundary for completion,
+recurrence scheduling, cancellation, due dates, priority, and recurrence changes. New conversation
+regressions should be added as multi-turn transcript tests, not only isolated sentence tests.
+
+`ConversationPlanner` handles entity-scoped multi-turn plans before the legacy keyword router. For
+example, after asking about MemoCore, “cập nhật thêm thông tin cho dự án này như sau” persists each
+listed statement as a separate, source-linked project memory instead of opening the project list.
+The same source note acts as a rollback boundary for commands such as “xóa 3 thông tin vừa cập
+nhật”; explicit references like “dự án này” take precedence over incidental name-token matches.
+
+Routing, planning, context resolution, execution dispatch, and response composition now have
+separate service boundaries. Fixture-driven transcript evaluations live under `tests/evaluation/`
+and preserve production misunderstandings as permanent regressions.
+
 ## Project Structure
 
 ```text
@@ -232,6 +284,7 @@ src/memocore/
   domain/                        # typed domain models and schemas
   prompts/                       # extraction and intent-classification prompts
   services/                      # capture, conversation, reminders, memory, events, views
+tests/evaluation/                # multi-turn transcript fixtures and evaluation runner
 tests/                           # unit, integration, benchmark, and fixture tests
 docs/                            # architecture, roadmap, runtime, storage, and harness notes
 scripts/windows/                 # PM2 restart and log helpers for the Windows runtime
@@ -243,6 +296,7 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | --- | --- |
 | [Engineering Guide](agent.md) | Code ownership boundaries, runtime rules, and engineering conventions. |
 | [Architecture](docs/architecture.md) | Layering, capture flow, conversation flow, model boundary, and storage direction. |
+| [Conversation Stability Gates](docs/conversation-stability-gates.md) | Required evidence before calendar, email, tools, or multi-agent work. |
 | [Windows Runtime Guide](docs/windows-runtime.md) | Single-instance PM2 runtime policy for the primary Windows machine. |
 | [Telegram Command Model](docs/telegram-command-model.md) | Visible command menu, hidden shortcuts, inline hubs, and verification rules. |
 | [Implementation Plan](implementation_plan.md) | Delivered foundations, active V4 work, and held future versions. |
@@ -255,6 +309,9 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | [Telegram Memory UX](docs/telegram-memory-ux-spec.md) | Dashboard, slice, and review model for high-volume Telegram memory browsing. |
 
 ## Data Safety
+
+MemoCore is a single-owner bot. `TELEGRAM_OWNER_ID` is required, only that user's private chat is
+accepted, and all reminders, briefings, reviews, and nudges are sent only to that fixed ID.
 
 Commit source, tests, docs, migrations, and safe examples such as `.env.example`.
 

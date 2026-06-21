@@ -88,6 +88,10 @@ V4 remains active until these workflows are stable with real Telegram usage and 
 manual review paths are proven. V5 should not begin merely because the underlying harness design
 exists.
 
+The V4 exit gate now explicitly includes fixture-driven transcript evaluation, wrong-entity
+regressions, reversible knowledge batches, and canonical project/person/organization/decision
+retrieval. See [Conversation Stability Gates](conversation-stability-gates.md).
+
 ## V5: Orchestration And Specialist Workers
 
 V5 is intentionally held while V4 is deepened. When resumed, it introduces bounded delegation:

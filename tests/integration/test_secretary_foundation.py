@@ -157,3 +157,7 @@ async def test_secretary_today_includes_tasks_due_later_today(repos):
     summary = await service.today()
 
     assert "Finish MemoCore" in summary
+    assert "Top 3" not in summary
+    assert "Score:" not in summary
+    assert "Evidence:" not in summary
+    assert "tin cậy" not in summary

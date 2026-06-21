@@ -19,6 +19,8 @@ class MemoryService:
         source_note_id: str,
         project_id: str | None = None,
         person_id: str | None = None,
+        organization_id: str | None = None,
+        decision_id: str | None = None,
         supersede_related: bool = False,
     ) -> list[MemoryItem]:
         created: list[MemoryItem] = []
@@ -34,6 +36,8 @@ class MemoryService:
                 source_note_id=source_note_id,
                 project_id=project_id if candidate.bucket == "project" else None,
                 person_id=person_id,
+                organization_id=organization_id,
+                decision_id=decision_id,
                 confidence=candidate.confidence,
                 observed_at=now,
                 valid_from=now,
@@ -42,7 +46,7 @@ class MemoryService:
                     if candidate.kind == MemoryKind.PROJECT_STATE
                     else None
                 ),
-                last_confirmed_at=now if candidate.confidence >= 0.85 else None,
+                last_confirmed_at=None,
                 revision_of_id=related[0].id if related else None,
             )
             created_item = await self.memory_repo.create(item)

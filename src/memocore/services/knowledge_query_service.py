@@ -25,6 +25,10 @@ from memocore.adapters.storage.repositories import (
     ReminderRepository,
     TaskRepository,
 )
+from memocore.adapters.storage.knowledge_repositories import (
+    DecisionRepository,
+    OrganizationRepository,
+)
 from memocore.domain.models import MemoryKind
 from memocore.domain.schemas import KnowledgeQueryPlan
 
@@ -37,6 +41,7 @@ class KnowledgeEvidence:
     entity_names: tuple[str, ...] = ()
     confidence: float = 1.0
     occurred_at: datetime | None = None
+    related_entity_ids: tuple[str, ...] = ()
 
 
 class KnowledgeQueryService:
@@ -51,6 +56,8 @@ class KnowledgeQueryService:
         commitment_repo: CommitmentRepository,
         meeting_repo: MeetingRepository,
         reminder_repo: ReminderRepository,
+        organization_repo: OrganizationRepository | None = None,
+        decision_repo: DecisionRepository | None = None,
     ):
         self.provider = provider
         self.memory_repo = memory_repo
@@ -61,15 +68,31 @@ class KnowledgeQueryService:
         self.commitment_repo = commitment_repo
         self.meeting_repo = meeting_repo
         self.reminder_repo = reminder_repo
+        self.organization_repo = organization_repo
+        self.decision_repo = decision_repo
 
-    async def answer(self, raw_text: str) -> str:
+    async def answer(
+        self,
+        raw_text: str,
+        *,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        entity_name: str | None = None,
+    ) -> str:
         if _is_self_identity_query(raw_text):
             return await self._answer_self_identity()
         person_answer = await self._answer_person_identity(raw_text)
         if person_answer is not None:
             return person_answer
         plan = await self._plan(raw_text)
-        evidence = await self._retrieve(raw_text, plan)
+        if entity_name and entity_name not in plan.entities:
+            plan.entities.insert(0, entity_name)
+        evidence = await self._retrieve(
+            raw_text,
+            plan,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
         if not evidence:
             return _empty_answer(plan)
         return await self._compose(raw_text, plan, evidence)
@@ -112,7 +135,13 @@ class KnowledgeQueryService:
             return _fallback_plan(raw_text)
 
     async def _retrieve(
-        self, raw_text: str, plan: KnowledgeQueryPlan, limit: int = 14
+        self,
+        raw_text: str,
+        plan: KnowledgeQueryPlan,
+        limit: int = 14,
+        *,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
     ) -> list[KnowledgeEvidence]:
         evidence = await self._all_evidence()
         query_tokens = _meaningful_tokens(raw_text)
@@ -122,6 +151,11 @@ class KnowledgeQueryService:
         broad_entity_query = not topic_tokens or topic_tokens <= entity_tokens
         scored: list[tuple[float, KnowledgeEvidence]] = []
         for item in evidence:
+            if entity_id and not (
+                (item.record_type == entity_type and item.record_id == entity_id)
+                or entity_id in item.related_entity_ids
+            ):
+                continue
             if requested_types and item.record_type not in requested_types:
                 continue
             normalized_text = _normalize(" ".join((*item.entity_names, item.text)))
@@ -163,6 +197,51 @@ class KnowledgeQueryService:
         person_names = {person.id: person.display_name for person in people}
         result: list[KnowledgeEvidence] = []
 
+        organization_names: dict[str, str] = {}
+        if self.organization_repo is not None:
+            for organization in await self.organization_repo.list_all():
+                organization_names[organization.id] = organization.name
+                result.append(
+                    KnowledgeEvidence(
+                        "organization",
+                        organization.id,
+                        f"{organization.name}. {organization.summary}".strip(),
+                        (organization.name, *organization.aliases),
+                        occurred_at=organization.updated_at,
+                        related_entity_ids=(organization.id,),
+                    )
+                )
+        if self.decision_repo is not None:
+            for decision in await self.decision_repo.list_all():
+                entities = tuple(
+                    value
+                    for value in (
+                        project_names.get(decision.project_id or ""),
+                        person_names.get(decision.person_id or ""),
+                        organization_names.get(decision.organization_id or ""),
+                    )
+                    if value
+                )
+                result.append(
+                    KnowledgeEvidence(
+                        "decision",
+                        decision.id,
+                        f"{decision.title}. {decision.summary}".strip(),
+                        entities,
+                        confidence=decision.confidence,
+                        occurred_at=decision.decided_at,
+                        related_entity_ids=tuple(
+                            value
+                            for value in (
+                                decision.project_id,
+                                decision.person_id,
+                                decision.organization_id,
+                            )
+                            if value
+                        ),
+                    )
+                )
+
         for project in projects:
             result.append(
                 KnowledgeEvidence(
@@ -171,6 +250,7 @@ class KnowledgeQueryService:
                     f"{project.name}. {project.summary}".strip(),
                     (project.name,),
                     occurred_at=project.updated_at,
+                    related_entity_ids=(project.id,),
                 )
             )
         for person in people:
@@ -181,6 +261,7 @@ class KnowledgeQueryService:
                     f"{person.display_name}. {person.relationship}. {person.notes}".strip(),
                     (person.display_name, *person.aliases),
                     occurred_at=person.updated_at,
+                    related_entity_ids=(person.id,),
                 )
             )
         for item in await self.memory_repo.list_active():
@@ -191,6 +272,7 @@ class KnowledgeQueryService:
                 for value in (
                     project_names.get(item.project_id or ""),
                     person_names.get(item.person_id or ""),
+                    organization_names.get(item.organization_id or ""),
                 )
                 if value
             )
@@ -202,6 +284,16 @@ class KnowledgeQueryService:
                     entities,
                     confidence=item.confidence,
                     occurred_at=item.updated_at,
+                    related_entity_ids=tuple(
+                        value
+                        for value in (
+                            item.project_id,
+                            item.person_id,
+                            item.organization_id,
+                            item.decision_id,
+                        )
+                        if value
+                    ),
                 )
             )
         for task in await self.task_repo.list_active():
@@ -214,6 +306,11 @@ class KnowledgeQueryService:
                     entities,
                     confidence=task.confidence,
                     occurred_at=task.due_at or task.updated_at,
+                    related_entity_ids=tuple(
+                        value
+                        for value in (task.project_id, task.person_id)
+                        if value
+                    ),
                 )
             )
         for followup in await self.followup_repo.list_open():
@@ -227,6 +324,11 @@ class KnowledgeQueryService:
                     f"{followup.title}. {followup.notes}. Hạn: {followup.due_at}",
                     entities,
                     occurred_at=followup.due_at or followup.updated_at,
+                    related_entity_ids=tuple(
+                        value
+                        for value in (followup.project_id, followup.person_id)
+                        if value
+                    ),
                 )
             )
         for commitment in await self.commitment_repo.list_open():
@@ -243,6 +345,14 @@ class KnowledgeQueryService:
                     ),
                     entities,
                     occurred_at=commitment.due_at or commitment.updated_at,
+                    related_entity_ids=tuple(
+                        value
+                        for value in (
+                            commitment.project_id,
+                            commitment.person_id,
+                        )
+                        if value
+                    ),
                 )
             )
         for meeting in await self.meeting_repo.list_all():
@@ -256,6 +366,11 @@ class KnowledgeQueryService:
                     f"{meeting.title}. {meeting.notes}. Bắt đầu: {meeting.starts_at}",
                     entities,
                     occurred_at=meeting.starts_at or meeting.updated_at,
+                    related_entity_ids=tuple(
+                        value
+                        for value in (meeting.project_id, meeting.person_id)
+                        if value
+                    ),
                 )
             )
         for reminder in await self.reminder_repo.list_recent(limit=100):
@@ -282,7 +397,9 @@ class KnowledgeQueryService:
         prompt = (
             "Trả lời câu hỏi của Vũ chỉ bằng các bằng chứng được cung cấp.\n"
             "- Trả lời trực tiếp đúng điều được hỏi, không in dashboard chung.\n"
-            "- Đặt góc nhìn là trợ lý cá nhân của Vũ: dùng 'mình' cho trợ lý và 'bạn' cho Vũ.\n"
+            "- Đặt góc nhìn là trợ lý cá nhân của Vũ: trợ lý xưng 'em' và gọi Vũ là 'anh'.\n"
+            "- Dùng sắc thái miền Nam tự nhiên: có thể dùng 'dạ' khi xác nhận và 'nha' khi làm mềm đề nghị; tuyệt đối không dùng từ 'nhé'.\n"
+            "- Không nhồi tiểu từ vào mọi câu; ưu tiên ấm áp, gọn và trực tiếp.\n"
             "- Dùng tiếng Việt tự nhiên, rõ ràng, chuyên nghiệp; tránh giọng hệ thống hoặc báo cáo database.\n"
             "- Tự sửa lỗi gõ hiển nhiên trong câu hỏi; không lặp lại từ bị gõ sai.\n"
             "- Không mở đầu bằng cách nhắc lại nguyên văn câu hỏi; dùng tên entity chuẩn trong kế hoạch.\n"
@@ -308,8 +425,9 @@ class KnowledgeQueryService:
                         ChatMessage(
                             role="system",
                             content=(
-                                "Bạn là trợ lý cá nhân của Vũ. Trả lời bằng tiếng Việt tự nhiên, "
-                                "ngắn gọn, đúng bằng chứng, và không nói như một hệ thống database."
+                                "Em là trợ lý cá nhân của anh Vũ. Trả lời bằng tiếng Việt tự nhiên, "
+                                "ngắn gọn, đúng bằng chứng, mang sắc thái miền Nam; dùng 'dạ'/'nha' "
+                                "vừa phải và không dùng từ 'nhé'."
                             ),
                         ),
                         ChatMessage(role="user", content=prompt),
@@ -331,23 +449,27 @@ class KnowledgeQueryService:
             if str(item.bucket) == "profile" and str(item.kind) != MemoryKind.CORRECTION.value
         ]
         if not memories:
-            return "Mình chưa có đủ hồ sơ cá nhân canonical về bạn. Hiện mình chỉ nên trả lời khi có thêm memory profile rõ hơn."
+            return "Em chưa có đủ hồ sơ cá nhân canonical về anh. Hiện em chỉ nên trả lời khi có thêm memory profile rõ hơn."
         return (
-            "Bạn là Vũ. Những gì mình đang nhớ chắc nhất là:\n"
-            "- Bạn có bối cảnh công việc tại MindX.\n"
-            "- Bạn sáng lập/vận hành STE và muốn tách rõ STE khỏi MindX.\n"
-            "- Bạn quan tâm đến dữ liệu, AI, giáo dục, hệ thống vận hành và cách quản trị memory có nguồn rõ.\n"
-            "- Các nhận định về tính cách, phong cách huấn luyện hoặc định vị nghề nghiệp chỉ nên xem là inference nếu chưa được bạn xác nhận."
+            "Anh là Vũ. Những gì em đang nhớ chắc nhất là:\n"
+            "- Anh có bối cảnh công việc tại MindX.\n"
+            "- Anh sáng lập/vận hành STE và muốn tách rõ STE khỏi MindX.\n"
+            "- Anh quan tâm đến dữ liệu, AI, giáo dục, hệ thống vận hành và cách quản trị memory có nguồn rõ.\n"
+            "- Các nhận định về tính cách, phong cách huấn luyện hoặc định vị nghề nghiệp chỉ nên xem là inference nếu chưa được anh xác nhận."
         )
 
     async def _answer_person_identity(self, raw_text: str) -> str | None:
         query = _person_identity_query(raw_text)
         if not query:
             return None
-        person = await self.person_repo.find_by_name_or_alias(query)
-        if person is None:
+        matches = await self.person_repo.find_matches(query)
+        if not matches:
             return None
-        lines = [f"{person.display_name} là người liên quan đến bối cảnh công việc của bạn."]
+        if len(matches) > 1:
+            names = "\n".join(f"- {person.display_name}" for person in matches)
+            return f"Em thấy nhiều người cùng khớp. Anh chọn tên đầy đủ giúp em:\n{names}"
+        person = matches[0]
+        lines = [f"{person.display_name} là người liên quan đến bối cảnh công việc của anh."]
         summary = _relationship_summary(person.relationship)
         if summary:
             lines.append(f"- Vai trò chính: {summary}")
@@ -377,12 +499,12 @@ def _fallback_compose(raw_text: str, evidence: list[KnowledgeEvidence]) -> str:
     normalized = _normalize(raw_text)
     clean = [_clean_evidence_text(item.text) for item in evidence if _clean_evidence_text(item.text)]
     if not clean:
-        return "Mình chưa tìm thấy dữ liệu đủ rõ để trả lời câu này."
+        return "Em chưa tìm thấy dữ liệu đủ rõ để trả lời câu này."
     if any(token in normalized for token in ("cu the", "chi tiet", "build", "xay", "phat trien")):
         bullets = "\n".join(f"- {line}" for line in clean[:5])
-        return f"Mình thấy các ý cụ thể nhất là:\n{bullets}"
+        return f"Em thấy các ý cụ thể nhất là:\n{bullets}"
     bullets = "\n".join(f"- {line}" for line in clean[:4])
-    return f"Mình đang nhớ các ý chính sau:\n{bullets}"
+    return f"Em đang nhớ các ý chính sau:\n{bullets}"
 
 
 def _clean_evidence_text(text: str) -> str:
@@ -397,14 +519,14 @@ def _empty_answer(plan: KnowledgeQueryPlan) -> str:
     requested = set(plan.record_types)
     if requested and requested <= {"task", "followup", "commitment"}:
         return (
-            f"Hiện mình chưa thấy task, follow-up hoặc commitment đang mở{entity_suffix}. "
+            f"Hiện em chưa thấy task, follow-up hoặc commitment đang mở{entity_suffix}. "
             "Các memory mô tả định hướng hoặc năng lực không được tính là việc đang follow."
         )
     if requested and requested <= {"meeting", "reminder", "task"}:
-        return f"Hiện mình chưa thấy lịch, reminder hoặc task phù hợp{entity_suffix}."
+        return f"Hiện em chưa thấy lịch, reminder hoặc task phù hợp{entity_suffix}."
     return (
-        "Mình chưa tìm thấy dữ liệu đủ liên quan để trả lời câu hỏi này. "
-        "Bạn có thể bổ sung tên dự án, người hoặc chủ đề cụ thể hơn."
+        "Em chưa tìm thấy dữ liệu đủ liên quan để trả lời câu hỏi này. "
+        "Anh có thể bổ sung tên dự án, người hoặc chủ đề cụ thể hơn."
     )
 
 
@@ -509,13 +631,13 @@ def _person_identity_query(value: str) -> str | None:
 
 def _relationship_summary(value: str) -> str:
     labels = {
-        "mindx_tegl_plus_direct": "TEGL+ trực tiếp trong nhánh MindX của bạn.",
+        "mindx_tegl_plus_direct": "TEGL+ trực tiếp trong nhánh MindX của anh.",
         "mindx_tegl_plus_direct_and_ste_collaborator": "TEGL+ trực tiếp tại MindX và cộng tác viên kỹ thuật/sản phẩm tin cậy trong bối cảnh STE.",
         "mindx_tom_direct_and_ste_collaborator": "nhân sự trực tiếp trong nhánh TOM tại MindX và cộng tác viên thực thi quan trọng của STE.",
         "mindx_tom_layer2_and_ste_support": "nhân sự lớp dưới TOM tại MindX; có tín hiệu hỗ trợ vận hành/project trong STE nhưng vai trò STE cần xác nhận.",
-        "mindx_success_ss_under_hieu": "thuộc nhóm Success/SS và báo cáo cho Nguyễn Trung Hiếu, không thuộc nhánh TEGL+/TOM của bạn.",
-        "mindx_direct_manager": "quản lý trực tiếp của bạn tại MindX.",
-        "mindx_cross_functional_counterpart": "đối tác phối hợp liên phòng ban tại MindX, không phải direct report của bạn.",
+        "mindx_success_ss_under_hieu": "thuộc nhóm Success/SS và báo cáo cho Nguyễn Trung Hiếu, không thuộc nhánh TEGL+/TOM của anh.",
+        "mindx_direct_manager": "quản lý trực tiếp của anh tại MindX.",
+        "mindx_cross_functional_counterpart": "đối tác phối hợp liên phòng ban tại MindX, không phải direct report của anh.",
         "ste_collaborator_historical_mindx": "cộng tác viên STE; từng có bối cảnh MindX lịch sử.",
         "ste_external_project_reference": "người liên quan đến project/tham chiếu bên ngoài của STE.",
     }
@@ -539,22 +661,22 @@ def _person_note_lines(notes: str) -> list[str]:
 def _translate_person_note(note: str) -> str:
     normalized = note.lower()
     replacements = (
-        ("mindx: tegl hcm 2 & hcm 3 under vu's tegl+ role.", "MindX: phụ trách TEGL HCM 2 và HCM 3 trong nhánh TEGL+ của bạn."),
-        ("mindx: tegl hcm 1 & hcm 4 under vu's tegl+ role.", "MindX: phụ trách TEGL HCM 1 và HCM 4 trong nhánh TEGL+ của bạn."),
-        ("mindx: leader team ho / teaching development leader under vu's tom role.", "MindX: thuộc team HO/Teaching Development Leader trong nhánh TOM của bạn."),
+        ("mindx: tegl hcm 2 & hcm 3 under vu's tegl+ role.", "MindX: phụ trách TEGL HCM 2 và HCM 3 trong nhánh TEGL+ của anh."),
+        ("mindx: tegl hcm 1 & hcm 4 under vu's tegl+ role.", "MindX: phụ trách TEGL HCM 1 và HCM 4 trong nhánh TEGL+ của anh."),
+        ("mindx: leader team ho / teaching development leader under vu's tom role.", "MindX: thuộc team HO/Teaching Development Leader trong nhánh TOM của anh."),
         ("ste: major execution collaborator.", "STE: cộng tác viên thực thi quan trọng."),
         ("ste: high-trust technical/product collaborator.", "STE: cộng tác viên kỹ thuật/sản phẩm có độ tin cậy cao."),
         ("keep contexts separate.", "Cần tách rõ bối cảnh MindX và STE khi dùng thông tin này."),
         ("mindx:", "MindX:"),
         ("ste:", "STE:"),
-        ("under vu's", "trong nhánh của bạn"),
-        ("not vu's direct report", "không phải direct report của bạn"),
-        ("direct manager of vu at mindx", "quản lý trực tiếp của bạn tại MindX"),
+        ("under vu's", "trong nhánh của anh"),
+        ("not vu's direct report", "không phải direct report của anh"),
+        ("direct manager of vu at mindx", "quản lý trực tiếp của anh tại MindX"),
     )
     for source, target in replacements:
         if normalized == source:
             return target
-    cleaned = note.replace("Vu's", "của bạn").replace("Vu", "bạn")
+    cleaned = note.replace("Vu's", "của anh").replace("Vu", "anh")
     cleaned = cleaned.replace("under", "thuộc").replace("Current", "Hiện là")
     return cleaned.strip()
 

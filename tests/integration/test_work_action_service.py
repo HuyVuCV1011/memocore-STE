@@ -44,6 +44,45 @@ async def test_task_action_requires_confirmation_and_supports_undo(repos):
     assert restored.due_at == task.due_at
 
 
+async def test_work_action_can_cancel_task(repos):
+    note = await repos["notes"].create(Note(raw_text="task source"))
+    task = await repos["tasks"].create(Task(title="Task cần bỏ", source_note_id=note.id))
+    service = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        EventService(repos["events"]),
+    )
+
+    question = await service.handle(f"work:q:t:cancel:{task.id}")
+    result = await service.handle(f"work:x:t:cancel:{task.id}")
+
+    updated = await repos["tasks"].get_by_id(task.id)
+    assert question is not None and question.title == "Xác nhận bỏ task"
+    assert result is not None
+    assert updated is not None and str(updated.status) == "cancelled"
+
+
+async def test_tasks_view_shows_daily_recurrence(repos):
+    note = await repos["notes"].create(Note(raw_text="daily view"))
+    task = await repos["tasks"].create(
+        Task(
+            title="Daily task",
+            source_note_id=note.id,
+            recurrence_rule="daily",
+        )
+    )
+    service = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        EventService(repos["events"]),
+    )
+
+    response = await service.tasks_view()
+
+    assert task.title in response.sections[0].lines[0]
+    assert "🔁 Hằng ngày" in response.sections[0].lines[0]
+
+
 async def test_reminder_reschedule_records_diff_and_undo(repos):
     note = await repos["notes"].create(Note(raw_text="reminder source"))
     reminder = await repos["reminders"].create(

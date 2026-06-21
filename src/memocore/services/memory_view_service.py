@@ -56,7 +56,7 @@ class MemoryViewService:
         tracked_projects = [project for project in projects if str(project.status) == "active"]
 
         return AssistantResponse(
-            title="Ghi nhớ của bạn",
+            title="Ghi nhớ của anh",
             summary=(
                 f"{len(memories)} memory đang dùng. "
                 f"{review_count} cần duyệt, {stale_count} cần rà lại."
@@ -94,11 +94,11 @@ class MemoryViewService:
         if topic not in MEMORY_TOPICS:
             return None
         selected = await self._topic_items(topic)
-        item_lines = _memory_card_lines(selected)
         total_pages = max(1, (len(selected) + MEMORY_PAGE_SIZE - 1) // MEMORY_PAGE_SIZE)
         page = min(max(page, 0), total_pages - 1)
         start = page * MEMORY_PAGE_SIZE
-        page_items = item_lines[start * 3 : (start + MEMORY_PAGE_SIZE) * 3]
+        visible_items = selected[start : start + MEMORY_PAGE_SIZE]
+        page_items = _memory_card_lines(visible_items, topic)
 
         if not page_items:
             page_items = ["Chưa có ghi nhớ phù hợp trong chủ đề này."]
@@ -123,19 +123,27 @@ class MemoryViewService:
             )
         actions.append(AssistantAction(label="Quay lại", action_id="mem:o", row=1))
         if topic in {"review", "stale"}:
-            for index, item in enumerate(selected[start : start + MEMORY_PAGE_SIZE], 2):
+            for index, item in enumerate(visible_items, 2):
                 actions.append(
                     AssistantAction(
                         label=f"Giữ {index - 1}",
-                        action_id=f"mem:k:{item.id}",
+                        action_id=f"mem:k:{item.id}:{topic}:{page}",
                         row=index,
                     )
                 )
                 actions.append(
-                    AssistantAction(label="Bỏ", action_id=f"mem:r:{item.id}", row=index)
+                    AssistantAction(
+                        label="Bỏ",
+                        action_id=f"mem:r:{item.id}:{topic}:{page}",
+                        row=index,
+                    )
                 )
                 actions.append(
-                    AssistantAction(label="Lỗi thời", action_id=f"mem:s:{item.id}", row=index)
+                    AssistantAction(
+                        label="Lỗi thời",
+                        action_id=f"mem:s:{item.id}:{topic}:{page}",
+                        row=index,
+                    )
                 )
                 actions.append(
                     AssistantAction(label="Gộp", action_id=f"mem:g:{item.id}", row=index)
@@ -237,7 +245,7 @@ class MemoryViewService:
         return AssistantResponse(
             title="Gộp memory",
             summary=(
-                "Mình chưa tự gộp vì cần bạn chọn memory canonical. "
+                "Em chưa tự gộp vì cần anh chọn memory canonical. "
                 f"Hãy nhắn: sửa memory này thành phiên bản đúng hơn: {item.content}"
             ),
             actions=[AssistantAction(label="Quay lại", action_id="mem:t:review:0")],
@@ -252,9 +260,14 @@ class MemoryViewService:
         return [
             item
             for item in await self._visible_memories()
-            if item.confidence < 0.85
-            or item.last_confirmed_at is None
-            or (item.valid_until is not None and item.valid_until <= now)
+            if str(item.status) == MemoryStatus.CANDIDATE.value
+            or (
+                (item.valid_until is None or item.valid_until > now)
+                and (
+                    str(item.status) == MemoryStatus.ACTIVE.value
+                    and item.last_confirmed_at is None
+                )
+            )
         ]
 
     async def _stale_memories(self) -> list[MemoryItem]:
@@ -262,9 +275,11 @@ class MemoryViewService:
         return [
             item
             for item in await self._visible_memories()
-            if (item.valid_until is not None and item.valid_until <= now)
-            or item.last_confirmed_at is None
-            or item.updated_at < now - _STALE_AFTER
+            if str(item.status) == MemoryStatus.ACTIVE.value
+            and (
+                (item.valid_until is not None and item.valid_until <= now)
+                or _freshness_date(item) < now - _STALE_AFTER
+            )
         ]
 
     async def _log(self, event_type: EventType, item_id: str, payload: dict) -> None:
@@ -284,22 +299,40 @@ def _topic_actions() -> list[AssistantAction]:
     ]
 
 
-def _memory_card_lines(items: list[MemoryItem]) -> list[str]:
+def _memory_card_lines(items: list[MemoryItem], topic: str) -> list[str]:
     lines: list[str] = []
     for index, item in enumerate(items, 1):
         lines.append(f"{index}. {_compact_content(item.content)}")
-        lines.append(
-            "   "
-            + " | ".join(
-                [
-                    f"{item.bucket}/{item.kind}",
-                    f"tin cậy {round(item.confidence * 100)}%",
-                    _freshness_label(item),
-                ]
-            )
-        )
-        lines.append(f"   id:{item.id[:8]} source:{item.source_note_id[:8]}")
+        if topic == "review":
+            lines.append(f"   Cần duyệt vì {_review_reason(item)}.")
+        elif topic == "stale":
+            lines.append(f"   {_stale_reason(item)}.")
     return lines
+
+
+def _freshness_date(item: MemoryItem) -> datetime:
+    if item.last_confirmed_at:
+        return item.last_confirmed_at
+    return item.updated_at
+
+
+def _review_reason(item: MemoryItem) -> str:
+    now = datetime.now(UTC)
+    if str(item.status) == MemoryStatus.CANDIDATE.value:
+        if item.valid_until and item.valid_until <= now:
+            return "ghi nhớ mới nhưng đã hết hiệu lực trước khi được duyệt"
+        return "ghi nhớ mới chưa được xác nhận"
+    return "ghi nhớ cũ chưa từng được anh xác nhận"
+
+
+def _stale_reason(item: MemoryItem) -> str:
+    now = datetime.now(UTC)
+    if item.valid_until and item.valid_until <= now:
+        return f"Đã hết hiệu lực từ {item.valid_until:%d/%m/%Y}"
+    freshness = _freshness_date(item)
+    if freshness < now - _STALE_AFTER:
+        return f"Đã hơn 120 ngày chưa được rà lại (lần cuối: {freshness:%d/%m/%Y})"
+    return f"Lần cập nhật gần nhất {item.updated_at:%d/%m/%Y}"
 
 
 def _top_terms(
@@ -322,17 +355,6 @@ def _top_terms(
     return [f"{name}: {count}" for name, count in counter.most_common(5)]
 
 
-def _freshness_label(item: MemoryItem) -> str:
-    now = datetime.now(UTC)
-    if item.valid_until and item.valid_until <= now:
-        return f"hết hạn {item.valid_until:%d/%m/%Y}"
-    if item.last_confirmed_at:
-        return f"xác nhận {item.last_confirmed_at:%d/%m/%Y}"
-    if item.updated_at < now - _STALE_AFTER:
-        return f"cũ {item.updated_at:%d/%m/%Y}"
-    return "chưa xác nhận"
-
-
 def _compact_content(value: str, limit: int = 140) -> str:
     compact = " ".join(value.split())
     if len(compact) <= limit:
@@ -352,36 +374,11 @@ def _deduplicate_memories(memories: list[MemoryItem]) -> list[MemoryItem]:
     return result
 
 
-def _deduplicate_lines(lines: list[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for line in lines:
-        key = _normalize(line)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        result.append(line)
-    return result
-
-
 def _normalize(value: str) -> str:
     lowered = value.lower().replace("đ", "d")
     decomposed = unicodedata.normalize("NFD", lowered)
     ascii_text = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
     return " ".join("".join(char if char.isalnum() else " " for char in ascii_text).split())
-
-
-def _memory_review_line(item: MemoryItem) -> str:
-    source = item.source_type.replace("_", " ")
-    confidence = f"{round(item.confidence * 100)}%"
-    if item.valid_until:
-        validity = f"hết hạn {item.valid_until:%d/%m/%Y}"
-    elif item.last_confirmed_at:
-        validity = f"xác nhận {item.last_confirmed_at:%d/%m/%Y}"
-    else:
-        validity = "chưa xác nhận"
-    revision = " · có lịch sử sửa" if item.revision_of_id else ""
-    return f"{item.content} · nguồn {source} · tin cậy {confidence} · {validity}{revision}"
 
 
 def _looks_like_goal(value: str) -> bool:

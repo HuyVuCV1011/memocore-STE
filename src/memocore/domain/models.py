@@ -97,6 +97,7 @@ class EventType(StrEnum):
     NOTE_FAILED = "note_failed"
     TASK_CANDIDATE_CREATED = "task_candidate_created"
     TASK_DONE = "task_done"
+    TASK_RECURRENCE_SCHEDULED = "task_recurrence_scheduled"
     REMINDER_CANDIDATE_CREATED = "reminder_candidate_created"
     REMINDER_SCHEDULED = "reminder_scheduled"
     REMINDER_SENT = "reminder_sent"
@@ -156,6 +157,9 @@ class Task(TimestampedModel):
     person_id: str | None = None
     source_note_id: str
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    recurrence_rule: str | None = None
+    recurrence_series_id: str | None = None
+    recurrence_occurrence_at: datetime | None = None
 
 
 class Reminder(TimestampedModel):
@@ -225,6 +229,8 @@ class MemoryItem(TimestampedModel):
     source_note_id: str
     project_id: str | None = None
     person_id: str | None = None
+    organization_id: str | None = None
+    decision_id: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     status: MemoryStatus = MemoryStatus.CANDIDATE
     source_type: str = "user_note"
@@ -246,6 +252,16 @@ class ClarificationRequest(TimestampedModel):
     status: ClarificationStatus = ClarificationStatus.PENDING
     answer_text: str | None = None
     resolved_at: datetime | None = None
+
+
+class ChatContext(BaseModel):
+    source_chat_id: str
+    focused_entity_type: str | None = None
+    focused_entity_id: str | None = None
+    last_intent: str | None = None
+    last_result_entity_ids: list[str] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime | None = None
 
 
 class EventLog(BaseModel):

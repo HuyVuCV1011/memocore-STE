@@ -16,12 +16,19 @@ from memocore.adapters.storage.repositories import (
     normalize_lookup,
     parse_model_datetime,
 )
+from memocore.adapters.storage.knowledge_repositories import (
+    DecisionRepository,
+    OrganizationRepository,
+)
+from memocore.domain.knowledge import Decision
 from memocore.domain.models import (
     Commitment,
     CommitmentDirection,
     EventType,
     FollowUp,
     Meeting,
+    MemoryBucket,
+    MemoryKind,
     Note,
     NoteStatus,
     Person,
@@ -62,6 +69,8 @@ class CaptureService:
         meeting_repo: MeetingRepository | None = None,
         followup_repo: FollowUpRepository | None = None,
         commitment_repo: CommitmentRepository | None = None,
+        organization_repo: OrganizationRepository | None = None,
+        decision_repo: DecisionRepository | None = None,
     ):
         self.note_repo = note_repo
         self.task_repo = task_repo
@@ -75,6 +84,8 @@ class CaptureService:
         self.meeting_repo = meeting_repo
         self.followup_repo = followup_repo
         self.commitment_repo = commitment_repo
+        self.organization_repo = organization_repo
+        self.decision_repo = decision_repo
 
     async def capture(self, request: CaptureRequest) -> CaptureResponse:
         existing = await self.note_repo.find_by_source_message(
@@ -278,7 +289,7 @@ class CaptureService:
                 if _text_similarity(request.raw_text, existing_note.raw_text) >= 0.55:
                     duplicate_suggestions.append(
                         f"Ý tưởng này gần với note LinkedIn đã có: “{existing_note.summary or existing_note.raw_text}”. "
-                        "Mình chưa tự gộp."
+                        "Em chưa tự gộp."
                     )
                     await self.event_service.append_event(
                         EventType.MEMORY_DUPLICATE_SUGGESTED,
@@ -335,26 +346,45 @@ class CaptureService:
                     extraction, request.raw_text, note.id
                 )
                 entity_suggestion_ids.extend(person_suggestions)
+                organizations_by_name, organizations_created = await self._resolve_organizations(
+                    extraction, request.raw_text
+                )
 
                 tasks_created = 0
                 is_memory_correction = _is_memory_correction(request.raw_text)
                 if not is_memory_correction:
+                    known_tasks = await self.task_repo.list_active()
                     for candidate in extraction.tasks:
+                        duplicate = _find_duplicate_task(candidate.title, known_tasks)
+                        if duplicate is not None:
+                            duplicate_suggestions.append(
+                                f"Task “{candidate.title}” gần trùng với task đang mở "
+                                f"“{duplicate.title}”, nên em không tạo thêm."
+                            )
+                            continue
                         task = Task(
                             title=candidate.title,
                             description=candidate.description,
                             priority=candidate.priority,
                             due_at=parse_model_datetime(candidate.due_at),
-                            project_id=self._resolve_project_id(
-                                candidate.project_name, projects_by_name, project_id
+                            project_id=self._resolve_candidate_project_id(
+                                candidate.project_name,
+                                candidate.title,
+                                projects_by_name,
+                                project_id,
                             ),
                             person_id=self._resolve_person_id(
                                 candidate.person_name, people_by_name
                             ),
                             source_note_id=note.id,
                             confidence=candidate.confidence,
+                            recurrence_rule=candidate.recurrence_rule,
                         )
+                        if task.recurrence_rule:
+                            task.recurrence_series_id = task.id
+                            task.recurrence_occurrence_at = task.due_at
                         created_task = await self.task_repo.create(task)
+                        known_tasks.append(created_task)
                         await self.event_service.append_event(
                             EventType.TASK_CANDIDATE_CREATED,
                             "task",
@@ -389,11 +419,17 @@ class CaptureService:
                 memories = []
                 if not tasks_completed:
                     for candidate in extraction.memories:
+                        if not _should_persist_memory(
+                            candidate,
+                            extraction.tasks,
+                            explicit_memory_intent=is_memory_intent,
+                        ):
+                            continue
                         similar = await self.memory_service.find_similar(candidate)
                         for item in similar:
                             suggestion = (
                                 f"“{candidate.content}” gần với memory đã có: “{item.content}”. "
-                                "Mình chưa tự gộp."
+                                "Em chưa tự gộp."
                             )
                             duplicate_suggestions.append(suggestion)
                             await self.event_service.append_event(
@@ -409,8 +445,11 @@ class CaptureService:
                             await self.memory_service.persist_candidates(
                                 [candidate],
                                 note.id,
-                                project_id=self._resolve_project_id(
-                                    candidate.project_name, projects_by_name, project_id
+                                project_id=self._resolve_candidate_project_id(
+                                    candidate.project_name,
+                                    candidate.content,
+                                    projects_by_name,
+                                    project_id,
                                 ),
                                 person_id=self._resolve_person_id(
                                     candidate.person_name, people_by_name
@@ -420,6 +459,13 @@ class CaptureService:
                         )
                 v4_counts, v4_warnings = await self._persist_v4_entities(
                     extraction, note.id, projects_by_name, people_by_name
+                )
+                decisions_created = await self._persist_decisions(
+                    extraction,
+                    note.id,
+                    projects_by_name,
+                    people_by_name,
+                    organizations_by_name,
                 )
                 await self.note_repo.update_processed(note.id, extraction.summary, extraction.tags)
                 await self._record_quality_warnings(
@@ -434,6 +480,8 @@ class CaptureService:
                         "tasks_completed": tasks_completed,
                         "reminders_created": len(reminders),
                         "memories_created": len(memories),
+                        "organizations_created": organizations_created,
+                        "decisions_created": decisions_created,
                         **v4_counts,
                     },
                 )
@@ -455,12 +503,234 @@ class CaptureService:
             reminders_created=len(reminders),
             memories_created=len(memories),
             people_created=people_created,
+            organizations_created=organizations_created,
+            decisions_created=decisions_created,
             meetings_created=v4_counts["meetings_created"],
             followups_created=v4_counts["followups_created"],
             commitments_created=v4_counts["commitments_created"],
             clarification_question=clarification_question,
             duplicate_suggestions=duplicate_suggestions,
             entity_suggestion_ids=entity_suggestion_ids,
+        )
+
+    async def _resolve_organizations(
+        self, extraction, raw_text: str
+    ) -> tuple[dict[str, str], int]:
+        if self.organization_repo is None:
+            return {}, 0
+        resolved: dict[str, str] = {}
+        created = 0
+        existing = await self.organization_repo.list_all()
+        existing_names = {
+            normalize_lookup(name): item
+            for item in existing
+            for name in (item.name, *item.aliases)
+        }
+        for candidate in extraction.organizations:
+            if candidate.confidence < _MIN_V4_CONFIDENCE or not _explicit_mention(
+                candidate.name, raw_text
+            ):
+                continue
+            organization = existing_names.get(normalize_lookup(candidate.name))
+            if organization is None:
+                organization = await self.organization_repo.find_or_create(candidate.name)
+                created += 1
+            resolved[normalize_lookup(candidate.name)] = organization.id
+        return resolved, created
+
+    async def _persist_decisions(
+        self,
+        extraction,
+        note_id: str,
+        projects_by_name: dict[str, str],
+        people_by_name: dict[str, str],
+        organizations_by_name: dict[str, str],
+    ) -> int:
+        if self.decision_repo is None:
+            return 0
+        created = 0
+        for candidate in extraction.decisions:
+            if candidate.confidence < _MIN_V4_CONFIDENCE:
+                continue
+            project_id = (
+                projects_by_name.get(normalize_lookup(candidate.project_name))
+                if candidate.project_name
+                else None
+            )
+            person_id = (
+                people_by_name.get(normalize_lookup(candidate.person_name))
+                if candidate.person_name
+                else None
+            )
+            organization_id = (
+                organizations_by_name.get(normalize_lookup(candidate.organization_name))
+                if candidate.organization_name
+                else None
+            )
+            await self.decision_repo.create(
+                Decision(
+                    title=candidate.title,
+                    summary=candidate.summary,
+                    project_id=project_id,
+                    person_id=person_id,
+                    organization_id=organization_id,
+                    source_note_id=note_id,
+                    confidence=candidate.confidence,
+                )
+            )
+            created += 1
+        return created
+
+    async def capture_scoped_knowledge(
+        self,
+        request: CaptureRequest,
+        *,
+        entity_type: str,
+        entity_id: str,
+        entity_name: str,
+        statements: list[str],
+    ) -> CaptureResponse:
+        existing = await self.note_repo.find_by_source_message(
+            request.source, request.source_chat_id, request.source_message_id
+        )
+        if existing and existing.status != NoteStatus.FAILED:
+            memories = await self.memory_service.memory_repo.list_by_note(existing.id)
+            return CaptureResponse(
+                note_id=existing.id,
+                summary=existing.summary or f"Đã cập nhật knowledge cho {entity_name}.",
+                memories_created=len(memories),
+                duplicate=True,
+            )
+
+        note = existing or Note(
+            source=request.source,
+            source_message_id=request.source_message_id,
+            source_chat_id=request.source_chat_id,
+            raw_text=request.raw_text,
+            metadata={
+                "target_entity_type": entity_type,
+                "target_entity_id": entity_id,
+                "target_entity_name": entity_name,
+            },
+        )
+        if existing is None:
+            await self.note_repo.create(note)
+            await self.event_service.append_event(
+                EventType.NOTE_CAPTURED, "note", note.id
+            )
+
+        candidates = [
+            MemoryCandidate(
+                bucket=(
+                    MemoryBucket.PROJECT
+                    if entity_type == "project"
+                    else MemoryBucket.PROFILE
+                ),
+                kind=_scoped_memory_kind(statement),
+                content=statement,
+                project_name=entity_name if entity_type == "project" else None,
+                person_name=entity_name if entity_type == "person" else None,
+                confidence=1.0,
+            )
+            for statement in statements
+            if statement.strip()
+        ]
+        if not candidates:
+            summary = f"Chưa có nội dung để cập nhật cho {entity_name}."
+            await self.note_repo.update_processed(
+                note.id, summary, ["knowledge_update", entity_type, "empty"]
+            )
+            return CaptureResponse(note_id=note.id, summary=summary)
+
+        created = []
+        async with self.note_repo.database.transaction():
+            for candidate in candidates:
+                created.extend(
+                    await self.memory_service.persist_candidates(
+                        [candidate],
+                        note.id,
+                        project_id=entity_id if entity_type == "project" else None,
+                        person_id=entity_id if entity_type == "person" else None,
+                        organization_id=(
+                            entity_id if entity_type == "organization" else None
+                        ),
+                    )
+                )
+            summary = f"Đã cập nhật {len(created)} thông tin cho {entity_name}."
+            await self.note_repo.update_processed(
+                note.id, summary, ["knowledge_update", entity_type]
+            )
+            await self.event_service.append_event(
+                EventType.NOTE_PROCESSED,
+                "note",
+                note.id,
+                {
+                    "intent": "update_knowledge",
+                    "target_entity_type": entity_type,
+                    "target_entity_id": entity_id,
+                    "memories_created": len(created),
+                },
+            )
+        return CaptureResponse(
+            note_id=note.id,
+            summary=summary,
+            memories_created=len(created),
+        )
+
+    async def rollback_recent_knowledge_update(
+        self,
+        request: CaptureRequest,
+        *,
+        requested_count: int | None = None,
+    ) -> CaptureResponse:
+        if not request.source_chat_id:
+            return CaptureResponse(
+                note_id="",
+                summary="Em chưa xác định được cuộc hội thoại chứa cập nhật cần hoàn tác.",
+            )
+        recent_notes = await self.note_repo.list_recent_by_chat(
+            request.source, request.source_chat_id, limit=20
+        )
+        source_note = next(
+            (
+                note
+                for note in recent_notes
+                if "knowledge_update" in note.tags and "rolled_back" not in note.tags
+            ),
+            None,
+        )
+        if source_note is None:
+            return CaptureResponse(
+                note_id="",
+                summary="Em chưa tìm thấy batch knowledge nào gần đây để hoàn tác.",
+            )
+        memories = await self.memory_service.memory_repo.list_by_note(source_note.id)
+        if not memories:
+            return CaptureResponse(
+                note_id=source_note.id,
+                summary="Batch cập nhật gần nhất không còn memory nào để xóa.",
+            )
+        if requested_count and requested_count != len(memories):
+            return CaptureResponse(
+                note_id=source_note.id,
+                summary=(
+                    f"Batch gần nhất có {len(memories)} thông tin, không phải "
+                    f"{requested_count}. Em chưa xóa để tránh nhầm dữ liệu."
+                ),
+            )
+
+        async with self.note_repo.database.transaction():
+            for item in memories:
+                await self.memory_service.delete(item.id)
+            await self.note_repo.update_processed(
+                source_note.id,
+                f"Đã hoàn tác {len(memories)} thông tin từ knowledge update.",
+                [*source_note.tags, "rolled_back"],
+            )
+        return CaptureResponse(
+            note_id=source_note.id,
+            summary=f"Đã xóa {len(memories)} thông tin từ lần cập nhật gần nhất.",
+            memories_deleted=len(memories),
         )
 
     async def _resolve_people(
@@ -542,6 +812,22 @@ class CaptureService:
         if name:
             return projects_by_name.get(normalize_lookup(name))
         return default_project_id
+
+    def _resolve_candidate_project_id(
+        self,
+        name: str | None,
+        candidate_text: str,
+        projects_by_name: dict[str, str],
+        default_project_id: str | None,
+    ) -> str | None:
+        if name:
+            return self._resolve_project_id(name, projects_by_name, None)
+        if default_project_id is None:
+            return None
+        for project_name, project_id in projects_by_name.items():
+            if project_id == default_project_id and _explicit_mention(project_name, candidate_text):
+                return project_id
+        return None
 
     def _resolve_person_id(self, name: str | None, people_by_name: dict[str, str]) -> str | None:
         return people_by_name.get(normalize_lookup(name)) if name else None
@@ -702,6 +988,21 @@ def _is_completion_note(raw_text: str) -> bool:
     return bool(re.search(r"\bda\s+.+\s+xong\b", normalized)) or any(
         signal in normalized for signal in signals
     )
+
+
+def _scoped_memory_kind(statement: str) -> MemoryKind:
+    normalized = _normalize_text(statement)
+    if any(
+        signal in normalized
+        for signal in ("muc tieu", "huong toi", "trong tuong lai", "can tro thanh")
+    ):
+        return MemoryKind.GOAL
+    if any(
+        signal in normalized
+        for signal in ("khong duoc", "khong can", "bat buoc", "uu tien", "ranh gioi")
+    ):
+        return MemoryKind.BOUNDARY
+    return MemoryKind.PROJECT_STATE
 
 
 def _explicit_mention(name: str, raw_text: str) -> bool:
@@ -1008,3 +1309,51 @@ def _text_similarity(left: str, right: str) -> float:
     if not left_tokens or not right_tokens:
         return 0.0
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def _find_duplicate_task(title: str, tasks: list[Task]) -> Task | None:
+    candidate_tokens = _task_identity_tokens(title)
+    if not candidate_tokens:
+        return None
+    for task in tasks:
+        existing_tokens = _task_identity_tokens(task.title)
+        if not existing_tokens:
+            continue
+        score = len(candidate_tokens & existing_tokens) / len(
+            candidate_tokens | existing_tokens
+        )
+        if score >= 0.75:
+            return task
+    return None
+
+
+def _task_identity_tokens(value: str) -> set[str]:
+    ignored = {
+        "tao",
+        "thuc",
+        "hien",
+        "lam",
+        "hoan",
+        "thanh",
+        "moi",
+        "task",
+        "viec",
+        "can",
+        "toi",
+    }
+    return {
+        token
+        for token in normalize_lookup(value).split()
+        if token not in ignored and len(token) > 1
+    }
+
+
+def _should_persist_memory(
+    candidate: MemoryCandidate,
+    tasks: list[TaskCandidate],
+    *,
+    explicit_memory_intent: bool,
+) -> bool:
+    if explicit_memory_intent or str(candidate.kind) != MemoryKind.GOAL.value:
+        return True
+    return not any(_matches_task(candidate.content, task.title) for task in tasks)

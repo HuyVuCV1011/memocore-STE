@@ -42,6 +42,11 @@ src/memocore/
     capture_service.py
     clarification_service.py
     conversation_service.py
+    conversation_router.py
+    conversation_planner.py
+    conversation_executor.py
+    conversation_composer.py
+    reference_resolver.py
     event_service.py
     intent_classifier_service.py
     memory_service.py
@@ -58,6 +63,8 @@ src/memocore/
 - Domain models and schemas describe notes, tasks, reminders, projects, people, meetings,
   follow-ups, memory, events, and structured model output.
 - Raw notes remain separate from AI-derived data.
+- Project, person, organization, and decision knowledge remains source-linked and entity-scoped.
+- Production conversation failures become transcript fixtures under `tests/evaluation/`.
 - User-visible actions and memory lifecycle changes must be auditable through event logs.
 - Prompt ownership belongs in extraction and intent services, not providers.
 

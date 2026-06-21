@@ -48,3 +48,38 @@ async def test_project_alias_confirmation_updates_lookup(repos):
     resolved = await repos["projects"].find_or_create("dashboard STE")
 
     assert resolved.id == project.id
+
+
+async def test_confirmed_alias_is_filtered_from_review(repos):
+    person = await repos["people"].create(Person(display_name="Nguyễn Hoàng Khôi Nguyên"))
+    event_service = EventService(repos["events"])
+    suggestion = await event_service.append_event(
+        EventType.ENTITY_ALIAS_SUGGESTED,
+        "person",
+        person.id,
+        {"alias": "Dưa hấu", "canonical_name": person.display_name},
+    )
+    service = EntityConfirmationService(repos["people"], repos["projects"], event_service)
+
+    await service.confirm(suggestion.id)
+    review = await service.review("person")
+
+    assert review.summary == "Chưa có gợi ý alias/merge cần xác nhận."
+
+
+async def test_existing_alias_is_filtered_even_without_confirmation_event(repos):
+    person = await repos["people"].create(
+        Person(display_name="Nguyễn Hoàng Khôi Nguyên", aliases=["Dưa hấu"])
+    )
+    event_service = EventService(repos["events"])
+    await event_service.append_event(
+        EventType.ENTITY_ALIAS_SUGGESTED,
+        "person",
+        person.id,
+        {"alias": "Dưa hấu", "canonical_name": person.display_name},
+    )
+    service = EntityConfirmationService(repos["people"], repos["projects"], event_service)
+
+    review = await service.review("person")
+
+    assert review.summary == "Chưa có gợi ý alias/merge cần xác nhận."

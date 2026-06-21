@@ -4,13 +4,16 @@ import logging
 from datetime import UTC, datetime
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram.constants import ChatType
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -31,6 +34,26 @@ from memocore.services.entity_confirmation_service import EntityConfirmationServ
 logger = logging.getLogger(__name__)
 
 
+async def owner_only_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    owner_id = context.application.bot_data["telegram_owner_id"]
+    user = update.effective_user
+    chat = update.effective_chat
+    if (
+        user is None
+        or chat is None
+        or user.id != owner_id
+        or chat.type != ChatType.PRIVATE
+        or chat.id != owner_id
+    ):
+        logger.warning(
+            "Rejected unauthorized Telegram update user_id=%s chat_id=%s chat_type=%s",
+            user.id if user else None,
+            chat.id if chat else None,
+            chat.type if chat else None,
+        )
+        raise ApplicationHandlerStop
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         keyboard = ReplyKeyboardMarkup(
@@ -45,7 +68,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             update,
             "MemoCore đã sẵn sàng.\n\n"
             "Gõ / để mở 6 cửa chính: /today, /work, /memory, /context, /briefing, /capture.\n"
-            "Bạn vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /task, /prep <tên>, /person <tên>.",
+            "Anh vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /task, /prep <tên>, /person <tên>.",
             reply_markup=keyboard,
         )
 
@@ -57,11 +80,24 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not command:
         return
     service: SecretaryService = context.application.bot_data["secretary_service"]
+    conversation_service: ConversationService | None = context.application.bot_data.get(
+        "conversation_service"
+    )
+    source_chat_id = str(update.effective_chat.id) if update.effective_chat else None
+    clarification_service: ClarificationService | None = context.application.bot_data.get(
+        "clarification_service"
+    )
+    if source_chat_id and clarification_service:
+        await clarification_service.cancel_pending_for_chat(
+            source_chat_id, update.message.text or command
+        )
     work_action_service: WorkActionService | None = context.application.bot_data.get(
         "work_action_service"
     )
     if command == "tasks" and work_action_service is not None:
         text, keyboard = present_response(await work_action_service.tasks_view())
+        if conversation_service is not None:
+            await conversation_service.remember_task_list(source_chat_id, text, command)
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
     if command == "reminders" and work_action_service is not None:
@@ -119,10 +155,10 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         query = update.message.text.partition(" ")[2].strip() if update.message.text else ""
         if not query:
             prompts = {
-                "person": "Bạn muốn xem person nào? Dùng /person <tên>.",
-                "project": "Bạn muốn xem project nào? Dùng /project <tên>, hoặc /projects để xem danh sách.",
-                "context": "Bạn muốn xem context nào? Dùng /context <person hoặc project>.",
-                "prep": "Bạn muốn chuẩn bị meeting nào? Dùng /prep <person hoặc project>.",
+                "person": "Anh muốn xem person nào? Dùng /person <tên>.",
+                "project": "Anh muốn xem project nào? Dùng /project <tên>, hoặc /projects để xem danh sách.",
+                "context": "Anh muốn xem context nào? Dùng /context <person hoặc project>.",
+                "prep": "Anh muốn chuẩn bị meeting nào? Dùng /prep <person hoặc project>.",
             }
             await _safe_reply_text(update, prompts[command])
             return
@@ -158,7 +194,15 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     action = actions.get(command)
     if action is None:
         return
-    await _safe_reply_text(update, await action())
+    text = await action()
+    if conversation_service is not None and command in {
+        "today",
+        "todays",
+        "tasks",
+        "briefing",
+    }:
+        await conversation_service.remember_task_list(source_chat_id, text, command)
+    await _safe_reply_text(update, text)
 
 
 async def navigation_callback_handler(
@@ -198,16 +242,37 @@ async def memory_callback_handler(
         response = await service.stale()
     elif query.data.startswith(("mem:c:", "mem:k:")):
         parts = query.data.split(":")
-        if len(parts) == 3:
-            response = await service.confirm(parts[2])
+        if len(parts) in {3, 5}:
+            result = await service.confirm(parts[2])
+            if result is not None and len(parts) == 5:
+                try:
+                    response = await service.topic(parts[3], int(parts[4]))
+                except ValueError:
+                    response = None
+            else:
+                response = result
     elif query.data.startswith("mem:r:"):
         parts = query.data.split(":")
-        if len(parts) == 3:
-            response = await service.reject(parts[2])
+        if len(parts) in {3, 5}:
+            result = await service.reject(parts[2])
+            if result is not None and len(parts) == 5:
+                try:
+                    response = await service.topic(parts[3], int(parts[4]))
+                except ValueError:
+                    response = None
+            else:
+                response = result
     elif query.data.startswith("mem:s:"):
         parts = query.data.split(":")
-        if len(parts) == 3:
-            response = await service.mark_stale(parts[2])
+        if len(parts) in {3, 5}:
+            result = await service.mark_stale(parts[2])
+            if result is not None and len(parts) == 5:
+                try:
+                    response = await service.topic(parts[3], int(parts[4]))
+                except ValueError:
+                    response = None
+            else:
+                response = result
     elif query.data.startswith("mem:g:"):
         parts = query.data.split(":")
         if len(parts) == 3:
@@ -252,6 +317,27 @@ async def work_callback_handler(
             raise
 
 
+async def clarification_callback_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    service: ClarificationService | None = context.application.bot_data.get(
+        "clarification_service"
+    )
+    if query is None or not query.data or service is None or update.effective_chat is None:
+        return
+    parts = query.data.split(":")
+    if len(parts) != 3 or parts[:2] != ["clar", "scope"] or not parts[2].isdigit():
+        await query.answer("Lựa chọn không hợp lệ.", show_alert=False)
+        return
+    result = await service.answer_pending(str(update.effective_chat.id), parts[2])
+    if not result.handled:
+        await query.answer("Câu hỏi này đã hết hiệu lực.", show_alert=False)
+        return
+    await query.answer()
+    await query.edit_message_text(result.message)
+
+
 async def entity_callback_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -271,7 +357,7 @@ async def entity_callback_handler(
     elif action == "x":
         response = await service.confirm(event_id)
     elif action == "n":
-        response = AssistantResponse(title="Đã bỏ qua", summary="Mình không lưu biệt danh này.")
+        response = AssistantResponse(title="Đã bỏ qua", summary="Em không lưu biệt danh này.")
     else:
         response = None
     if response is None:
@@ -286,18 +372,38 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not update.message or not update.message.text:
         return
     source_chat_id = str(update.effective_chat.id) if update.effective_chat else None
+    conversation_service: ConversationService | None = context.application.bot_data.get(
+        "conversation_service"
+    )
     clarification_service: ClarificationService | None = context.application.bot_data.get(
         "clarification_service"
     )
     if source_chat_id and clarification_service:
-        result = await clarification_service.answer_pending(source_chat_id, update.message.text)
-        if result.handled:
-            await _safe_reply_text(update, result.message)
-            return
-
-    conversation_service: ConversationService | None = context.application.bot_data.get(
-        "conversation_service"
-    )
+        pending = await clarification_service.find_pending_for_chat(source_chat_id)
+        pending_answer_check = getattr(
+            clarification_service, "is_answer_for_pending", None
+        )
+        is_pending_answer = (
+            pending is not None
+            and pending_answer_check is not None
+            and pending_answer_check(pending, update.message.text)
+        )
+        if (
+            pending is not None
+            and conversation_service is not None
+            and not is_pending_answer
+            and conversation_service.is_explicit_new_action(update.message.text)
+        ):
+            await clarification_service.cancel_pending_for_chat(
+                source_chat_id, update.message.text
+            )
+        else:
+            result = await clarification_service.answer_pending(
+                source_chat_id, update.message.text
+            )
+            if result.handled:
+                await _safe_reply_text(update, result.message)
+                return
     capture_service: CaptureService = context.application.bot_data["capture_service"]
     request = CaptureRequest(
         source="telegram",
@@ -307,6 +413,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     if conversation_service is not None:
         response = await conversation_service.handle_text(request)
+        if response.intent in {"query_today", "query_tasks"}:
+            await conversation_service.remember_task_list(
+                source_chat_id, response.reply, response.intent
+            )
         timezone = conversation_service.secretary_service.display_timezone
         reply = _apply_light_tone(response.reply, update.message.text, timezone)
         await _safe_reply_text(update, reply, reply_markup=response.reply_markup)
@@ -435,6 +545,7 @@ async def tag_prompt_callback_handler(
 
 def register_handlers(
     app: Application,
+    owner_id: int,
     capture_service: CaptureService,
     secretary_service: SecretaryService,
     clarification_service: ClarificationService | None = None,
@@ -443,6 +554,7 @@ def register_handlers(
     work_action_service: WorkActionService | None = None,
     entity_confirmation_service: EntityConfirmationService | None = None,
 ) -> None:
+    app.bot_data["telegram_owner_id"] = owner_id
     app.bot_data["capture_service"] = capture_service
     app.bot_data["secretary_service"] = secretary_service
     app.bot_data["clarification_service"] = clarification_service
@@ -451,8 +563,12 @@ def register_handlers(
     app.bot_data["work_action_service"] = work_action_service
     app.bot_data["entity_confirmation_service"] = entity_confirmation_service
     app.add_error_handler(error_handler)
+    app.add_handler(TypeHandler(Update, owner_only_handler), group=-1)
     app.add_handler(CallbackQueryHandler(memory_callback_handler, pattern=r"^mem:"))
     app.add_handler(CallbackQueryHandler(work_callback_handler, pattern=r"^work:"))
+    app.add_handler(
+        CallbackQueryHandler(clarification_callback_handler, pattern=r"^clar:scope:")
+    )
     app.add_handler(CallbackQueryHandler(entity_callback_handler, pattern=r"^entity:"))
     app.add_handler(CallbackQueryHandler(tag_prompt_callback_handler, pattern=r"^tag_prompt:"))
     app.add_handler(CallbackQueryHandler(navigation_callback_handler, pattern=r"^nav:"))
@@ -535,7 +651,7 @@ def _work_hub_response(summary: str | None = None) -> AssistantResponse:
     return AssistantResponse(
         title="Work",
         summary=summary
-        or "Chọn phần bạn muốn xem. Các shortcut cũ như /tasks, /reminders, /waiting vẫn dùng được.",
+        or "Chọn phần anh muốn xem. Các shortcut cũ như /tasks, /reminders, /waiting vẫn dùng được.",
         actions=[
             AssistantAction(label="Hôm nay", action_id="nav:work:today", row=0),
             AssistantAction(label="Tasks", action_id="nav:work:tasks", row=1),
@@ -549,7 +665,7 @@ def _work_hub_response(summary: str | None = None) -> AssistantResponse:
 def _context_hub_response() -> AssistantResponse:
     return AssistantResponse(
         title="Context",
-        summary="People, projects và meeting prep. Dùng /person <tên>, /project <tên>, hoặc /prep <tên> khi đã biết mình cần xem ai.",
+        summary="People, projects và meeting prep. Dùng /person <tên>, /project <tên>, hoặc /prep <tên> khi anh đã biết cần xem ai.",
         actions=[
             AssistantAction(label="People", action_id="nav:context:people", row=0),
             AssistantAction(label="Projects", action_id="nav:context:projects", row=0),
@@ -596,7 +712,7 @@ def _capture_detail_response(kind: str) -> AssistantResponse:
 def _help_response() -> AssistantResponse:
     return AssistantResponse(
         title="MemoCore help",
-        summary="Menu / chỉ hiện các cửa chính. Các shortcut vẫn dùng được khi bạn nhớ chính xác.",
+        summary="Menu / chỉ hiện các cửa chính. Các shortcut vẫn dùng được khi anh nhớ chính xác.",
         sections=[
             AssistantSection(
                 heading="Cửa chính",
@@ -629,8 +745,23 @@ def _help_response() -> AssistantResponse:
 def _apply_light_tone(reply: str, user_text: str, display_timezone) -> str:
     normalized = user_text.casefold()
     if any(signal in normalized for signal in ("mệt", "met", "đuối", "duoi", "bận", "ban qua")):
-        return f"{reply}\n\nMình giữ phần này thật ngắn để bạn đỡ phải xử lý thêm."
+        return f"{reply}\n\nEm giữ phần này thật ngắn để anh đỡ phải xử lý thêm."
+    if not _is_capture_confirmation(reply):
+        return reply
     local_hour = datetime.now(UTC).astimezone(display_timezone).hour
     if local_hour >= 23 or local_hour < 5:
-        return f"{reply}\n\nĐã khá khuya, mình ghi nhận gọn để bạn có thể nghỉ sớm."
+        return f"{reply}\n\nĐã khá khuya, em ghi nhận gọn để anh có thể nghỉ sớm."
     return reply
+
+
+def _is_capture_confirmation(reply: str) -> bool:
+    normalized = reply.casefold()
+    return any(
+        signal in normalized
+        for signal in (
+            "em đã ghi nhận",
+            "đã tạo/cập nhật",
+            "đã lưu",
+            "got it. updated",
+        )
+    )

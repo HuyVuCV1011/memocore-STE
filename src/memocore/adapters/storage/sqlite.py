@@ -49,6 +49,9 @@ class Database:
         if "recurrence_rule" not in columns:
             await conn.execute("ALTER TABLE reminders ADD COLUMN recurrence_rule TEXT")
         await self._ensure_column(conn, "tasks", "person_id", "TEXT REFERENCES people(id)")
+        await self._ensure_column(conn, "tasks", "recurrence_rule", "TEXT")
+        await self._ensure_column(conn, "tasks", "recurrence_series_id", "TEXT")
+        await self._ensure_column(conn, "tasks", "recurrence_occurrence_at", "TEXT")
         await self._ensure_column(conn, "projects", "aliases", "TEXT NOT NULL DEFAULT '[]'")
         await self._ensure_column(conn, "meetings", "person_id", "TEXT REFERENCES people(id)")
         await self._ensure_column(conn, "memory_items", "person_id", "TEXT REFERENCES people(id)")
@@ -169,6 +172,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     person_id TEXT REFERENCES people(id),
     source_note_id TEXT NOT NULL REFERENCES notes(id),
     confidence REAL NOT NULL,
+    recurrence_rule TEXT,
+    recurrence_series_id TEXT,
+    recurrence_occurrence_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -287,6 +293,36 @@ CREATE INDEX IF NOT EXISTS idx_followups_status_due ON followups(status, due_at)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_source_message
 ON notes(source, source_chat_id, source_message_id)
 WHERE source_message_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS task_list_contexts (
+    source_chat_id TEXT PRIMARY KEY,
+    task_ids TEXT NOT NULL,
+    source_view TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_contexts (
+    source_chat_id TEXT PRIMARY KEY,
+    focused_entity_type TEXT,
+    focused_entity_id TEXT,
+    last_intent TEXT,
+    last_result_entity_ids TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL,
+    expires_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS conversation_turns (
+    id TEXT PRIMARY KEY,
+    source_chat_id TEXT NOT NULL,
+    source_message_id TEXT,
+    raw_text TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    focused_entity_type TEXT,
+    focused_entity_id TEXT,
+    result_entity_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -296,4 +332,9 @@ CREATE INDEX IF NOT EXISTS idx_meetings_person ON meetings(person_id);
 CREATE INDEX IF NOT EXISTS idx_memory_items_person ON memory_items(person_id);
 CREATE INDEX IF NOT EXISTS idx_commitments_person_status ON commitments(person_id, status);
 CREATE INDEX IF NOT EXISTS idx_commitments_project_status ON commitments(project_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_recurrence_occurrence
+ON tasks(recurrence_series_id, recurrence_occurrence_at)
+WHERE recurrence_series_id IS NOT NULL AND recurrence_occurrence_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_chat_created
+ON conversation_turns(source_chat_id, created_at);
 """

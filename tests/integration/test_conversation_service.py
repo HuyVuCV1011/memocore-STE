@@ -75,6 +75,7 @@ def test_classifies_vietnamese_and_english_examples():
     assert classify_intent("what have you saved about me?") == "query_memory"
     assert classify_intent("what open tasks do I have?") == "query_tasks"
     assert classify_intent("xoá toàn bộ task đang có") == "delete_all_tasks"
+    assert classify_intent("xóa task gọi khách hàng") == "cancel_task"
     assert classify_intent("tôi đang làm công việc gì?") == "query_profile"
     assert classify_intent("tôi đang làm nghề gì") == "query_profile"
     assert classify_intent("tôi là ai") == "query_profile"
@@ -461,7 +462,7 @@ async def test_update_task_due_asks_when_multiple_tasks_match(
 
     active = await repos["tasks"].list_active()
     assert result.intent == "update_task_due"
-    assert "Bạn muốn đổi hạn task nào" in result.reply
+    assert "Anh muốn đổi hạn task nào" in result.reply
     assert "Soạn giáo án cho aptech" in result.reply
     assert "Soạn giáo án cho mindx" in result.reply
     assert all(item.due_at is None for item in active)
@@ -509,7 +510,7 @@ async def test_contextual_memory_delete_asks_when_ambiguous(
 
     memories = await repos["memory"].list_active()
     assert result.intent == "memory_delete"
-    assert "Bạn muốn mình xoá memory nào" in result.reply
+    assert "Anh muốn em xoá memory nào" in result.reply
     assert len(memories) == 2
     assert fake_provider.calls == []
 
@@ -543,7 +544,7 @@ async def test_update_task_due_followup_creates_pending_and_applies_answer(
 
     updated = await repos["tasks"].get_by_id(task.id)
     assert handled.handled is True
-    assert "Mình đã đổi hạn task" in handled.message
+    assert "Em đã đổi hạn task" in handled.message
     assert updated.due_at is not None
     assert fake_provider.calls == []
 
@@ -575,7 +576,7 @@ async def test_project_list_questions_use_project_view_not_empty_ack(
     assert "Projects MINDX" in result.reply
     assert "MindX Teaching Operations" in result.reply
     assert "STE AI Automation" not in result.reply
-    assert "Mình nghe rồi" not in result.reply
+    assert "Em nghe rồi" not in result.reply
     assert fake_provider.calls == []
 
 
@@ -588,7 +589,7 @@ async def test_assistant_identity_question_does_not_use_knowledge_retrieval(
     result = await service.handle_text(CaptureRequest(raw_text="bạn là gì?"))
 
     assert result.intent == "query_assistant_identity"
-    assert "Mình là MemoCore" in result.reply
+    assert "Em là MemoCore" in result.reply
     assert knowledge.queries == []
     assert fake_provider.calls == []
 
@@ -617,7 +618,7 @@ async def test_task_cua_toi_routes_to_tasks(capture_service, fake_provider, repo
 
     assert result.intent == "query_tasks"
     assert "xây dựng flow content linkedin" in result.reply
-    assert "Mình nghe rồi" not in result.reply
+    assert "Em nghe rồi" not in result.reply
     assert fake_provider.calls == []
 
 
@@ -687,7 +688,7 @@ async def test_assign_task_to_person_and_query_person_tasks(
     )
 
     assert assigned.intent == "assign_task_to_person"
-    assert "Mình đã tạo task giao cho Nguyễn Hoàng Khôi Nguyên" in assigned.reply
+    assert "Em đã tạo task giao cho Nguyễn Hoàng Khôi Nguyên" in assigned.reply
     tasks = await repos["tasks"].list_active()
     assert len(tasks) == 1
     assert tasks[0].person_id is not None
@@ -698,6 +699,44 @@ async def test_assign_task_to_person_and_query_person_tasks(
     assert "Task đang mở của Nguyễn Hoàng Khôi Nguyên" in queried.reply
     assert "kiểm tra lại dữ liệu thưởng của leader" in queried.reply
     assert fake_provider.calls == []
+
+
+async def test_cancel_specific_task_by_name(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="task source"))
+    target = await repos["tasks"].create(
+        Task(title="Thực hiện kịch bản audio sảng văn mới", source_note_id=note.id)
+    )
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text="xóa task Thực hiện kịch bản audio sảng văn mới")
+    )
+
+    updated = await repos["tasks"].get_by_id(target.id)
+    assert result.intent == "cancel_task"
+    assert result.reply == "Đã bỏ task: Thực hiện kịch bản audio sảng văn mới."
+    assert updated is not None and str(updated.status) == "cancelled"
+
+
+async def test_cancel_task_by_number_from_last_rendered_list(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="task source"))
+    first = await repos["tasks"].create(Task(title="Task đầu", source_note_id=note.id))
+    second = await repos["tasks"].create(Task(title="Task cần bỏ", source_note_id=note.id))
+    service = _conversation_service(capture_service, repos)
+    await service.remember_task_list(
+        "chat-1",
+        "Nên làm tiếp\n1. Task đầu — hạn hôm nay\n2. Task cần bỏ — hạn hôm nay",
+    )
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text="bỏ task 2", source_chat_id="chat-1")
+    )
+
+    first_after = await repos["tasks"].get_by_id(first.id)
+    second_after = await repos["tasks"].get_by_id(second.id)
+    assert result.intent == "cancel_task"
+    assert first_after is not None and str(first_after.status) != "cancelled"
+    assert second_after is not None and str(second_after.status) == "cancelled"
 
 
 async def test_create_task_check_reminder_for_person(
@@ -718,7 +757,7 @@ async def test_create_task_check_reminder_for_person(
 
     reminders = await repos["reminders"].list_recent()
     assert result.intent == "create_task_check_reminder"
-    assert "Mình đã đặt lịch nhắc bạn kiểm tra task của Nguyễn Hoàng Khôi Nguyên" in result.reply
+    assert "Em đã đặt lịch nhắc anh kiểm tra task của Nguyễn Hoàng Khôi Nguyên" in result.reply
     assert reminders
     assert reminders[0].remind_at is not None
     assert "kiểm tra lại dữ liệu thưởng leader" in reminders[0].title

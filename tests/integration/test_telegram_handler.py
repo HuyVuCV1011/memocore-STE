@@ -74,5 +74,5 @@ async def test_message_handler_with_clarification(monkeypatch, capture_service, 
     assert pending is None
     assert reminders[0].remind_at is not None
     assert len(fake_provider.calls) == 1
-    assert 'Khi nào bạn muốn được nhắc về "Call John"?' in send_message.await_args_list[0].kwargs["text"]
+    assert 'Khi nào anh muốn được nhắc về "Call John"?' in send_message.await_args_list[0].kwargs["text"]
     assert "Reminder được đặt" in send_message.await_args_list[1].kwargs["text"]

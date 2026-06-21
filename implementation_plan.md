@@ -123,6 +123,11 @@ Deferred from V4:
 V4 remains the active product track. Real Telegram usage and memory/entity review quality should be
 validated before orchestration work starts.
 
+Current stabilization work adds explicit Router, Planner, Context Resolver, Executor, and Composer
+boundaries; first-class organization and decision records; reversible knowledge-update batches;
+and fixture-driven transcript evaluation. Calendar, email, tools, and multi-agent work remain held
+until `docs/conversation-stability-gates.md` passes.
+
 ## Held Versions
 
 ### V5: Orchestration And Specialist Agents

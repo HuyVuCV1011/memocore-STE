@@ -171,7 +171,7 @@ async def test_self_identity_query_does_not_match_ste_ai(repos):
 
     answer = await _service(repos, provider).answer("tôi là ai")
 
-    assert "Bạn là Vũ" in answer
+    assert "Anh là Vũ" in answer
     assert "STE đang phát triển AI agent" not in answer
     assert provider.calls == []
 
@@ -202,7 +202,7 @@ async def test_fallback_compose_does_not_dump_raw_metadata(repos):
 
     answer = await _service(repos, provider).answer("STE đang build AI gì")
 
-    assert "Mình thấy" in answer
+    assert "Em thấy" in answer
     assert "Chủ đề" not in answer
     assert "memory_items" not in answer
 

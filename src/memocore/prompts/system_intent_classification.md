@@ -24,7 +24,9 @@ You must return a valid JSON object matching the following structure:
    - Examples: "tasks đang mở", "danh sách việc cần làm", "open tasks", "/tasks"
 5. `query_tasks_due`: User wants tasks filtered by due timing.
    - Examples: "việc nào đến hạn", "tasks due tomorrow", "overdue tasks"
-6. `query_reminders`: User wants to view scheduled reminders.
+6. `query_task_recurrence`: User asks whether a specific task is recurring or how often it repeats.
+   - Examples: "task sảng văn có phải task định kỳ không", "việc này lặp hằng ngày à"
+7. `query_reminders`: User wants to view scheduled reminders.
    - Examples: "danh sách nhắc nhở", "show reminders", "/reminders"
 7. `query_projects`: User wants project state or open tasks for a project.
    - Examples: "project MemoCore còn gì chưa xong", "what is still open in project MemoCore?", "/projects"
@@ -36,7 +38,11 @@ You must return a valid JSON object matching the following structure:
    - Examples: "/context Alex", "context project MemoCore", "thông tin về Lan"
 11. `query_meeting_prep`: User wants preparation context for a meeting, person, or project.
    - Examples: "/prep Alex", "chuẩn bị họp với Lan", "meeting prep for MemoCore"
-12. `capture_task`: User explicitly wants to create a new task/todo.
+12. `update_knowledge`: User explicitly wants to add or update durable information for a known person, project, or current conversational entity.
+   - Examples: "cập nhật thêm thông tin cho dự án này như sau", "bổ sung vào MemoCore: đây là trợ lý cá nhân", "ghi thêm ba ý này vào người đó"
+13. `rollback_knowledge_update`: User wants to undo the most recent knowledge update as one batch.
+   - Examples: "xóa 3 thông tin vừa cập nhật", "hoàn tác cập nhật vừa rồi", "xóa các thông tin đã cập nhật cho người đó"
+14. `capture_task`: User explicitly wants to create a new task/todo.
    - Examples: "nhớ đi siêu thị", "need to finish homework", "capture task study python"
    - Vietnamese planning/checklist messages with phrases like "cần check", "check nhanh", "xong chưa", "tiến độ", "sắp xếp nhân sự", "bài tập", "CV", or "PC mới" are capture tasks/checklists, not completion.
 13. `capture_reminder`: User explicitly wants to set a reminder at a specific time.
@@ -47,21 +53,28 @@ You must return a valid JSON object matching the following structure:
    - Examples: "đổi lại giờ soạn giáo án thành hạn chót là 17h", "change task study time to 9pm"
 16. `update_task_due`: User specifically wants to update an existing task due time or deadline.
    - Examples: "đổi hạn task gọi khách sang 17h", "change the call task deadline to tomorrow"
-17. `mark_task_done`: User indicates they have completed an existing task.
+17. `update_task_priority`: User wants to change an existing task's priority.
+   - Examples: "đổi priority task 2 thành cao", "cho việc 3 ưu tiên thấp"
+18. `update_task_recurrence`: User wants to make an existing task recur daily or weekly.
+   - Examples: "cho task 2 lặp hằng ngày", "việc 3 lặp mỗi tuần"
+19. `mark_task_done`: User indicates they have completed an existing task.
    - Examples: "đã mua pc xong", "đã mua pc", "finished homework", "mark task call Alex as done"
-18. `delete_all_tasks`: User explicitly wants to clear/cancel every currently open task.
+18. `cancel_task`: User explicitly wants to remove/cancel one specific task.
+    - Examples: "xoá task gọi khách", "bỏ task 2", "cancel task prepare slides"
+    - Never classify this as `update_task_due`.
+19. `delete_all_tasks`: User explicitly wants to clear/cancel every currently open task.
     - Examples: "xoá toàn bộ task đang có", "hủy hết task", "clear all open tasks"
-19. `memory_delete`: User wants to delete or forget a saved memory.
+20. `memory_delete`: User wants to delete or forget a saved memory.
     - Examples: "xóa memory liên quan đến pizza", "forget my favorite color"
-20. `memory_correction`: User corrects or supersedes a saved memory.
+21. `memory_correction`: User corrects or supersedes a saved memory.
     - Examples: "sửa lại memory: tôi thích trà chứ không phải cà phê", "actually my favorite food is cơm tấm"
-21. `correction_feedback`: User is correcting a recent wrong action, rejecting a capture, or providing negative correction feedback.
+22. `correction_feedback`: User is correcting a recent wrong action, rejecting a capture, or providing negative correction feedback.
     - Examples: "cái này không phải task", "đừng lưu cái này", "cái này không phải memory", "not a task"
-22. `clarification_answer`: User is answering a pending clarification question.
+23. `clarification_answer`: User is answering a pending clarification question.
     - Examples: "task số 2", "cái đầu tiên", "ngày mai lúc 9h"
-23. `casual_or_noop`: Conversational greeting, politeness, casual chat, or general comments that do not capture any structured data.
+24. `casual_or_noop`: Conversational greeting, politeness, casual chat, or general comments that do not capture any structured data.
     - Examples: "hôm nay trời đẹp", "chào bạn", "hello", "thanks", "ok"
-24. `needs_clarification`: The message is too vague, ambiguous, or incomplete to act upon.
+25. `needs_clarification`: The message is too vague, ambiguous, or incomplete to act upon.
     - Examples: "đổi hạn", "xong rồi", "cập nhật nó đi"
 
 ## Principles

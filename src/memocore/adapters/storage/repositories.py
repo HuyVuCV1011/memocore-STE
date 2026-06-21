@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -10,6 +11,7 @@ from memocore.adapters.storage.sqlite import Database
 from memocore.domain.models import (
     ClarificationRequest,
     ClarificationStatus,
+    ChatContext,
     Commitment,
     CommitmentStatus,
     EventLog,
@@ -27,6 +29,7 @@ from memocore.domain.models import (
     Reminder,
     ReminderStatus,
     Task,
+    TaskStatus,
     utc_now,
 )
 
@@ -46,6 +49,42 @@ def _parse_dt(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value)
+
+
+def _rank_entity_matches(
+    query: str,
+    entities: list[ModelT],
+    name_field: str,
+    aliases_field: str,
+) -> list[ModelT]:
+    normalized_query = normalize_lookup(query)
+    if not normalized_query:
+        return []
+    query_tokens = normalized_query.split()
+    exact: list[ModelT] = []
+    token_matches: list[ModelT] = []
+    for entity in entities:
+        values = [getattr(entity, name_field), *getattr(entity, aliases_field)]
+        normalized_values = [normalize_lookup(value) for value in values]
+        if normalized_query in normalized_values:
+            exact.append(entity)
+            continue
+        if any(
+            _contains_token_sequence(value.split(), query_tokens)
+            for value in normalized_values
+        ):
+            token_matches.append(entity)
+    return exact or token_matches
+
+
+def _contains_token_sequence(value_tokens: list[str], query_tokens: list[str]) -> bool:
+    if not query_tokens or len(query_tokens) > len(value_tokens):
+        return False
+    width = len(query_tokens)
+    return any(
+        value_tokens[index : index + width] == query_tokens
+        for index in range(len(value_tokens) - width + 1)
+    )
 
 
 def _json(value: Any) -> str:
@@ -140,20 +179,6 @@ class NoteRepository(BaseRepository):
         ).fetchall()
         return [_note_from_row(row) for row in rows]
 
-    async def list_source_chat_ids(self, source: str = "telegram") -> list[str]:
-        conn = await self.database.connection()
-        rows = await (
-            await conn.execute(
-                """
-                SELECT DISTINCT source_chat_id FROM notes
-                WHERE source = ? AND source_chat_id IS NOT NULL
-                ORDER BY updated_at DESC
-                """,
-                (source,),
-            )
-        ).fetchall()
-        return [row["source_chat_id"] for row in rows]
-
     async def update_status(self, note_id: str, status: NoteStatus) -> None:
         await self._execute(
             "UPDATE notes SET status = ?, updated_at = ? WHERE id = ?",
@@ -175,8 +200,9 @@ class TaskRepository(BaseRepository):
             """
             INSERT INTO tasks (
                 id, title, description, status, priority, due_at, project_id,
-                person_id, source_note_id, confidence, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                person_id, source_note_id, confidence, recurrence_rule,
+                recurrence_series_id, recurrence_occurrence_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task.id,
@@ -189,6 +215,9 @@ class TaskRepository(BaseRepository):
                 task.person_id,
                 task.source_note_id,
                 task.confidence,
+                task.recurrence_rule,
+                task.recurrence_series_id,
+                _dt(task.recurrence_occurrence_at),
                 _dt(task.created_at),
                 _dt(task.updated_at),
             ),
@@ -298,6 +327,218 @@ class TaskRepository(BaseRepository):
         await self._execute(
             "UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?",
             (priority, _dt(utc_now()), task_id),
+        )
+
+    async def delete(self, task_id: str) -> None:
+        await self._execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    async def update_recurrence(self, task_id: str, recurrence_rule: str | None) -> None:
+        task = await self.get_by_id(task_id)
+        if task is None:
+            return
+        series_id = task.recurrence_series_id or (task.id if recurrence_rule else None)
+        occurrence_at = task.due_at if recurrence_rule else None
+        await self._execute(
+            """
+            UPDATE tasks
+            SET recurrence_rule = ?, recurrence_series_id = ?,
+                recurrence_occurrence_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                recurrence_rule,
+                series_id,
+                _dt(occurrence_at),
+                _dt(utc_now()),
+                task_id,
+            ),
+        )
+
+    async def find_recurrence_occurrence(
+        self, series_id: str, occurrence_at: datetime
+    ) -> Task | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE recurrence_series_id = ? AND recurrence_occurrence_at = ?
+                LIMIT 1
+                """,
+                (series_id, _dt(occurrence_at)),
+            )
+        ).fetchone()
+        return _task_from_row(row) if row else None
+
+    async def complete_and_schedule_next(
+        self, task_id: str
+    ) -> tuple[Task | None, Task | None, bool]:
+        task = await self.get_by_id(task_id)
+        if task is None:
+            return None, None, False
+        if str(task.status) == TaskStatus.DONE.value:
+            if task.recurrence_rule and task.due_at:
+                occurrence_at = task.recurrence_occurrence_at or task.due_at
+                next_due = _next_task_occurrence(
+                    occurrence_at, task.recurrence_rule
+                )
+                series_id = task.recurrence_series_id or task.id
+                existing = await self.find_recurrence_occurrence(
+                    series_id, next_due
+                )
+                if existing is not None:
+                    return task, existing, False
+                next_task = Task(
+                    title=task.title,
+                    description=task.description,
+                    status=TaskStatus.OPEN,
+                    priority=task.priority,
+                    due_at=next_due,
+                    project_id=task.project_id,
+                    person_id=task.person_id,
+                    source_note_id=task.source_note_id,
+                    confidence=task.confidence,
+                    recurrence_rule=task.recurrence_rule,
+                    recurrence_series_id=series_id,
+                    recurrence_occurrence_at=next_due,
+                )
+                await self.create(next_task)
+                return task, next_task, True
+            return task, None, False
+
+        async with self.database.transaction():
+            await self.update_status(task.id, TaskStatus.DONE.value)
+            if not task.recurrence_rule or task.due_at is None:
+                return await self.get_by_id(task.id), None, False
+            occurrence_at = task.recurrence_occurrence_at or task.due_at
+            next_due = _next_task_occurrence(occurrence_at, task.recurrence_rule)
+            series_id = task.recurrence_series_id or task.id
+            existing = await self.find_recurrence_occurrence(series_id, next_due)
+            if existing is not None:
+                return await self.get_by_id(task.id), existing, False
+            next_task = Task(
+                title=task.title,
+                description=task.description,
+                status=TaskStatus.OPEN,
+                priority=task.priority,
+                due_at=next_due,
+                project_id=task.project_id,
+                person_id=task.person_id,
+                source_note_id=task.source_note_id,
+                confidence=task.confidence,
+                recurrence_rule=task.recurrence_rule,
+                recurrence_series_id=series_id,
+                recurrence_occurrence_at=next_due,
+            )
+            await self.create(next_task)
+            return await self.get_by_id(task.id), next_task, True
+
+
+class TaskListContextRepository(BaseRepository):
+    async def save(
+        self, source_chat_id: str, task_ids: list[str], source_view: str
+    ) -> None:
+        now = _dt(utc_now())
+        await self._execute(
+            """
+            INSERT INTO task_list_contexts (
+                source_chat_id, task_ids, source_view, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(source_chat_id) DO UPDATE SET
+                task_ids = excluded.task_ids,
+                source_view = excluded.source_view,
+                updated_at = excluded.updated_at
+            """,
+            (source_chat_id, _json(task_ids), source_view, now, now),
+        )
+
+    async def get(self, source_chat_id: str) -> list[str]:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute(
+                "SELECT task_ids FROM task_list_contexts WHERE source_chat_id = ?",
+                (source_chat_id,),
+            )
+        ).fetchone()
+        return _loads(row["task_ids"]) if row else []
+
+
+class ChatContextRepository(BaseRepository):
+    async def get(self, source_chat_id: str) -> ChatContext | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute(
+                "SELECT * FROM chat_contexts WHERE source_chat_id = ?",
+                (source_chat_id,),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        return ChatContext(
+            source_chat_id=row["source_chat_id"],
+            focused_entity_type=row["focused_entity_type"],
+            focused_entity_id=row["focused_entity_id"],
+            last_intent=row["last_intent"],
+            last_result_entity_ids=_loads(row["last_result_entity_ids"]),
+            updated_at=_parse_dt(row["updated_at"]),
+            expires_at=_parse_dt(row["expires_at"]),
+        )
+
+    async def save(self, context: ChatContext) -> None:
+        await self._execute(
+            """
+            INSERT INTO chat_contexts (
+                source_chat_id, focused_entity_type, focused_entity_id,
+                last_intent, last_result_entity_ids, updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_chat_id) DO UPDATE SET
+                focused_entity_type = excluded.focused_entity_type,
+                focused_entity_id = excluded.focused_entity_id,
+                last_intent = excluded.last_intent,
+                last_result_entity_ids = excluded.last_result_entity_ids,
+                updated_at = excluded.updated_at,
+                expires_at = excluded.expires_at
+            """,
+            (
+                context.source_chat_id,
+                context.focused_entity_type,
+                context.focused_entity_id,
+                context.last_intent,
+                _json(context.last_result_entity_ids),
+                _dt(context.updated_at),
+                _dt(context.expires_at),
+            ),
+        )
+
+    async def append_turn(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str | None,
+        raw_text: str,
+        intent: str,
+        focused_entity_type: str | None,
+        focused_entity_id: str | None,
+        result_entity_ids: list[str] | None = None,
+    ) -> None:
+        await self._execute(
+            """
+            INSERT INTO conversation_turns (
+                id, source_chat_id, source_message_id, raw_text, intent,
+                focused_entity_type, focused_entity_id, result_entity_ids, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid4()),
+                source_chat_id,
+                source_message_id,
+                raw_text,
+                intent,
+                focused_entity_type,
+                focused_entity_id,
+                _json(result_entity_ids or []),
+                _dt(utc_now()),
+            ),
         )
 
 
@@ -493,6 +734,13 @@ class ProjectRepository(BaseRepository):
         rows = await (await conn.execute("SELECT * FROM projects ORDER BY last_seen_at DESC")).fetchall()
         return [_project_from_row(row) for row in rows]
 
+    async def find_matches(self, query: str) -> list[Project]:
+        return _rank_entity_matches(query, await self.list_all(), "name", "aliases")
+
+    async def find_by_name_or_alias(self, query: str) -> Project | None:
+        matches = await self.find_matches(query)
+        return matches[0] if len(matches) == 1 else None
+
     async def get_by_id(self, project_id: str) -> Project | None:
         conn = await self.database.connection()
         row = await (await conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,))).fetchone()
@@ -531,19 +779,11 @@ class PersonRepository(BaseRepository):
         return _person_from_row(row) if row else None
 
     async def find_by_name_or_alias(self, query: str) -> Person | None:
-        normalized_query = normalize_lookup(query)
-        if not normalized_query:
-            return None
-        for person in await self.list_all():
-            names = [person.display_name, *person.aliases]
-            if any(
-                normalized_query == normalize_lookup(name)
-                or normalized_query in normalize_lookup(name)
-                or normalize_lookup(name) in normalized_query
-                for name in names
-            ):
-                return person
-        return None
+        matches = await self.find_matches(query)
+        return matches[0] if len(matches) == 1 else None
+
+    async def find_matches(self, query: str) -> list[Person]:
+        return _rank_entity_matches(query, await self.list_all(), "display_name", "aliases")
 
     async def update_aliases(self, person_id: str, aliases: list[str]) -> None:
         await self._execute(
@@ -794,10 +1034,10 @@ class MemoryItemRepository(BaseRepository):
             """
             INSERT INTO memory_items (
                 id, bucket, kind, content, source_note_id, project_id,
-                person_id, confidence, status, source_type, observed_at, valid_from,
+                person_id, organization_id, decision_id, confidence, status, source_type, observed_at, valid_from,
                 valid_until, last_confirmed_at, sensitivity, revision_of_id,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -807,6 +1047,8 @@ class MemoryItemRepository(BaseRepository):
                 item.source_note_id,
                 item.project_id,
                 item.person_id,
+                item.organization_id,
+                item.decision_id,
                 item.confidence,
                 item.status.value,
                 item.source_type,
@@ -1111,11 +1353,30 @@ def _task_from_row(row: Any) -> Task:
         due_at=_parse_dt(row["due_at"]),
         project_id=row["project_id"],
         person_id=row["person_id"] if "person_id" in row.keys() else None,
+        organization_id=row["organization_id"] if "organization_id" in row.keys() else None,
+        decision_id=row["decision_id"] if "decision_id" in row.keys() else None,
         source_note_id=row["source_note_id"],
         confidence=row["confidence"],
+        recurrence_rule=row["recurrence_rule"] if "recurrence_rule" in row.keys() else None,
+        recurrence_series_id=(
+            row["recurrence_series_id"] if "recurrence_series_id" in row.keys() else None
+        ),
+        recurrence_occurrence_at=(
+            _parse_dt(row["recurrence_occurrence_at"])
+            if "recurrence_occurrence_at" in row.keys()
+            else None
+        ),
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )
+
+
+def _next_task_occurrence(due_at: datetime, recurrence_rule: str) -> datetime:
+    if recurrence_rule == "daily":
+        return due_at + timedelta(days=1)
+    if recurrence_rule == "weekly":
+        return due_at + timedelta(weeks=1)
+    raise ValueError(f"Unsupported task recurrence rule: {recurrence_rule}")
 
 
 def _reminder_from_row(row: Any) -> Reminder:
