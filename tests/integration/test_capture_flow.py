@@ -1,5 +1,11 @@
 from memocore.domain.models import MemoryBucket, MemoryKind, Note, NoteStatus, Task
-from memocore.domain.schemas import CaptureRequest, MemoryCandidate, NoteExtraction
+from memocore.domain.schemas import (
+    CaptureRequest,
+    MemoryCandidate,
+    NoteExtraction,
+    ProjectHint,
+    TaskCandidate,
+)
 
 
 async def test_capture_flow_persists_extracted_objects(capture_service, repos):
@@ -51,7 +57,100 @@ async def test_memory_capture_reports_semantic_duplicate_without_merging(
     )
 
     assert response.duplicate_suggestions
-    assert "Mình chưa tự gộp" in response.duplicate_suggestions[0]
+    assert "Em chưa tự gộp" in response.duplicate_suggestions[0]
+
+
+async def test_task_milestone_is_not_duplicated_as_goal_memory(
+    capture_service, fake_provider, repos
+):
+    fake_provider.response = NoteExtraction(
+        summary="Hoàn thiện MemoCore V4",
+        tasks=[
+            TaskCandidate(
+                title="Hoàn thiện MemoCore V4",
+                due_at="2026-06-21T23:59:59+07:00",
+                project_name="MemoCore",
+                confidence=0.9,
+            )
+        ],
+        projects=[ProjectHint(name="MemoCore", confidence=0.9)],
+        memories=[
+            MemoryCandidate(
+                bucket=MemoryBucket.PROJECT,
+                kind=MemoryKind.GOAL,
+                content="Tôi muốn hoàn thiện MemoCore V4 vào chủ nhật",
+                project_name="MemoCore",
+                confidence=0.9,
+            )
+        ],
+    )
+
+    response = await capture_service.capture(
+        CaptureRequest(raw_text="Chủ nhật tôi cần hoàn thiện MemoCore V4")
+    )
+
+    assert response.tasks_created == 1
+    assert response.memories_created == 0
+    assert await repos["memory"].list_by_note(response.note_id) == []
+
+
+async def test_single_project_in_note_does_not_leak_to_unrelated_task(
+    capture_service, fake_provider, repos
+):
+    fake_provider.response = NoteExtraction(
+        summary="Hai việc cần làm",
+        projects=[ProjectHint(name="MemoCore", confidence=0.9)],
+        tasks=[
+            TaskCandidate(
+                title="Hoàn thiện MemoCore V4",
+                project_name="MemoCore",
+                confidence=0.9,
+            ),
+            TaskCandidate(
+                title="Viết kịch bản audio tản văn",
+                project_name=None,
+                confidence=0.8,
+            ),
+        ],
+    )
+
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text=(
+                "Tôi cần hoàn thiện MemoCore V4, ngoài ra cần viết kịch bản audio tản văn"
+            )
+        )
+    )
+    tasks = await repos["tasks"].list_by_note(response.note_id)
+    by_title = {task.title: task for task in tasks}
+
+    assert by_title["Hoàn thiện MemoCore V4"].project_id is not None
+    assert by_title["Viết kịch bản audio tản văn"].project_id is None
+
+
+async def test_near_duplicate_task_is_not_created_twice(
+    capture_service, fake_provider, repos
+):
+    note = await repos["notes"].create(Note(raw_text="existing task"))
+    await repos["tasks"].create(
+        Task(title="Tạo kịch bản audio sảng văn", source_note_id=note.id)
+    )
+    fake_provider.response = NoteExtraction(
+        summary="Kịch bản audio mới",
+        tasks=[
+            TaskCandidate(
+                title="Thực hiện kịch bản audio sảng văn mới",
+                confidence=0.9,
+            )
+        ],
+    )
+
+    response = await capture_service.capture(
+        CaptureRequest(raw_text="Tôi cần thực hiện kịch bản audio sảng văn mới")
+    )
+
+    assert response.tasks_created == 0
+    assert any("không tạo thêm" in item for item in response.duplicate_suggestions)
 
 
 async def test_linkedin_capture_suggests_similar_existing_note(
@@ -98,7 +197,7 @@ async def test_project_state_memory_has_lifecycle_metadata(capture_service, repo
     assert item.observed_at is not None
     assert item.valid_from is not None
     assert item.valid_until is not None
-    assert item.last_confirmed_at is not None
+    assert item.last_confirmed_at is None
 
 
 async def test_remind_tag_injects_candidate_when_model_omits_it(

@@ -74,7 +74,7 @@ async def test_layer2_layer3_casual_noop(capture_service, repos):
     
     result = await service.handle_text(CaptureRequest(raw_text="Hôm nay trời đẹp"))
     assert result.intent == "casual_or_noop"
-    assert "Mình nghe rồi" in result.reply or "Got it" in result.reply
+    assert "Em nghe rồi" in result.reply or "Got it" in result.reply
     assert result.captured is False
     
     # Verify no note or task was persisted
@@ -106,7 +106,7 @@ async def test_task_due_update_confirmation_single_weak_match(capture_service, r
     ))
     
     # Should trigger confirmation because "soạn bài" is not strong match (not subset of title)
-    assert "Bạn muốn đổi hạn task" in result.reply
+    assert "Anh muốn đổi hạn task" in result.reply
     assert "Soạn giáo án cho aptech" in result.reply
     
     # Verify pending clarification is saved
@@ -182,7 +182,7 @@ async def test_task_due_update_multiple_matches_selection(capture_service, repos
     ))
     
     # Triggers selection list
-    assert "Bạn muốn đổi hạn task nào" in result.reply
+    assert "Anh muốn đổi hạn task nào" in result.reply
     assert "Soạn giáo án cho aptech" in result.reply
     assert "Soạn giáo án cho mindx" in result.reply
     
@@ -224,7 +224,7 @@ async def test_mark_task_done_single_weak_match(capture_service, repos):
     ))
     
     # Weak match triggers confirmation
-    assert "Bạn muốn đánh dấu xong task 'Đi mua pc với Sơn' phải không?" in result.reply
+    assert "Anh muốn đánh dấu xong task 'Đi mua pc với Sơn' phải không?" in result.reply
     
     # Answer "không" to cancel
     ans_res = await capture_service.clarification_service.answer_pending("chat_done", "không")
@@ -236,7 +236,9 @@ async def test_mark_task_done_single_weak_match(capture_service, repos):
     assert t.status == "candidate"
 
 
-async def test_correction_feedback_single_task_cancel(capture_service, repos):
+async def test_correction_feedback_single_task_cancel(
+    capture_service, repos, isolate_feedback_log
+):
     # Setup a recent task
     note = await repos["notes"].create(Note(raw_text="wrong capture"))
     task = await repos["tasks"].create(Task(title="Trời hôm nay đẹp", source_note_id=note.id))
@@ -260,9 +262,9 @@ async def test_correction_feedback_single_task_cancel(capture_service, repos):
     t = await repos["tasks"].get_by_id(task.id)
     assert t.status == "cancelled"
     
-    # Check feedback written to data/user_feedback.jsonl
-    assert os.path.exists("data/user_feedback.jsonl")
-    with open("data/user_feedback.jsonl", "r", encoding="utf-8") as f:
+    # Check feedback written to the isolated test log, not the live runtime log.
+    assert isolate_feedback_log.exists()
+    with isolate_feedback_log.open("r", encoding="utf-8") as f:
         lines = f.readlines()
         last_line = json.loads(lines[-1])
         assert last_line["intent"] == "correction_feedback"

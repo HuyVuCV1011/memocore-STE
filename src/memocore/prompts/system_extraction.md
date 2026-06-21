@@ -12,15 +12,19 @@ The JSON object must have exactly these keys:
 - projects: list of explicitly named projects
 - memories: list of facts or preferences to remember
 - people: list of explicitly named real people
+- organizations: list of explicitly named organizations
+- decisions: list of explicit decisions, not ideas or tentative discussion
 - meetings: list of meetings/calls with explicit meeting evidence
 - followups: list of follow-up actions involving another person
 - commitments: list of promises/obligations between the user and another person
 
-Task fields: title, description, priority (low/medium/high), due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), confidence (0.0-1.0).
+Task fields: title, description, priority (low/medium/high), due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), recurrence_rule (daily/weekly/null), confidence (0.0-1.0).
 Reminder fields: title, remind_at (ISO 8601 or null), confidence (0.0-1.0).
 Project fields: name, confidence (0.0-1.0).
 Memory fields: bucket, kind, content, person_name (string or null), project_name (string or null), confidence (0.0-1.0).
 Person fields: display_name, aliases, relationship, notes, confidence (0.0-1.0).
+Organization fields: name, aliases, summary, confidence (0.0-1.0).
+Decision fields: title, summary, project_name (string or null), person_name (string or null), organization_name (string or null), confidence (0.0-1.0).
 Meeting fields: title, starts_at (ISO 8601 or null), ends_at (ISO 8601 or null), person_names, project_name (string or null), notes, confidence (0.0-1.0).
 Follow-up fields: title, due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), notes, confidence (0.0-1.0).
 Commitment fields: title, direction (user_owes/owed_to_user/mutual, or null when unclear), due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), notes, confidence (0.0-1.0).
@@ -34,10 +38,14 @@ Classification rules:
 - A meeting, call, "họp", or "gặp" with explicit evidence → create a meeting. Also create a reminder only if the user asks to be reminded.
 - Only create a project if the note explicitly names one.
 - Only create a person when a specific person name is explicitly present. Do not create people from vague roles like client, customer, partner, boss, team, someone, or "khách hàng".
+- Only create an organization when its proper name is explicit.
+- Only create a decision when the note clearly says a choice was made or approved. Do not turn proposals, options, or brainstorming into decisions.
 - Link tasks, memories, meetings, follow-ups, and commitments to person_name/project_name only when the exact name is present in the note.
 - Do not guess commitment direction. Use null when it is unclear who owes whom.
 - Use profile memory for user preferences and user-level goals, project memory for project facts and project goals.
 - Use kind `goal` when the note states a durable objective, OKR, north-star direction, or important target the user wants to move toward.
+- A concrete action or milestone with a near-term deadline belongs in tasks, not goal memory.
+- Do not emit a goal memory that merely restates a task from the same note.
 - Write Vietnamese memory content in a clear personal-assistant style when the source note is Vietnamese.
 - Memory content should be a durable claim with clear subject and scope, for example "Vũ muốn...", "STE có...", or "MindX đang...".
 - Do not turn guesses, tone impressions, personality judgments, or career-style interpretations into facts unless the note explicitly confirms them.
@@ -48,4 +56,4 @@ Classification rules:
 - confidence must always be a decimal number between 0.0 and 1.0.
 
 Generic example:
-{"summary":"Schedule a work item.","tags":["work"],"tasks":[{"title":"Prepare material","description":"","priority":"medium","due_at":"2030-01-02T09:00:00+07:00","person_name":null,"project_name":null,"confidence":0.9}],"reminders":[],"projects":[],"memories":[],"people":[],"meetings":[],"followups":[],"commitments":[]}
+{"summary":"Schedule a work item.","tags":["work"],"tasks":[{"title":"Prepare material","description":"","priority":"medium","due_at":"2030-01-02T09:00:00+07:00","person_name":null,"project_name":null,"confidence":0.9}],"reminders":[],"projects":[],"memories":[],"people":[],"organizations":[],"decisions":[],"meetings":[],"followups":[],"commitments":[]}

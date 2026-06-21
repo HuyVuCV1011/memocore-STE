@@ -27,7 +27,7 @@ class WorkActionService:
             return AssistantResponse(title="Tasks đang mở", summary="Không có task đang mở.")
         visible = tasks[:5]
         lines = [
-            f"{index}. {_priority_icon(task.priority)} {task.title} · {_format_due(task.due_at, self.display_timezone)}"
+            f"{index}. {_priority_icon(task.priority)} {task.title}{_recurrence_badge(task.recurrence_rule)} · {_format_due(task.due_at, self.display_timezone)}"
             for index, task in enumerate(visible, 1)
         ]
         actions: list[AssistantAction] = []
@@ -35,6 +35,7 @@ class WorkActionService:
             actions.extend(
                 [
                     AssistantAction(label="✅ Xong", action_id=f"work:q:t:done:{task.id}", row=index),
+                    AssistantAction(label="🗑 Bỏ", action_id=f"work:q:t:cancel:{task.id}", row=index),
                     AssistantAction(label="⏰ Đổi hạn", action_id=f"work:q:t:due:{task.id}", row=index),
                     AssistantAction(label="🔥 Ưu tiên", action_id=f"work:q:t:pri:{task.id}", row=index),
                 ]
@@ -109,6 +110,12 @@ class WorkActionService:
                 f"Đánh dấu “{label}” là xong?",
                 f"work:x:{kind}:done:{entity_id}",
             )
+        if kind == "t" and action == "cancel":
+            return _confirmation(
+                "Xác nhận bỏ task",
+                f"Bỏ task “{label}” khỏi danh sách đang mở?",
+                f"work:x:t:cancel:{entity_id}",
+            )
         if action == "due" and len(args) == 1:
             return AssistantResponse(
                 title="Đổi hạn",
@@ -160,11 +167,17 @@ class WorkActionService:
         if entity is None:
             return None
         before = _snapshot(kind, entity)
+        next_task = None
+        next_created = False
         if action == "done" and len(args) == 1:
             if kind == "t":
-                await self.task_repo.update_status(entity_id, "done")
+                _, next_task, next_created = (
+                    await self.task_repo.complete_and_schedule_next(entity_id)
+                )
             else:
                 await self.reminder_repo.update_status(entity_id, ReminderStatus.CANCELLED)
+        elif kind == "t" and action == "cancel" and len(args) == 1:
+            await self.task_repo.update_status(entity_id, "cancelled")
         elif action == "due" and len(args) == 2:
             due = self._due_from_code(args[0])
             if due is None:
@@ -189,8 +202,19 @@ class WorkActionService:
                 "action": action,
                 "before": before,
                 "after": _snapshot(kind, updated),
+                "next_task_id": next_task.id if next_task and next_created else None,
             },
         )
+        if next_task is not None and next_created:
+            await self.event_service.append_event(
+                EventType.TASK_RECURRENCE_SCHEDULED,
+                "task",
+                next_task.id,
+                {
+                    "previous_task_id": entity_id,
+                    "recurrence_rule": entity.recurrence_rule,
+                },
+            )
         return AssistantResponse(
             title="Đã cập nhật",
             summary=_diff_text(before, _snapshot(kind, updated)),
@@ -207,6 +231,9 @@ class WorkActionService:
             return AssistantResponse(title="Đã hoàn tác trước đó")
         before = event.payload.get("before", {})
         if event.entity_type == "task":
+            next_task_id = event.payload.get("next_task_id")
+            if next_task_id:
+                await self.task_repo.delete(next_task_id)
             await self.task_repo.update_status(event.entity_id, before["status"])
             await self.task_repo.update_due_at(event.entity_id, _parse_dt(before.get("due_at")))
             await self.task_repo.update_priority(event.entity_id, before["priority"])
@@ -299,6 +326,13 @@ def _format_due(value: datetime | None, display_timezone: tzinfo) -> str:
 
 def _priority_icon(priority: str) -> str:
     return {"high": "🔴", "medium": "🟡", "low": "🔵"}.get(priority, "🟡")
+
+
+def _recurrence_badge(rule: str | None) -> str:
+    return {
+        "daily": " · 🔁 Hằng ngày",
+        "weekly": " · 🔁 Hằng tuần",
+    }.get(rule, "")
 
 
 def _parse_dt(value: str | None) -> datetime | None:

@@ -27,6 +27,7 @@ class TaskCandidate(BaseModel):
     due_at: str | None = None
     person_name: str | None = None
     project_name: str | None = None
+    recurrence_rule: Literal["daily", "weekly"] | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("confidence", mode="before")
@@ -75,6 +76,32 @@ class PersonCandidate(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     relationship: str = ""
     notes: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, value: Any) -> float:
+        return normalize_confidence(value)
+
+
+class OrganizationCandidate(BaseModel):
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    summary: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, value: Any) -> float:
+        return normalize_confidence(value)
+
+
+class DecisionCandidate(BaseModel):
+    title: str
+    summary: str = ""
+    project_name: str | None = None
+    person_name: str | None = None
+    organization_name: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("confidence", mode="before")
@@ -135,6 +162,8 @@ class NoteExtraction(BaseModel):
     projects: list[ProjectHint] = Field(default_factory=list)
     memories: list[MemoryCandidate] = Field(default_factory=list)
     people: list[PersonCandidate] = Field(default_factory=list)
+    organizations: list[OrganizationCandidate] = Field(default_factory=list)
+    decisions: list[DecisionCandidate] = Field(default_factory=list)
     meetings: list[MeetingCandidate] = Field(default_factory=list)
     followups: list[FollowUpCandidate] = Field(default_factory=list)
     commitments: list[CommitmentCandidate] = Field(default_factory=list)
@@ -155,6 +184,8 @@ class CaptureResponse(BaseModel):
     reminders_created: int = 0
     memories_created: int = 0
     people_created: int = 0
+    organizations_created: int = 0
+    decisions_created: int = 0
     meetings_created: int = 0
     followups_created: int = 0
     commitments_created: int = 0
@@ -174,18 +205,24 @@ class IntentClassification(BaseModel):
         "query_profile",
         "query_tasks",
         "query_tasks_due",
+        "query_task_recurrence",
         "query_reminders",
         "query_projects",
         "query_people",
         "query_commitments",
         "query_context",
         "query_meeting_prep",
+        "update_knowledge",
+        "rollback_knowledge_update",
         "capture_task",
         "capture_reminder",
         "capture_memory",
         "update_task",
         "update_task_due",
+        "update_task_priority",
+        "update_task_recurrence",
         "mark_task_done",
+        "cancel_task",
         "delete_all_tasks",
         "memory_delete",
         "memory_correction",
@@ -208,6 +245,8 @@ class KnowledgeQueryPlan(BaseModel):
             "memory",
             "project",
             "person",
+            "organization",
+            "decision",
             "task",
             "followup",
             "commitment",

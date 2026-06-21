@@ -24,6 +24,7 @@ class FallbackConfig(BaseModel):
 
 class Settings(BaseSettings):
     telegram_bot_token: str
+    telegram_owner_id: int = Field(gt=0)
     database_path: Path = Path("data/memocore.db")
     log_level: str = "INFO"
     user_timezone: str = "UTC"

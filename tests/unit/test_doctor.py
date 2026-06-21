@@ -28,6 +28,7 @@ async def test_doctor_reports_healthy_runtime_without_live_provider(tmp_path, mo
     results = await run_doctor(
         Settings(
             telegram_bot_token="test-token",
+            telegram_owner_id=9001,
             database_path=db_path,
             model_provider="ollama",
         )
@@ -74,6 +75,7 @@ async def test_doctor_warns_about_invalid_chat_ids(tmp_path, monkeypatch):
     results = await run_doctor(
         Settings(
             telegram_bot_token="test-token",
+            telegram_owner_id=9001,
             database_path=db_path,
             model_provider="ollama",
         )
@@ -86,4 +88,3 @@ async def test_doctor_warns_about_invalid_chat_ids(tmp_path, monkeypatch):
 
 def test_expected_telegram_command_contract_is_small():
     assert EXPECTED_COMMANDS == ("today", "work", "memory", "context", "briefing", "capture")
-

@@ -30,6 +30,7 @@ async def post_init(application: Application) -> None:
 
 def create_bot(
     token: str,
+    owner_id: int,
     capture_service: CaptureService,
     secretary_service: SecretaryService,
     clarification_service: ClarificationService | None = None,
@@ -41,6 +42,7 @@ def create_bot(
     app = ApplicationBuilder().token(token).post_init(post_init).build()
     register_handlers(
         app,
+        owner_id,
         capture_service,
         secretary_service,
         clarification_service,

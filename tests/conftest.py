@@ -13,6 +13,7 @@ from memocore.adapters.llm.base import (
 )
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
+    ChatContextRepository,
     CommitmentRepository,
     EventLogRepository,
     FollowUpRepository,
@@ -25,6 +26,10 @@ from memocore.adapters.storage.repositories import (
     TaskRepository,
 )
 from memocore.adapters.storage.sqlite import Database
+from memocore.adapters.storage.knowledge_repositories import (
+    DecisionRepository,
+    OrganizationRepository,
+)
 from memocore.domain.schemas import NoteExtraction
 from memocore.services.capture_service import CaptureService
 from memocore.services.clarification_service import ClarificationService
@@ -70,6 +75,13 @@ def fake_provider() -> FakeProvider:
     return FakeProvider()
 
 
+@pytest.fixture(autouse=True)
+def isolate_feedback_log(tmp_path, monkeypatch):
+    feedback_path = tmp_path / "user_feedback.jsonl"
+    monkeypatch.setenv("MEMOCORE_FEEDBACK_PATH", str(feedback_path))
+    return feedback_path
+
+
 @pytest.fixture
 def repos(tmp_database):
     return {
@@ -84,6 +96,9 @@ def repos(tmp_database):
         "followups": FollowUpRepository(tmp_database),
         "commitments": CommitmentRepository(tmp_database),
         "clarifications": ClarificationRequestRepository(tmp_database),
+        "chat_contexts": ChatContextRepository(tmp_database),
+        "organizations": OrganizationRepository(tmp_database),
+        "decisions": DecisionRepository(tmp_database),
     }
 
 
@@ -111,4 +126,6 @@ def capture_service(repos, fake_provider):
         repos["meetings"],
         repos["followups"],
         repos["commitments"],
+        repos["organizations"],
+        repos["decisions"],
     )

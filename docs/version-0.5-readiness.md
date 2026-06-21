@@ -4,7 +4,7 @@
 
 - Current package version: `0.4.1`.
 - Current branch baseline: V1-V4 are documented as delivered.
-- Automated verification on June 20, 2026: `198 passed, 1 skipped`.
+- Automated verification on June 21, 2026: `279 passed, 1 skipped`.
 - Python compilation check: passed for `src` and `tests`.
 - Live provider benchmark and live Telegram polling were not exercised because they require
   external services and credentials.
@@ -20,19 +20,20 @@
 | People/project context retrieval | Ready | Linked repositories and `/person`, `/project`, `/context`, and `/prep` views. |
 | Commitments and meeting retrieval | Ready | Storage, linked views, and V4 integration tests are present. |
 | People/meeting/follow-up/commitment ingestion | Ready | Typed extraction and transactional capture persistence are implemented with ambiguity guards. |
+| Organization and decision knowledge | Ready | First-class SQLite models, repositories, extraction candidates, links, and retrieval evidence. |
+| Transcript evaluation | Active | Fixture-driven multi-turn regressions cover contextual entity priority, scoped updates, and batch rollback; real Telegram review is still required. |
 | Runtime operations | Ready | PM2 single-process guidance exists; `memocore doctor` checks config, SQLite, Telegram commands, runtime data, provider config, and PM2 before restart. |
-| Release automation | Missing | No CI workflow, release tags, coverage gate, or migration smoke job. |
+| Release automation | Missing | Migration smoke coverage exists locally, but hosted CI, release tags, and a coverage threshold remain missing. |
 | V5 harness/orchestration | Missing | Direction is documented, but there are no run, tool, policy, approval, or worker contracts. |
 
 ## Release Decision
 
-Treat `0.5.0` as the first bounded harness release, not as a complete multi-agent platform.
-Deliver one useful read-only workflow end to end before adding specialist workers or external
-writes.
+Keep `0.5.0` and the harness track on hold until the conversation stability gates pass. Automated
+tests are necessary but insufficient: real Telegram usage must complete a review window without
+unresolved high-severity routing or wrong-entity writes.
 
-The recommended workflow is meeting preparation with a registered read-only calendar source.
-It extends an existing V4 user experience and provides a concrete place to measure whether tool
-retrieval improves the result.
+After that gate, the recommended first harness workflow remains meeting preparation with a
+registered read-only calendar source. It must not introduce external writes or specialist workers.
 
 ## Scope
 

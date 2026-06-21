@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 from memocore.app import (
     send_due_morning_briefings,
     send_due_nudges,
+    send_due_reminders,
     send_due_weekly_reviews,
 )
 from memocore.config import Settings
@@ -19,6 +21,7 @@ from memocore.services.secretary_service import SecretaryService
 def _settings(**overrides) -> Settings:
     values = {
         "telegram_bot_token": "test-token",
+        "telegram_owner_id": 9001,
         "user_timezone": "UTC",
         "quiet_hours_start": None,
         "quiet_hours_end": None,
@@ -70,10 +73,75 @@ async def test_v31_manual_daily_briefing_groups_open_loops(repos):
     briefing = await _secretary(repos).daily_briefing(now)
 
     assert "Briefing hôm nay" in briefing
+    assert "Nhận định" in briefing
+    assert "Điểm cần chú ý" in briefing
+    assert "Nên làm tiếp" in briefing
     assert "Overdue budget review" in briefing
     assert "Prepare Alex meeting" in briefing
-    assert "Ping Alex" in briefing
-    assert "Ask Lan for update" in briefing
+    assert "1 lời nhắc" in briefing
+    assert "Score:" not in briefing
+    assert "Lý do:" not in briefing
+
+
+async def test_briefing_empty_day_offers_a_proactive_next_step(repos):
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=UTC)
+
+    briefing = await _secretary(repos).daily_briefing(now)
+
+    assert "chưa có áp lực bắt buộc" in briefing
+    assert "chọn một ưu tiên chủ động" in briefing
+    assert "/task" in briefing
+
+
+async def test_briefing_names_today_and_upcoming_tasks_in_analysis(repos):
+    now = datetime(2026, 6, 20, 20, 15, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="briefing names"))
+    await repos["tasks"].create(
+        Task(
+            title="Hoàn thiện ver 4.0 của memocore",
+            source_note_id=note.id,
+            due_at=datetime(2026, 6, 21, 16, 59, tzinfo=UTC),
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Tạo kịch bản audio sảng văn",
+            source_note_id=note.id,
+            due_at=datetime(2026, 6, 21, 17, 0, tzinfo=UTC),
+        )
+    )
+    service = SecretaryService(
+        repos["tasks"],
+        repos["reminders"],
+        repos["followups"],
+        repos["projects"],
+        repos["memory"],
+        display_timezone=ZoneInfo("Asia/Ho_Chi_Minh"),
+    )
+
+    briefing = await service.daily_briefing(now)
+
+    assert "Việc cần chốt hôm nay là “Hoàn thiện ver 4.0 của memocore”" in briefing
+    assert "Hôm nay: “Hoàn thiện ver 4.0 của memocore” hạn 23:59 hôm nay." in briefing
+    assert "Sắp tới: “Tạo kịch bản audio sảng văn” hạn 00:00 ngày mai." in briefing
+
+
+async def test_task_views_show_recurrence_badge(repos):
+    note = await repos["notes"].create(Note(raw_text="daily view"))
+    await repos["tasks"].create(
+        Task(
+            title="Tạo kịch bản audio sảng văn",
+            source_note_id=note.id,
+            due_at=datetime(2026, 6, 22, 0, 0, tzinfo=UTC),
+            recurrence_rule="daily",
+            recurrence_series_id="daily-view",
+            recurrence_occurrence_at=datetime(2026, 6, 22, 0, 0, tzinfo=UTC),
+        )
+    )
+
+    tasks = await _secretary(repos).tasks()
+
+    assert "Tạo kịch bản audio sảng văn · 🔁 Hằng ngày" in tasks
 
 
 async def test_v32_scheduled_morning_briefing_sends_once_per_day(repos):
@@ -84,10 +152,10 @@ async def test_v32_scheduled_morning_briefing_sends_once_per_day(repos):
     settings = _settings(morning_briefing_time="08:00")
 
     first = await send_due_morning_briefings(
-        _secretary(repos), repos["notes"], event_service, bot, settings, now
+        _secretary(repos), event_service, bot, settings, now
     )
     second = await send_due_morning_briefings(
-        _secretary(repos), repos["notes"], event_service, bot, settings, now
+        _secretary(repos), event_service, bot, settings, now
     )
 
     assert first == 1
@@ -150,11 +218,10 @@ async def test_v34_deadline_nudges_respect_cooldown_and_quiet_hours(repos):
     event_service = EventService(repos["events"])
     settings = _settings(proactive_nudge_cooldown_hours=24)
 
-    first = await send_due_nudges(_secretary(repos), repos["notes"], event_service, bot, settings, now)
-    second = await send_due_nudges(_secretary(repos), repos["notes"], event_service, bot, settings, now)
+    first = await send_due_nudges(_secretary(repos), event_service, bot, settings, now)
+    second = await send_due_nudges(_secretary(repos), event_service, bot, settings, now)
     quiet = await send_due_nudges(
         _secretary(repos),
-        repos["notes"],
         event_service,
         bot,
         _settings(quiet_hours_start="11:00", quiet_hours_end="13:00"),
@@ -180,10 +247,10 @@ async def test_v35_weekly_review_sends_once_and_includes_done_task(repos):
     settings = _settings(weekly_review_weekday=0, weekly_review_time="08:30")
 
     first = await send_due_weekly_reviews(
-        _secretary(repos), repos["notes"], event_service, bot, settings, now
+        _secretary(repos), event_service, bot, settings, now
     )
     second = await send_due_weekly_reviews(
-        _secretary(repos), repos["notes"], event_service, bot, settings, now
+        _secretary(repos), event_service, bot, settings, now
     )
 
     assert first == 1
@@ -191,3 +258,50 @@ async def test_v35_weekly_review_sends_once_and_includes_done_task(repos):
     assert bot.send_message.await_count == 1
     assert "Weekly review" in bot.send_message.await_args.kwargs["text"]
     assert "Finish V3 plan" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_scheduled_messages_ignore_chat_ids_found_in_notes(repos):
+    now = datetime(2026, 6, 8, 8, 5, tzinfo=UTC)
+    await repos["notes"].create(
+        Note(raw_text="owner note", source_chat_id="9001", source_message_id="1")
+    )
+    await repos["notes"].create(
+        Note(raw_text="untrusted note", source_chat_id="6666", source_message_id="2")
+    )
+    bot = AsyncMock()
+    event_service = EventService(repos["events"])
+
+    sent = await send_due_morning_briefings(
+        _secretary(repos),
+        event_service,
+        bot,
+        _settings(morning_briefing_time="08:00"),
+        now,
+    )
+
+    assert sent == 1
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["chat_id"] == 9001
+
+
+async def test_reminder_delivery_uses_owner_id_not_source_chat_id(repos):
+    now = datetime(2026, 6, 8, 9, 0, tzinfo=UTC)
+    note = await repos["notes"].create(
+        Note(raw_text="untrusted source", source_chat_id="6666", source_message_id="1")
+    )
+    await repos["reminders"].create(
+        Reminder(
+            title="Owner-only reminder",
+            source_note_id=note.id,
+            remind_at=now - timedelta(minutes=1),
+            status=ReminderStatus.SCHEDULED,
+        )
+    )
+    bot = AsyncMock()
+    service = ReminderService(repos["reminders"], EventService(repos["events"]))
+
+    sent = await send_due_reminders(service, bot, owner_id=9001, now=now)
+
+    assert sent == 1
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["chat_id"] == 9001

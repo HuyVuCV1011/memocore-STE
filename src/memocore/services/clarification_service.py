@@ -13,7 +13,9 @@ from memocore.adapters.storage.repositories import (
 )
 from memocore.domain.models import ClarificationRequest, EventType
 from memocore.services.event_service import EventService
+from memocore.services.feedback_log import write_feedback_signal
 from memocore.services.reminder_service import ReminderService
+from memocore.services.task_operation_service import TaskOperationService
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class ClarificationService:
         event_service: EventService,
         default_timezone: tzinfo = UTC,
         task_repo: TaskRepository | None = None,
+        task_operation_service: TaskOperationService | None = None,
     ):
         self.clarification_repo = clarification_repo
         self.reminder_repo = reminder_repo
@@ -38,6 +41,14 @@ class ClarificationService:
         self.event_service = event_service
         self.default_timezone = default_timezone
         self.task_repo = task_repo
+        self.task_operation_service = (
+            task_operation_service
+            or (
+                TaskOperationService(task_repo, event_service)
+                if task_repo is not None
+                else None
+            )
+        )
 
     async def request_reminder_time(
         self,
@@ -47,7 +58,7 @@ class ClarificationService:
         reminder_title: str,
         source_message_id: str | None = None,
     ) -> ClarificationRequest:
-        question = f"Khi nào bạn muốn được nhắc về \"{reminder_title}\"?"
+        question = f"Khi nào anh muốn được nhắc về \"{reminder_title}\"?"
         request = ClarificationRequest(
             source_chat_id=source_chat_id,
             source_message_id=source_message_id,
@@ -68,6 +79,26 @@ class ClarificationService:
     async def find_pending_for_chat(self, source_chat_id: str) -> ClarificationRequest | None:
         return await self.clarification_repo.find_pending_for_chat(source_chat_id)
 
+    def is_answer_for_pending(
+        self, pending: ClarificationRequest, answer_text: str
+    ) -> bool:
+        if pending.entity_type == "task" and pending.field_name.startswith("status|"):
+            return _is_yes(answer_text) or _is_no(answer_text)
+        return False
+
+    async def cancel_pending_for_chat(self, source_chat_id: str, reason: str) -> bool:
+        pending = await self.find_pending_for_chat(source_chat_id)
+        if pending is None:
+            return False
+        await self.clarification_repo.cancel(pending.id, reason)
+        await self.event_service.append_event(
+            EventType.CLARIFICATION_FAILED,
+            "clarification_request",
+            pending.id,
+            {"reason": "superseded_by_new_intent", "answer_text": reason},
+        )
+        return True
+
     async def answer_pending(self, source_chat_id: str, answer_text: str) -> ClarificationResult:
         pending = await self.find_pending_for_chat(source_chat_id)
         if pending is None:
@@ -84,9 +115,62 @@ class ClarificationService:
                 handled=True,
                 message=_localized(
                     answer_text,
-                    "Được, mình hủy bỏ yêu cầu này.",
+                    "Được, em hủy bỏ yêu cầu này.",
                     "Cancelled this request.",
                 ),
+            )
+
+        if pending.entity_type == "task_recurrence_scope" and self.task_repo:
+            task = await self.task_repo.get_by_id(pending.entity_id)
+            if task is None:
+                await self.clarification_repo.cancel(pending.id, answer_text)
+                return ClarificationResult(True, "Task này không còn tồn tại.")
+            due_str, requested_rule = pending.field_name.split("|", 2)[1:]
+            due_at = datetime.fromisoformat(due_str)
+            choice = _recurrence_scope_choice(answer_text, recurring=bool(task.recurrence_rule))
+            if choice == "cancel":
+                await self.clarification_repo.cancel(pending.id, answer_text)
+                return ClarificationResult(True, "Dạ, em đã hủy thay đổi.")
+            if choice is None:
+                if _normalize_text(answer_text) == _normalize_text(task.title):
+                    return ClarificationResult(
+                        True,
+                        f"Em đang áp dụng cho “{task.title}”. Anh chọn cách áp dụng giúp em nha.",
+                    )
+                return ClarificationResult(
+                    True,
+                    (
+                        "Anh chọn “Chỉ kỳ này”, “Kỳ này và các kỳ sau” hoặc “Hủy” nha."
+                        if task.recurrence_rule
+                        else "Anh chọn “Chỉ lần này”, “Lặp hằng ngày” hoặc “Hủy” nha."
+                    ),
+                )
+            await self.task_repo.update_due_at(task.id, due_at)
+            if choice == "recurring":
+                await self.task_repo.update_recurrence(task.id, requested_rule)
+            await self.clarification_repo.resolve(pending.id, answer_text)
+            await self.event_service.append_event(
+                EventType.CLARIFICATION_RESOLVED,
+                "clarification_request",
+                pending.id,
+                {
+                    "entity_type": "task",
+                    "entity_id": task.id,
+                    "scope": choice,
+                    "due_at": due_at.isoformat(),
+                    "recurrence_rule": requested_rule if choice == "recurring" else task.recurrence_rule,
+                },
+            )
+            local_due = due_at.astimezone(self.default_timezone).strftime("%H:%M %d/%m/%Y")
+            if choice == "recurring":
+                label = "hằng ngày" if requested_rule == "daily" else "hằng tuần"
+                return ClarificationResult(
+                    True,
+                    f"Dạ, em đã đổi hạn “{task.title}” sang {local_due} và đặt lặp {label}.",
+                )
+            return ClarificationResult(
+                True,
+                f"Dạ, em chỉ đổi kỳ hiện tại của “{task.title}” sang {local_due}.",
             )
 
         # Check for task / status confirmations
@@ -97,7 +181,7 @@ class ClarificationService:
                     handled=True,
                     message=_localized(
                         answer_text,
-                        "Mình chưa hiểu thời gian đó. Bạn nói kiểu 'hôm nay 19h' hoặc 'mai 9h' giúp mình nhé.",
+                        "Em chưa hiểu thời gian đó. Anh nói kiểu 'hôm nay 19h' hoặc 'mai 9h' giúp em nha.",
                         "I could not understand that time. Please use a format like 'today 7pm' or 'tomorrow 9am'.",
                     ),
                 )
@@ -109,7 +193,7 @@ class ClarificationService:
                 handled=True,
                 message=_localized(
                     answer_text,
-                    f"Mình đã đổi hạn task '{title}' sang {due_at.astimezone(self.default_timezone).strftime('%H:%M %d/%m/%Y')}.",
+                    f"Em đã đổi hạn task '{title}' sang {due_at.astimezone(self.default_timezone).strftime('%H:%M %d/%m/%Y')}.",
                     f"Updated the deadline for task '{title}' to {due_at.astimezone(self.default_timezone).strftime('%H:%M %d/%m/%Y')}.",
                 ),
             )
@@ -154,16 +238,37 @@ class ClarificationService:
             elif pending.field_name.startswith("status|"):
                 if _is_yes(answer_text):
                     status_val = pending.field_name.split("|", 1)[1]
-                    await self.task_repo.update_status(pending.entity_id, status_val)
-                    await self.event_service.append_event(
-                        EventType.TASK_DONE,
-                        "task",
-                        pending.entity_id,
-                        {"transition": "completed_from_confirmation"},
-                    )
+                    next_task = None
+                    next_created = False
+                    if status_val == "done":
+                        operation = await self.task_operation_service.complete(
+                            pending.entity_id,
+                            transition="completed_from_confirmation",
+                        )
+                        completed = operation.task
+                        next_task = operation.next_task
+                        next_created = operation.next_created
+                    else:
+                        await self.task_repo.update_status(
+                            pending.entity_id, status_val
+                        )
+                        completed = await self.task_repo.get_by_id(
+                            pending.entity_id
+                        )
                     await self.clarification_repo.resolve(pending.id, answer_text)
                     task = await self.task_repo.get_by_id(pending.entity_id)
                     title = task.title if task else ""
+                    if next_task is not None:
+                        next_due = next_task.due_at.astimezone(
+                            self.default_timezone
+                        ).strftime("%H:%M %d/%m/%Y")
+                        return ClarificationResult(
+                            handled=True,
+                            message=(
+                                f"Dạ, em đã đánh dấu xong kỳ hiện tại của “{title}” "
+                                f"và tạo kỳ kế tiếp lúc {next_due}."
+                            ),
+                        )
                     return ClarificationResult(
                         handled=True,
                         message=_localized(
@@ -209,9 +314,8 @@ class ClarificationService:
             num_tasks = len(task_ids)
             
             # Try to parse index
-            match = re.search(r"\b(\d+)\b", answer_text)
-            if match:
-                choice = int(match.group(1))
+            choice = await _selection_choice(answer_text, task_ids, self.task_repo)
+            if choice is not None:
                 if 1 <= choice <= num_tasks:
                     target_task_id = task_ids[choice - 1]
                     task = await self.task_repo.get_by_id(target_task_id)
@@ -227,13 +331,28 @@ class ClarificationService:
                         )
                     
                     if pending.entity_type == "task_selection_done":
-                        await self.task_repo.update_status(target_task_id, "done")
+                        completed, next_task, created = (
+                            await self.task_repo.complete_and_schedule_next(target_task_id)
+                        )
                         await self.event_service.append_event(
                             EventType.TASK_DONE,
                             "task",
                             target_task_id,
-                            {"transition": "completed_from_selection_confirmation"},
+                            {
+                                "transition": "completed_from_selection_confirmation",
+                                "next_task_id": next_task.id if next_task else None,
+                            },
                         )
+                        if next_task is not None and created:
+                            await self.event_service.append_event(
+                                EventType.TASK_RECURRENCE_SCHEDULED,
+                                "task",
+                                next_task.id,
+                                {
+                                    "previous_task_id": target_task_id,
+                                    "recurrence_rule": completed.recurrence_rule if completed else None,
+                                },
+                            )
                         await self.clarification_repo.resolve(pending.id, answer_text)
                         return ClarificationResult(
                             handled=True,
@@ -304,9 +423,8 @@ class ClarificationService:
             num_tasks = len(task_ids)
             
             # Try to parse index
-            match = re.search(r"\b(\d+)\b", answer_text)
-            if match:
-                choice = int(match.group(1))
+            choice = await _selection_choice(answer_text, task_ids, self.task_repo)
+            if choice is not None:
                 if 1 <= choice <= num_tasks:
                     target_task_id = task_ids[choice - 1]
                     task = await self.task_repo.get_by_id(target_task_id)
@@ -358,7 +476,7 @@ class ClarificationService:
             await self.clarification_repo.cancel(pending.id, answer_text)
             return ClarificationResult(
                 handled=True,
-                message="Mình chưa áp dụng được câu trả lời này, nên item gốc vẫn giữ nguyên.",
+                message="Em chưa áp dụng được câu trả lời này, nên item gốc vẫn giữ nguyên.",
             )
 
         remind_at = parse_clarification_datetime(answer_text, default_timezone=self.default_timezone)
@@ -371,7 +489,7 @@ class ClarificationService:
             )
             return ClarificationResult(
                 handled=True,
-                message="Mình chưa hiểu thời gian đó. Thử kiểu 'hôm nay 14h', 'mai 9h', hoặc '2 tiếng sau'.",
+                message="Em chưa hiểu thời gian đó. Anh thử kiểu 'hôm nay 14h', 'mai 9h', hoặc '2 tiếng sau'.",
             )
 
         await self.reminder_repo.update_remind_at(pending.entity_id, remind_at)
@@ -502,12 +620,82 @@ def _normalize_text(value: str) -> str:
 
 def _is_yes(text: str) -> bool:
     normalized = _normalize_text(text)
-    return normalized in {"co", "yes", "y", "dung", "dung roi", "ok", "okay", "u", "uh", "dun", "yes sir"}
+    return normalized in {
+        "co",
+        "yes",
+        "y",
+        "dung",
+        "dung roi",
+        "ok",
+        "okay",
+        "u",
+        "uh",
+        "uhm",
+        "dun",
+        "yes sir",
+        "chuan",
+        "chuan roi",
+        "dong y",
+        "xac nhan",
+        "xac nhan xong",
+        "done",
+        "xong",
+        "xong roi",
+        "u xong roi",
+        "uh xong roi",
+        "ok xong",
+        "ok xong roi",
+        "lam di",
+        "cu lam di",
+    }
 
 
 def _is_no(text: str) -> bool:
     normalized = _normalize_text(text)
     return normalized in {"khong", "no", "n", "k", "huy", "cancel", "skip", "never mind", "nevermind"}
+
+
+def _recurrence_scope_choice(text: str, *, recurring: bool) -> str | None:
+    normalized = _normalize_text(text)
+    if normalized in {"huy", "cancel", "3", "so 3", "lua chon 3"}:
+        return "cancel"
+    if recurring:
+        if normalized in {"chi ky nay", "1", "so 1", "lua chon 1"}:
+            return "current"
+        if normalized in {
+            "ky nay va cac ky sau",
+            "2",
+            "so 2",
+            "lua chon 2",
+        }:
+            return "recurring"
+    else:
+        if normalized in {"chi lan nay", "1", "so 1", "lua chon 1"}:
+            return "current"
+        if normalized in {
+            "lap hang ngay",
+            "lap hang tuan",
+            "2",
+            "so 2",
+            "lua chon 2",
+        }:
+            return "recurring"
+    return None
+
+
+async def _selection_choice(
+    answer_text: str, task_ids: list[str], task_repo: TaskRepository
+) -> int | None:
+    match = re.search(r"\b(\d+)\b", answer_text)
+    if match:
+        return int(match.group(1))
+    normalized = _normalize_text(answer_text)
+    exact: list[int] = []
+    for index, task_id in enumerate(task_ids, 1):
+        task = await task_repo.get_by_id(task_id)
+        if task and _normalize_text(task.title) == normalized:
+            exact.append(index)
+    return exact[0] if len(exact) == 1 else None
 
 
 def _looks_vietnamese(raw_text: str) -> bool:
@@ -541,17 +729,3 @@ def _looks_vietnamese(raw_text: str) -> bool:
 
 def _localized(raw_text: str, vi: str, en: str) -> str:
     return vi if _looks_vietnamese(raw_text) else en
-
-
-def write_feedback_signal(intent: str, raw_text: str, context: dict) -> None:
-    import json
-    import os
-    os.makedirs("data", exist_ok=True)
-    entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "intent": intent,
-        "raw_text": raw_text,
-        "context": context
-    }
-    with open("data/user_feedback.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")

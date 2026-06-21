@@ -161,7 +161,18 @@ async def test_v43_people_and_commitments_views_are_empty_safe_and_list_real_ite
     assert "Sơn" in people
     assert "aliases: Son" in people
     assert "Sơn owes PC quote" in commitments
-    assert "người khác nợ mình" in commitments
+    assert "người khác nợ anh" in commitments
+
+
+async def test_person_context_asks_for_full_name_when_query_is_ambiguous(repos):
+    await repos["people"].create(Person(display_name="Nguyễn Cảnh An"))
+    await repos["people"].create(Person(display_name="Duyên Nguyễn An Huỳnh"))
+
+    response = await _secretary(repos).person_context("an")
+
+    assert "nhiều person cùng khớp" in response
+    assert "Nguyễn Cảnh An" in response
+    assert "Duyên Nguyễn An Huỳnh" in response
 
 
 async def test_v44_conversation_routes_meeting_prep_without_capture(capture_service, fake_provider, repos):

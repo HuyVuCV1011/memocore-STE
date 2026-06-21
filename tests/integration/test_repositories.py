@@ -1,6 +1,47 @@
 from datetime import UTC, datetime, timedelta
 
-from memocore.domain.models import MemoryBucket, MemoryItem, Note, Reminder, ReminderStatus, Task
+from memocore.domain.models import (
+    MemoryBucket,
+    MemoryItem,
+    Note,
+    Person,
+    Reminder,
+    ReminderStatus,
+    Task,
+)
+
+
+async def test_person_matching_does_not_silently_choose_substring_match(repos):
+    an = await repos["people"].create(Person(display_name="Nguyễn Cảnh An"))
+    another_an = await repos["people"].create(Person(display_name="Duyên Nguyễn An Huỳnh"))
+
+    matches = await repos["people"].find_matches("an")
+    resolved = await repos["people"].find_by_name_or_alias("an")
+
+    assert {person.id for person in matches} == {an.id, another_an.id}
+    assert resolved is None
+
+
+async def test_person_matching_prefers_exact_alias_over_token_matches(repos):
+    exact = await repos["people"].create(
+        Person(display_name="Nguyễn Cảnh An", aliases=["An"])
+    )
+    await repos["people"].create(Person(display_name="Duyên Nguyễn An Huỳnh"))
+
+    matches = await repos["people"].find_matches("an")
+
+    assert [person.id for person in matches] == [exact.id]
+
+
+async def test_project_matching_returns_ambiguity_instead_of_first_result(repos):
+    first = await repos["projects"].find_or_create("STE Dashboard")
+    second = await repos["projects"].find_or_create("MindX Dashboard")
+
+    matches = await repos["projects"].find_matches("dashboard")
+    resolved = await repos["projects"].find_by_name_or_alias("dashboard")
+
+    assert {project.id for project in matches} == {first.id, second.id}
+    assert resolved is None
 
 
 async def test_repositories_insert_read_update(repos):
