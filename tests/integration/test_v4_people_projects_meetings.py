@@ -34,6 +34,7 @@ def _secretary(repos) -> SecretaryService:
         meeting_repo=repos["meetings"],
         person_repo=repos["people"],
         commitment_repo=repos["commitments"],
+        activity_link_repo=repos["activity_links"],
     )
 
 
@@ -85,7 +86,7 @@ async def test_v41_person_context_links_tasks_commitments_followups_meetings_and
 
     context = await _secretary(repos).person_context("alex")
 
-    assert "Person Alex Nguyen" in context
+    assert "Hồ sơ · Alex Nguyen" in context
     assert "MindX reviewer" in context
     assert "Send Alex project brief" in context
     assert "Alex owes STE feedback" in context
@@ -126,7 +127,7 @@ async def test_v42_project_context_and_meeting_prep_include_linked_operational_s
         )
     )
 
-    context = await _secretary(repos).project_context("STE")
+    context = await _secretary(repos).project_context("MemoCore STE")
     prep = await _secretary(repos).meeting_prep("MemoCore STE")
 
     assert "Project MemoCore STE" in context
@@ -140,7 +141,7 @@ async def test_v42_project_context_and_meeting_prep_include_linked_operational_s
 
 async def test_v43_people_and_commitments_views_are_empty_safe_and_list_real_items(repos):
     empty = await _secretary(repos).people()
-    assert "Chưa có person" in empty
+    assert "Chưa có ai" in empty
 
     note = await repos["notes"].create(
         Note(raw_text="commitment context", source_chat_id="9001", source_message_id="v43")
@@ -159,7 +160,7 @@ async def test_v43_people_and_commitments_views_are_empty_safe_and_list_real_ite
     commitments = await _secretary(repos).commitments()
 
     assert "Sơn" in people
-    assert "aliases: Son" in people
+    assert "aliases:" not in people
     assert "Sơn owes PC quote" in commitments
     assert "người khác nợ anh" in commitments
 
@@ -170,7 +171,7 @@ async def test_person_context_asks_for_full_name_when_query_is_ambiguous(repos):
 
     response = await _secretary(repos).person_context("an")
 
-    assert "nhiều person cùng khớp" in response
+    assert "nhiều người cùng khớp" in response
     assert "Nguyễn Cảnh An" in response
     assert "Duyên Nguyễn An Huỳnh" in response
 

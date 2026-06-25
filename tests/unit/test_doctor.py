@@ -87,4 +87,12 @@ async def test_doctor_warns_about_invalid_chat_ids(tmp_path, monkeypatch):
 
 
 def test_expected_telegram_command_contract_is_small():
-    assert EXPECTED_COMMANDS == ("today", "work", "memory", "context", "briefing", "capture")
+    assert EXPECTED_COMMANDS == (
+        "today",
+        "work",
+        "memory",
+        "context",
+        "briefing",
+        "capture",
+        "review",
+    )

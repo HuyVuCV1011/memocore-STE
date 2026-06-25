@@ -7,11 +7,21 @@ import re
 import unicodedata
 
 from memocore.adapters.storage.repositories import (
+    ChatContextRepository,
+    ClarificationRequestRepository,
     NoteRepository,
     TaskListContextRepository,
     TaskRepository,
 )
-from memocore.domain.models import EventType, Note, Reminder, Task, TaskStatus, ClarificationRequest
+from memocore.domain.models import (
+    ChatContext,
+    ClarificationRequest,
+    EventType,
+    Note,
+    Reminder,
+    Task,
+    TaskStatus,
+)
 from memocore.domain.schemas import CaptureRequest, CaptureResponse
 from memocore.services.capture_service import CaptureService
 from memocore.services.clarification_service import parse_clarification_datetime
@@ -28,12 +38,23 @@ from memocore.services.reference_resolver import (
 from memocore.services.conversation_planner import (
     ConversationPlan,
     ConversationPlanner,
+    is_daily_schedule_query as _is_daily_schedule_query,
+    is_future_task_capture as _is_future_task_capture,
     is_bare_entity_reference,
+    parse_task_merge_request as _parse_task_merge_request,
+)
+from memocore.services.conversation_frame import (
+    ConversationFrame,
+    ConversationFrameBuilder,
 )
 from memocore.services.conversation_router import ConversationRouter
 from memocore.services.conversation_executor import ConversationExecutor
 from memocore.services.conversation_composer import ConversationComposer
 from memocore.services.task_operation_service import TaskOperationService
+from memocore.services.query_executor import QueryExecutor
+from memocore.services.task_mutation_executor import TaskMutationExecutor
+from memocore.services.memory_lifecycle_executor import MemoryLifecycleExecutor
+from memocore.services.clarification_workflow import ClarificationWorkflow
 
 
 @dataclass(frozen=True)
@@ -42,6 +63,14 @@ class ConversationResult:
     reply: str
     captured: bool = False
     reply_markup: Any = None
+    result_entity_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RenameOutcome:
+    reply: str
+    reply_markup: Any = None
+    task_id: str | None = None
 
 
 class ConversationService:
@@ -62,6 +91,11 @@ class ConversationService:
         conversation_router: ConversationRouter | None = None,
         conversation_executor: ConversationExecutor | None = None,
         conversation_composer: ConversationComposer | None = None,
+        query_executor: QueryExecutor | None = None,
+        task_mutation_executor: TaskMutationExecutor | None = None,
+        memory_lifecycle_executor: MemoryLifecycleExecutor | None = None,
+        clarification_workflow: ClarificationWorkflow | None = None,
+        conversation_frame_builder: ConversationFrameBuilder | None = None,
     ):
         self.capture_service = capture_service
         self.secretary_service = secretary_service
@@ -76,7 +110,9 @@ class ConversationService:
         )
         self.reference_resolver = reference_resolver
         self.task_operation_service = task_operation_service or TaskOperationService(
-            task_repo, event_service
+            task_repo,
+            event_service,
+            getattr(capture_service, "activity_reconciliation_service", None),
         )
         self.conversation_planner = conversation_planner or ConversationPlanner()
         self.conversation_router = conversation_router or ConversationRouter(
@@ -84,6 +120,33 @@ class ConversationService:
         )
         self.conversation_executor = conversation_executor or ConversationExecutor()
         self.conversation_composer = conversation_composer or ConversationComposer()
+        self.query_executor = query_executor or QueryExecutor(secretary_service)
+        self.task_mutation_executor = task_mutation_executor or TaskMutationExecutor()
+        self.memory_lifecycle_executor = (
+            memory_lifecycle_executor or MemoryLifecycleExecutor()
+        )
+        self.clarification_workflow = clarification_workflow or ClarificationWorkflow(
+            self.conversation_composer
+        )
+        context_repo = (
+            reference_resolver.context_repo
+            if reference_resolver is not None
+            else ChatContextRepository(task_repo.database)
+        )
+        clarification_repo = (
+            capture_service.clarification_service.clarification_repo
+            if capture_service.clarification_service is not None
+            else ClarificationRequestRepository(task_repo.database)
+        )
+        self.conversation_frame_builder = (
+            conversation_frame_builder
+            or ConversationFrameBuilder(
+                context_repo,
+                clarification_repo,
+                self.task_list_context_repo,
+                task_repo,
+            )
+        )
 
     def _deterministic_route(self, text: str) -> str | None:
         action_tag = _trailing_action_tag(text)
@@ -160,6 +223,12 @@ class ConversationService:
         if _is_cancel_task(normalized):
             return "cancel_task"
 
+        if _parse_task_merge_request(text) is not None:
+            return "merge_tasks"
+
+        if _is_future_task_capture(normalized):
+            return "capture_task"
+
         if _is_task_due_update(normalized) or _is_task_due_update_followup(normalized):
             return "update_task_due"
 
@@ -170,6 +239,9 @@ class ConversationService:
             return "update_task_recurrence"
 
         if _is_task_recurrence_query(normalized):
+            return "query_task_recurrence"
+
+        if _is_daily_schedule_query(normalized):
             return "query_task_recurrence"
 
         if _is_task_completion(normalized):
@@ -219,12 +291,53 @@ class ConversationService:
         if _is_task_query(normalized):
             return "query_tasks"
 
+        if _is_commitment_query(normalized):
+            return "query_commitments"
+
+        if _is_people_query(normalized):
+            return "query_people"
+
+        if _is_reminder_query(normalized):
+            return "query_reminders"
+
         if _is_knowledge_question(normalized) or _looks_like_question(normalized):
             return "query_context"
             
         return None
 
     async def handle_text(self, request: CaptureRequest) -> ConversationResult:
+        frame = await self.conversation_frame_builder.build(request.source_chat_id)
+        plan = self.conversation_planner.plan(request.raw_text, frame)
+        result = await self._handle_text_core(request, frame, plan)
+        await self._record_conversation_outcome(request, frame, plan, result)
+        return result
+
+    async def record_external_outcome(
+        self,
+        request: CaptureRequest,
+        *,
+        intent: str,
+        reply: str,
+    ) -> None:
+        """Record a turn resolved by an adapter-level workflow such as clarification."""
+        frame = await self.conversation_frame_builder.build(request.source_chat_id)
+        await self._record_conversation_outcome(
+            request,
+            frame,
+            ConversationPlan(
+                intent=intent,
+                goal="resolve_pending_clarification",
+                reason="Adapter-level clarification answer resolved a pending operation.",
+            ),
+            ConversationResult(intent=intent, reply=reply),
+        )
+
+    async def _handle_text_core(
+        self,
+        request: CaptureRequest,
+        frame: ConversationFrame,
+        plan: ConversationPlan | None,
+    ) -> ConversationResult:
         # Check if the text is just a slash command without content
         raw_text_lower = request.raw_text.strip().lower()
         empty_capture_inputs = {
@@ -271,17 +384,19 @@ class ConversationService:
             if self.reference_resolver is not None
             else ResolvedReference()
         )
-        plan = self.conversation_planner.plan(request.raw_text)
-
         # Check for task rename request before any other routing/classification
         rename_info = _parse_task_rename(request.raw_text)
         if rename_info:
             old_query, new_title, show_tasks = rename_info
             note = await self._record_interaction(request, "rename_task")
-            reply = await self._rename_task(old_query, new_title, note.id, request, show_tasks)
+            outcome = await self._rename_task(
+                old_query, new_title, note.id, request, show_tasks
+            )
             return ConversationResult(
                 intent="rename_task",
-                reply=reply,
+                reply=outcome.reply,
+                reply_markup=outcome.reply_markup,
+                result_entity_ids=(outcome.task_id,) if outcome.task_id else (),
             )
 
         decision = await self.conversation_router.route(
@@ -292,6 +407,7 @@ class ConversationService:
             ),
             deterministic_route=self._deterministic_route,
             fallback_route=classify_intent,
+            conversation_context=frame.prompt_context(),
         )
         intent = decision.intent
         confidence = decision.confidence
@@ -308,7 +424,7 @@ class ConversationService:
                 captured=True,
             )
 
-        scoped_result = await self.conversation_executor.dispatch(
+        scoped_result = await self.memory_lifecycle_executor.execute(
             intent,
             {
                 "update_knowledge": lambda: self._execute_knowledge_update(
@@ -320,7 +436,12 @@ class ConversationService:
             },
         )
         if scoped_result is not None:
-            return scoped_result
+            return ConversationResult(
+                intent=scoped_result.intent,
+                reply=scoped_result.reply,
+                captured=scoped_result.captured,
+                reply_markup=scoped_result.reply_markup,
+            )
 
         # Only capture/extraction when intent is clearly capture_task, capture_reminder, capture_memory or legacy capture_note
         if intent in {"capture_task", "capture_reminder", "capture_memory", "capture_note"}:
@@ -368,6 +489,11 @@ class ConversationService:
             )
 
         if intent == "casual_or_noop":
+            if _is_casual(_normalize_text(request.raw_text)):
+                return ConversationResult(
+                    intent=intent,
+                    reply=_localized(request.raw_text, "Em nghe rồi.", "Got it."),
+                )
             if _looks_like_question(_normalize_text(request.raw_text)):
                 intent = "query_context"
             elif _is_meaningful_statement(request.raw_text):
@@ -411,13 +537,15 @@ class ConversationService:
                 )
 
 
-        if intent == "needs_clarification":
-            reply_msg = clarification_question or _localized(
-                request.raw_text,
-                "Em chưa rõ ý anh. Anh có thể nói rõ hơn được không?",
-                "I'm not sure what you mean. Could you please specify?",
+        clarification_result = self.clarification_workflow.unresolved(
+            intent,
+            clarification_question,
+            vietnamese=_looks_vietnamese(request.raw_text),
+        )
+        if clarification_result is not None:
+            return ConversationResult(
+                intent=clarification_result.intent, reply=clarification_result.reply
             )
-            return ConversationResult(intent=intent, reply=reply_msg)
 
         if intent == "mark_task_done" and _must_capture_instead_of_complete(request.raw_text):
             response = await self.capture_service.capture(request)
@@ -438,165 +566,181 @@ class ConversationService:
             except Exception:
                 pass
 
-        if intent == "query_today":
-            return ConversationResult(intent=intent, reply=await self.secretary_service.today())
-        if intent == "query_tomorrow":
-            return ConversationResult(intent=intent, reply=await self.secretary_service.tomorrow())
-        if intent == "query_assistant_identity":
-            return ConversationResult(intent=intent, reply=_assistant_identity_answer())
-        if intent == "query_ste_mindx_compare":
-            return ConversationResult(intent=intent, reply=_ste_mindx_compare_answer())
-        if intent == "query_person_tasks":
-            return ConversationResult(intent=intent, reply=await self._answer_person_tasks(request.raw_text))
-        if intent in {"query_tasks", "query_tasks_due"}:
-            project_name = _extract_project_name(request.raw_text)
-            if project_name:
-                return ConversationResult(
-                    intent="query_projects",
-                    reply=await self.secretary_service.project_tasks(project_name),
-                )
-            return ConversationResult(intent=intent, reply=await self.secretary_service.tasks())
-        if intent == "query_task_recurrence":
+        query_execution = await self.query_executor.execute(
+            intent,
+            project_name=_extract_project_name(request.raw_text),
+            project_scope=_extract_project_scope(request.raw_text),
+            memory_bucket=_memory_bucket(request.raw_text),
+            context_query=_extract_context_query(request.raw_text),
+            static_replies={
+                "query_assistant_identity": _assistant_identity_answer(),
+                "query_ste_mindx_compare": _ste_mindx_compare_answer(),
+            },
+            callbacks={
+                "query_person_tasks": lambda: self._answer_person_tasks(request.raw_text),
+                "query_task_recurrence": lambda: self._answer_task_recurrence(request.raw_text),
+                "query_profile": lambda: self._answer_profile_question(request.raw_text),
+            },
+        )
+        if query_execution is not None:
             return ConversationResult(
-                intent=intent,
-                reply=await self._answer_task_recurrence(request.raw_text),
+                intent=query_execution.intent,
+                reply=query_execution.reply,
+                captured=query_execution.captured,
+                reply_markup=query_execution.reply_markup,
             )
-        if intent == "query_reminders":
-            return ConversationResult(intent=intent, reply=await self.secretary_service.reminders())
-        if intent == "query_projects":
-            project_name = _extract_project_name(request.raw_text)
-            if project_name:
-                return ConversationResult(
-                    intent=intent,
-                    reply=await self.secretary_service.project_tasks(project_name),
-                )
-            return ConversationResult(
-                intent=intent,
-                reply=await self.secretary_service.projects(scope=_extract_project_scope(request.raw_text)),
-            )
-        if intent == "query_people":
-            return ConversationResult(intent=intent, reply=await self.secretary_service.people())
-        if intent == "query_commitments":
-            return ConversationResult(intent=intent, reply=await self.secretary_service.commitments())
-        if intent == "query_context":
-            if self.knowledge_query_service is not None:
-                try:
-                    reply = await self._knowledge_answer(
-                        request.raw_text, reference
-                    )
-                    await self._remember_reference(request, intent, reference)
-                    return ConversationResult(
-                        intent=intent,
-                        reply=reply,
-                    )
-                except Exception:
-                    pass
-            query = _extract_context_query(request.raw_text)
-            if not query:
-                return ConversationResult(
-                    intent=intent,
-                    reply="Anh muốn xem context nào? Nói tên person hoặc project giúp em nha.",
-                )
-            return ConversationResult(intent=intent, reply=await self.secretary_service.context(query))
-        if intent == "query_meeting_prep":
-            query = _extract_context_query(request.raw_text)
-            if not query:
-                return ConversationResult(
-                    intent=intent,
-                    reply="Anh muốn chuẩn bị meeting nào? Nói tên person hoặc project giúp em nha.",
-                )
-            return ConversationResult(intent=intent, reply=await self.secretary_service.meeting_prep(query))
-        if intent == "query_memory":
-            return ConversationResult(
-                intent=intent,
-                reply=await self.secretary_service.memories(bucket=_memory_bucket(request.raw_text)),
-            )
-        if intent == "query_profile":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._answer_profile_question(request.raw_text),
-            )
-        if intent == "mark_task_done":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._mark_task_done(request.raw_text, note.id, request, target_entity_hints, ambiguity_detected),
-            )
-        if intent == "update_task_priority":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._update_task_priority(request.raw_text, note.id, request),
-            )
-        if intent == "update_task_recurrence":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._update_task_recurrence(request.raw_text, note.id, request),
-            )
-        if intent == "assign_task_to_person":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._assign_task_to_person(request.raw_text, note.id),
-                captured=True,
-            )
-        if intent == "create_task_check_reminder":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._create_task_check_reminder(request.raw_text, note.id),
-                captured=True,
-            )
-        if intent == "delete_all_tasks":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._delete_all_tasks(request.raw_text),
-            )
-        if intent == "cancel_task":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._cancel_task(request.raw_text, note.id, request),
-            )
-        if intent in {"update_task", "update_task_due"}:
-            result = await self._update_task_due(
-                request.raw_text,
-                note.id,
-                request,
-                target_entity_hints,
-                ambiguity_detected,
-            )
-            if isinstance(result, tuple):
-                reply, reply_markup = result
-                return ConversationResult(
-                    intent=intent, reply=reply, reply_markup=reply_markup
-                )
-            return ConversationResult(
-                intent=intent,
-                reply=result,
-            )
-        if intent == "memory_delete":
-            return ConversationResult(
-                intent=intent,
-                reply=await self._delete_memory(request.raw_text),
-            )
-        if intent in {"correction_feedback", "memory_correction"}:
-            return ConversationResult(
-                intent=intent,
-                reply=await self._correct_recent_object(request.raw_text, note.id, request),
-            )
-        if intent == "clarification_answer":
-            return ConversationResult(
-                intent=intent,
-                reply=_localized(
-                    request.raw_text,
-                    "Em chưa có câu hỏi nào đang chờ câu trả lời.",
-                    "I do not have a pending clarification right now.",
+
+        task_execution = await self.task_mutation_executor.execute(
+            intent,
+            {
+                "mark_task_done": lambda: self._mark_task_done(
+                    request.raw_text, note.id, request, target_entity_hints, ambiguity_detected
                 ),
+                "update_task_priority": lambda: self._update_task_priority(
+                    request.raw_text, note.id, request
+                ),
+                "update_task_recurrence": lambda: self._update_task_recurrence(
+                    request.raw_text, note.id, request
+                ),
+                "assign_task_to_person": lambda: self._assign_task_to_person(
+                    request.raw_text, note.id
+                ),
+                "create_task_check_reminder": lambda: self._create_task_check_reminder(
+                    request.raw_text, note.id
+                ),
+                "delete_all_tasks": lambda: self._delete_all_tasks(request.raw_text),
+                "cancel_task": lambda: self._cancel_task(request.raw_text, note.id, request),
+                "merge_tasks": lambda: self._merge_tasks(
+                    request.raw_text, note.id, plan
+                ),
+                "undo_last_action": lambda: self._undo_last_action(plan),
+                "update_task": lambda: self._update_task_due(
+                    request.raw_text, note.id, request, target_entity_hints, ambiguity_detected
+                ),
+                "update_task_due": lambda: self._update_task_due(
+                    request.raw_text, note.id, request, target_entity_hints, ambiguity_detected
+                ),
+            },
+        )
+        if task_execution is not None:
+            return ConversationResult(
+                intent=task_execution.intent,
+                reply=task_execution.reply,
+                captured=task_execution.captured,
+                reply_markup=task_execution.reply_markup,
             )
+
+        memory_execution = await self.memory_lifecycle_executor.execute(
+            intent,
+            {
+                "memory_delete": lambda: self._delete_memory(request.raw_text),
+                "correction_feedback": lambda: self._correct_recent_object(
+                    request.raw_text, note.id, request
+                ),
+                "memory_correction": lambda: self._correct_recent_object(
+                    request.raw_text, note.id, request
+                ),
+            },
+        )
+        if memory_execution is not None:
+            return ConversationResult(
+                intent=memory_execution.intent,
+                reply=memory_execution.reply,
+                captured=memory_execution.captured,
+                reply_markup=memory_execution.reply_markup,
+            )
+
+        clarification_answer = self.clarification_workflow.answer_without_pending(
+            intent, vietnamese=_looks_vietnamese(request.raw_text)
+        )
+        if clarification_answer is not None:
+            return ConversationResult(
+                intent=clarification_answer.intent, reply=clarification_answer.reply
+            )
+
         return ConversationResult(
             intent=intent,
-            reply=_localized(
-                request.raw_text,
-                "Em chưa xử lý được yêu cầu này. Anh nói rõ hơn anh muốn hỏi hay muốn em làm gì nha?",
-                "I could not handle this request. Could you clarify what you want me to answer or do?",
+            reply=self.conversation_composer.unhandled(
+                vietnamese=_looks_vietnamese(request.raw_text)
             ),
         )
+
+    async def _record_conversation_outcome(
+        self,
+        request: CaptureRequest,
+        frame: ConversationFrame,
+        plan: ConversationPlan | None,
+        result: ConversationResult,
+    ) -> None:
+        chat_id = request.source_chat_id
+        if not chat_id:
+            return
+
+        active_after = await self.task_repo.list_active()
+        active_after_ids = {task.id for task in active_after}
+        created_task_ids = sorted(active_after_ids - set(frame.active_task_ids))
+        result_entity_ids = list(result.result_entity_ids) or created_task_ids or (
+            list(plan.target_entity_ids) if plan is not None else []
+        )
+
+        context_repo = self.conversation_frame_builder.context_repo
+        current = await context_repo.get(chat_id)
+        now = datetime.now(UTC)
+        await context_repo.save(
+            ChatContext(
+                source_chat_id=chat_id,
+                focused_entity_type=(
+                    current.focused_entity_type if current else frame.focused_entity_type
+                ),
+                focused_entity_id=(
+                    current.focused_entity_id if current else frame.focused_entity_id
+                ),
+                last_intent=result.intent,
+                last_result_entity_ids=result_entity_ids,
+                updated_at=now,
+                expires_at=current.expires_at if current else None,
+            )
+        )
+        plan_payload = _conversation_plan_payload(plan)
+        await context_repo.append_turn(
+            source_chat_id=chat_id,
+            source_message_id=request.source_message_id,
+            raw_text=request.raw_text,
+            intent=result.intent,
+            focused_entity_type=(
+                current.focused_entity_type if current else frame.focused_entity_type
+            ),
+            focused_entity_id=(
+                current.focused_entity_id if current else frame.focused_entity_id
+            ),
+            result_entity_ids=result_entity_ids,
+            assistant_reply=result.reply,
+            plan=plan_payload,
+        )
+        if plan is not None and result.intent in {
+            "capture_task",
+            "capture_reminder",
+            "capture_memory",
+            "update_knowledge",
+            "rollback_knowledge_update",
+            "mark_task_done",
+            "cancel_task",
+            "merge_tasks",
+            "undo_last_action",
+            "update_task_due",
+            "update_task_priority",
+            "update_task_recurrence",
+        }:
+            await self.event_service.append_event(
+                EventType.CONVERSATION_PLAN_EXECUTED,
+                "conversation_turn",
+                request.source_message_id or f"{chat_id}:{int(now.timestamp())}",
+                {
+                    **plan_payload,
+                    "result_intent": result.intent,
+                    "result_entity_ids": result_entity_ids,
+                },
+            )
 
     async def _remember_reference(
         self,
@@ -711,13 +855,15 @@ class ConversationService:
         note_id: str,
         request: CaptureRequest,
         show_tasks: bool = False,
-    ) -> str:
+    ) -> RenameOutcome:
         matches = _ranked_task_matches(old_query, await self.task_repo.list_active())
         if not matches:
-            return _localized(
-                request.raw_text,
-                f"Em không tìm thấy task đang mở nào khớp với '{old_query}'.",
-                f"I couldn't find any open task matching '{old_query}'.",
+            return RenameOutcome(
+                _localized(
+                    request.raw_text,
+                    f"Em không tìm thấy task đang mở nào khớp với '{old_query}'.",
+                    f"I couldn't find any open task matching '{old_query}'.",
+                )
             )
 
         chat_id = request.source_chat_id or "system"
@@ -739,33 +885,36 @@ class ConversationService:
                     question=question,
                 )
                 await self._create_clarification_request(clar_req)
-            return question
+            return RenameOutcome(
+                question,
+                _task_selection_keyboard(matches[:5]),
+            )
 
         task = matches[0]
-        await self.task_repo.update_title(task.id, new_title)
-        await self.event_service.append_event(
-            EventType.NOTE_PROCESSED,
-            "task",
+        operation = await self.task_operation_service.rename(
             task.id,
-            {
-                "source_note_id": note_id,
-                "conversation_intent": "rename_task",
-                "old_title": task.title,
-                "new_title": new_title,
-            },
+            new_title,
+            source_note_id=note_id,
+            transition="renamed_from_conversation",
         )
 
-        reply = _localized(
-            request.raw_text,
-            f"Đã sửa tiêu đề task:\n'{task.title}' thành '{new_title}'",
-            f"Renamed task:\n'{task.title}' to '{new_title}'",
+        reply = (
+            "Đã sửa tiêu đề task:\n"
+            f"Từ: “{task.title}”\n"
+            f"Thành: “{new_title}”"
         )
+        if operation.linked_artifacts_updated:
+            reply += (
+                f"\nEm cũng đã đồng bộ {operation.linked_artifacts_updated} lịch "
+                "cùng hoạt động và cập nhật lại liên kết người/dự án."
+            )
 
         if show_tasks:
             tasks_list = await self.secretary_service.tasks()
             reply += f"\n\n{tasks_list}"
 
-        return reply
+        markup = _undo_keyboard(operation.event_id) if operation.event_id else None
+        return RenameOutcome(reply, markup, task.id)
 
     async def _answer_profile_question(self, raw_text: str) -> str:
         memories = await self.memory_service.memory_repo.list_active()
@@ -960,6 +1109,7 @@ class ConversationService:
             "query_context",
             "query_meeting_prep",
             "cancel_task",
+            "merge_tasks",
             "delete_all_tasks",
             "mark_task_done",
             "update_task_due",
@@ -971,8 +1121,38 @@ class ConversationService:
         } or text.strip().startswith("/")
 
     async def _answer_task_recurrence(self, raw_text: str) -> str:
-        query = _task_recurrence_query(raw_text)
         tasks = await self.task_repo.list_active()
+        normalized = _normalize_text(raw_text)
+        if _is_daily_schedule_query(normalized):
+            recurring = [task for task in tasks if task.recurrence_rule]
+            if not recurring:
+                return "Anh chưa có lịch định kỳ nào đang mở."
+            lines = ["Lịch định kỳ của anh"]
+            for index, task in enumerate(recurring, 1):
+                schedule = _format_task_schedule(
+                    task, self.secretary_service.display_timezone
+                )
+                lines.append(
+                    f"{index}. {task.title} · {_recurrence_label(task.recurrence_rule)} · {schedule}"
+                )
+            return "\n".join(lines)
+        if _is_recurrence_time_explanation_query(normalized):
+            recurring = [
+                task for task in tasks if task.recurrence_rule and task.due_at is not None
+            ]
+            if len(recurring) == 1:
+                task = recurring[0]
+                utc_due = task.due_at.astimezone(UTC).strftime("%H:%M")
+                local_due = task.due_at.astimezone(
+                    self.secretary_service.display_timezone
+                ).strftime("%H:%M %d/%m/%Y")
+                return (
+                    f"Dạ, {utc_due} là giờ UTC được lưu nội bộ. Theo múi giờ của anh, "
+                    f"kỳ kế tiếp của “{task.title}” vẫn là {local_due}. "
+                    "Phản hồi trước đã hiển thị giờ UTC mà chưa đổi sang giờ địa phương."
+                )
+
+        query = _task_recurrence_query(raw_text)
         matches = _ranked_task_matches(query, tasks)
         if not matches:
             recent_done = await self.task_repo.list_done_since(
@@ -1052,6 +1232,162 @@ class ConversationService:
         )
         return f"Đã bỏ task: {task.title}."
 
+    async def _merge_tasks(
+        self,
+        raw_text: str,
+        note_id: str,
+        plan: ConversationPlan | None = None,
+    ) -> str:
+        active = await self.task_repo.list_active()
+        selected: list[Task] = []
+        if plan is not None and len(plan.target_entity_ids) == 2:
+            by_id = {task.id: task for task in active}
+            selected = [
+                by_id[task_id]
+                for task_id in plan.target_entity_ids
+                if task_id in by_id
+            ]
+        if not selected:
+            parts = _parse_task_merge_request(raw_text)
+            if parts is None:
+                return (
+                    "Em hiểu anh muốn gộp task nhưng chưa xác định đúng hai task. "
+                    "Anh nói tên hai task hoặc dùng số trong danh sách vừa xem giúp em nha."
+                )
+            for part in parts:
+                matches = _ranked_task_matches(part, active)
+                matches = [task for task in matches if task not in selected]
+                if len(matches) != 1:
+                    return (
+                        f"Em chưa xác định duy nhất task khớp với “{part}”. "
+                        "Anh dùng đúng tên hai task giúp em nha."
+                    )
+                selected.append(matches[0])
+        if len(selected) != 2:
+            return "Em cần đúng hai task khác nhau để gộp."
+
+        due_values = [task.due_at for task in selected if task.due_at is not None]
+        due_at = min(due_values) if due_values else None
+        same_person = selected[0].person_id == selected[1].person_id
+        same_project = selected[0].project_id == selected[1].project_id
+        same_recurrence = selected[0].recurrence_rule == selected[1].recurrence_rule
+        duration_values = [task.duration_minutes for task in selected if task.duration_minutes]
+        merged = Task(
+            title=f"{selected[0].title} và {selected[1].title}",
+            description="\n".join(
+                value for value in (selected[0].description, selected[1].description) if value
+            ),
+            status=TaskStatus.OPEN,
+            priority=(
+                "high" if any(task.priority == "high" for task in selected)
+                else selected[0].priority
+            ),
+            due_at=due_at,
+            duration_minutes=max(duration_values) if duration_values else None,
+            project_id=selected[0].project_id if same_project else None,
+            person_id=selected[0].person_id if same_person else None,
+            source_note_id=note_id,
+            confidence=min(task.confidence for task in selected),
+            recurrence_rule=selected[0].recurrence_rule if same_recurrence else None,
+        )
+        if merged.recurrence_rule:
+            merged.recurrence_series_id = merged.id
+            merged.recurrence_occurrence_at = merged.due_at
+        async with self.task_repo.database.transaction():
+            await self.task_repo.create(merged)
+            for task in selected:
+                await self.task_repo.update_status(task.id, TaskStatus.CANCELLED.value)
+            reconciler = self.task_operation_service.activity_reconciliation_service
+            if reconciler is not None:
+                await reconciler.transfer_task_links(
+                    [task.id for task in selected], merged.id
+                )
+            await self.event_service.append_event(
+                EventType.WORK_ITEM_CHANGED,
+                "task",
+                merged.id,
+                {
+                    "action": "merge_tasks",
+                    "source_note_id": note_id,
+                    "merged_task_ids": [task.id for task in selected],
+                    "before": [
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "status": str(task.status),
+                            "due_at": task.due_at.isoformat() if task.due_at else None,
+                        }
+                        for task in selected
+                    ],
+                },
+            )
+        return self.conversation_composer.tasks_merged(
+            merged, self.secretary_service.display_timezone
+        )
+
+    async def _undo_last_action(self, plan: ConversationPlan | None) -> str:
+        target_ids = list(plan.target_entity_ids) if plan is not None else []
+        if len(target_ids) != 1:
+            return (
+                "Em chưa xác định được thay đổi ngay trước đó để hoàn tác. "
+                "Anh nói rõ task hoặc dùng nút ↩ Hoàn tác ngay sau thao tác giúp em nha."
+            )
+        merged_task_id = target_ids[0]
+        events = await self.event_service.list_events_for_entity(
+            "task", merged_task_id
+        )
+        rename_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.event_type == EventType.WORK_ITEM_CHANGED
+                and event.payload.get("action") == "rename_task"
+            ),
+            None,
+        )
+        if rename_event is not None and not await self.event_service.was_undone(
+            rename_event.id
+        ):
+            restored = await self.task_operation_service.undo_event(rename_event.id)
+            if restored.task is not None:
+                return f"Dạ, em đã hoàn tác. Task trở lại thành “{restored.task.title}”."
+        merge_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.event_type == EventType.WORK_ITEM_CHANGED
+                and event.payload.get("action") == "merge_tasks"
+            ),
+            None,
+        )
+        if merge_event is None:
+            return (
+                "Thay đổi vừa rồi chưa có dữ liệu hoàn tác an toàn. "
+                "Em chưa tự ý sửa ngược để tránh làm sai task."
+            )
+        if await self.event_service.was_undone(merge_event.id):
+            return "Thay đổi này đã được hoàn tác trước đó."
+
+        previous = merge_event.payload.get("before", [])
+        if len(previous) != 2:
+            return "Em thiếu snapshot của hai task cũ nên chưa thể hoàn tác an toàn."
+        async with self.task_repo.database.transaction():
+            for snapshot in previous:
+                await self.task_repo.update_status(
+                    snapshot["id"], snapshot.get("status") or TaskStatus.OPEN.value
+                )
+            await self.task_repo.delete(merged_task_id)
+            await self.event_service.append_event(
+                EventType.WORK_ITEM_UNDONE,
+                "work_event",
+                merge_event.id,
+                {
+                    "restored_task_ids": [item["id"] for item in previous],
+                    "deleted_merged_task_id": merged_task_id,
+                },
+            )
+        return "Dạ, em đã hoàn tác việc gộp và khôi phục hai task cũ."
+
     async def _capture_previous_message(self, request: CaptureRequest) -> CaptureResponse:
         recent_notes = await self.note_repo.list_recent_by_chat(
             request.source,
@@ -1092,7 +1428,7 @@ class ConversationService:
         request: CaptureRequest,
         target_entity_hints: str | None = None,
         ambiguity_detected: bool = False,
-    ) -> str:
+    ) -> str | tuple[str, Any]:
         referenced = await self._task_from_number_reference(raw_text, request.source_chat_id)
         if referenced is not None:
             operation = await self.task_operation_service.complete(
@@ -1100,7 +1436,11 @@ class ConversationService:
                 transition="completed_from_number_reference",
                 source_note_id=note_id,
             )
-            return _completion_reply(operation.task, operation.next_task)
+            return _completion_reply(
+                operation.task,
+                operation.next_task,
+                self.secretary_service.display_timezone,
+            )
         query = target_entity_hints if target_entity_hints else _task_completion_query(raw_text)
         if not query:
             query = _task_completion_query(raw_text)
@@ -1130,7 +1470,7 @@ class ConversationService:
                     question=question,
                 )
                 await self._create_clarification_request(clar_req)
-            return question
+            return question, _task_selection_keyboard(matches[:5])
 
         task = matches[0]
         is_strong = _is_strong_match(query, task.title)
@@ -1150,14 +1490,18 @@ class ConversationService:
                     question=question,
                 )
                 await self._create_clarification_request(clar_req)
-            return question
+            return question, _confirmation_keyboard()
 
         operation = await self.task_operation_service.complete(
             task.id,
             transition="completed_from_conversation",
             source_note_id=note_id,
         )
-        return _completion_reply(operation.task, operation.next_task)
+        return _completion_reply(
+            operation.task,
+            operation.next_task,
+            self.secretary_service.display_timezone,
+        )
 
     async def _update_task_due(
         self,
@@ -1168,6 +1512,7 @@ class ConversationService:
         ambiguity_detected: bool = False,
     ) -> str | tuple[str, Any]:
         due_at = _extract_task_due_at(raw_text, self.secretary_service.display_timezone)
+        duration_minutes = _extract_duration_minutes(raw_text)
         if due_at is None:
             recent_task = await self._recent_task_for_due_update(request, target_entity_hints)
             if recent_task is not None and self.capture_service.clarification_service:
@@ -1222,11 +1567,14 @@ class ConversationService:
                     source_message_id=msg_id,
                     entity_type="task_selection_due_update",
                     entity_id=",".join(task.id for task in matches[:5]),
-                    field_name=f"due_at|{due_at.isoformat()}",
+                    field_name=(
+                        f"due_at|{due_at.isoformat()}"
+                        + (f"|duration={duration_minutes}" if duration_minutes else "")
+                    ),
                     question=question,
                 )
                 await self._create_clarification_request(clar_req)
-            return question
+            return question, _task_selection_keyboard(matches[:5])
 
         task = matches[0]
         requested_recurrence_rule = _requested_recurrence_rule(raw_text)
@@ -1245,7 +1593,10 @@ class ConversationService:
                     source_message_id=msg_id,
                     entity_type="task_recurrence_scope",
                     entity_id=task.id,
-                    field_name=f"due_at|{due_at.isoformat()}|{recurrence_rule}",
+                    field_name=(
+                        f"due_at|{due_at.isoformat()}|{recurrence_rule}"
+                        + (f"|duration={duration_minutes}" if duration_minutes else "")
+                    ),
                     question=question,
                 )
             )
@@ -1263,22 +1614,38 @@ class ConversationService:
                     source_message_id=msg_id,
                     entity_type="task",
                     entity_id=task.id,
-                    field_name=f"due_at|{due_at.isoformat()}",
+                    field_name=(
+                        f"due_at|{due_at.isoformat()}"
+                        + (f"|duration={duration_minutes}" if duration_minutes else "")
+                    ),
                     question=question,
                 )
                 await self._create_clarification_request(clar_req)
-            return question
+            return question, _confirmation_keyboard()
 
-        await self.task_repo.update_due_at(task.id, due_at)
-        await self.event_service.append_event(
-            EventType.NOTE_PROCESSED,
-            "task",
-            task.id,
-            {"source_note_id": note_id, "conversation_intent": "update_task_due"},
-        )
+        async with self.task_repo.database.transaction():
+            await self.task_repo.update_due_at(task.id, due_at)
+            if duration_minutes is not None:
+                await self.task_repo.update_duration(task.id, duration_minutes)
+            await self.event_service.append_event(
+                EventType.NOTE_PROCESSED,
+                "task",
+                task.id,
+                {
+                    "source_note_id": note_id,
+                    "conversation_intent": "update_task_due",
+                    "due_at": due_at.isoformat(),
+                    "duration_minutes": duration_minutes,
+                },
+            )
         return _localized(
             raw_text,
-            f"Đã đổi hạn: {task.title} -> {formatted_due}",
+            (
+                f"Đã đổi lịch: {task.title} -> {formatted_due}, "
+                f"kéo dài {duration_minutes} phút"
+                if duration_minutes
+                else f"Đã đổi hạn: {task.title} -> {formatted_due}"
+            ),
             f"Updated deadline: {task.title} -> {formatted_due}",
         )
 
@@ -1332,6 +1699,11 @@ class ConversationService:
         self, raw_text: str, note_id: str, request: CaptureRequest
     ) -> str:
         task = await self._task_from_number_reference(raw_text, request.source_chat_id)
+        if task is None:
+            matches = _ranked_task_matches(
+                _task_priority_query(raw_text), await self.task_repo.list_active()
+            )
+            task = matches[0] if len(matches) == 1 else None
         priority = _requested_priority(raw_text)
         if task is None or priority is None:
             return "Em chưa xác định được task hoặc mức ưu tiên. Anh nói kiểu “đổi priority task 2 thành cao” nha."
@@ -1657,6 +2029,10 @@ def classify_intent(raw_text: str) -> str:
         return "delete_all_tasks"
     if _is_cancel_task(normalized):
         return "cancel_task"
+    if _parse_task_merge_request(raw_text) is not None:
+        return "merge_tasks"
+    if _is_future_task_capture(normalized):
+        return "capture_task"
     if _is_task_due_update(normalized):
         return "update_task_due"
     if _is_task_priority_update(normalized):
@@ -1664,6 +2040,8 @@ def classify_intent(raw_text: str) -> str:
     if _is_task_recurrence_update(normalized):
         return "update_task_recurrence"
     if _is_task_recurrence_query(normalized):
+        return "query_task_recurrence"
+    if _is_daily_schedule_query(normalized):
         return "query_task_recurrence"
     if _is_memory_correction(normalized):
         return "memory_correction"
@@ -1713,9 +2091,11 @@ def classify_intent(raw_text: str) -> str:
         return "capture_note"
         
     # Default fallback for unknown vague text
-    action_keywords = {"xong", "done", "finished", "completed", "mua", "lam", "doi", "sua", "cap nhat", "xoa", "forget", "delete"}
-    tokens = set(normalized.split())
-    if tokens & action_keywords:
+    action_keywords = (
+        "xong", "done", "finished", "completed", "mua", "lam", "doi", "sua",
+        "cap nhat", "xoa", "forget", "delete",
+    )
+    if any(keyword in normalized for keyword in action_keywords):
         return "needs_clarification"
     return "casual_or_noop"
 
@@ -1777,6 +2157,8 @@ def _ranked_task_matches(query: str, tasks: list[Task]) -> list[Task]:
 
 def _task_completion_query(raw_text: str) -> str:
     cleanup = (
+        "danh dau",
+        "mark",
         "toi da lam xong",
         "da lam xong",
         "lam xong",
@@ -1791,6 +2173,7 @@ def _task_completion_query(raw_text: str) -> str:
         "done",
         "viec",
         "task",
+        "la",
     )
     query = _normalize_text(raw_text)
     for word in cleanup:
@@ -1818,6 +2201,16 @@ def _task_cancel_query(raw_text: str) -> str:
         query,
     )
     query = re.sub(r"^\s*\d+\s*", " ", query)
+    return " ".join(query.split())
+
+
+def _task_priority_query(raw_text: str) -> str:
+    query = _normalize_text(raw_text)
+    query = re.sub(
+        r"\b(?:doi|sua|cap nhat|chinh|uu tien|priority|task|viec|thanh|cao|thap|high|low|medium|trung binh|vua)\b",
+        " ",
+        query,
+    )
     return " ".join(query.split())
 
 
@@ -1881,7 +2274,11 @@ def _requested_priority(raw_text: str) -> str | None:
 def _is_task_priority_update(normalized: str) -> bool:
     return (
         any(value in normalized for value in ("priority", "uu tien"))
-        and _task_number_reference(normalized) is not None
+        and (
+            _task_number_reference(normalized) is not None
+            or "task" in normalized
+            or "viec" in normalized
+        )
         and _requested_priority(normalized) is not None
     )
 
@@ -1895,6 +2292,8 @@ def _is_task_recurrence_update(normalized: str) -> bool:
 
 
 def _is_task_recurrence_query(normalized: str) -> bool:
+    if _is_recurrence_time_explanation_query(normalized):
+        return True
     has_recurrence = any(
         value in normalized
         for value in ("task dinh ky", "viec dinh ky", "recurring task", "lap hang")
@@ -1912,6 +2311,19 @@ def _is_task_recurrence_query(normalized: str) -> bool:
         )
     )
     return has_recurrence and has_question
+
+
+def _is_recurrence_time_explanation_query(normalized: str) -> bool:
+    has_recurrence = any(
+        value in normalized
+        for value in ("dinh ky", "hang ngay", "hang tuan", "recurring")
+    )
+    has_clock = re.search(r"\b\d{1,2}(?:h\s*|\s+)\d{2}\b", normalized) is not None
+    asks_explanation = any(
+        value in normalized
+        for value in ("tai sao", "vi sao", "sao lai", "nho la", "why", "remember")
+    )
+    return has_recurrence and has_clock and asks_explanation
 
 
 def _task_recurrence_query(raw_text: str) -> str:
@@ -1940,12 +2352,54 @@ def _clarification_keyboard(options: list[str]):
     )
 
 
-def _completion_reply(task: Task | None, next_task: Task | None) -> str:
+def _task_selection_keyboard(tasks: list[Task]):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    labels = [
+        f"{index} · {task.title[:42]}"
+        for index, task in enumerate(tasks, 1)
+    ]
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"clar:scope:{index}")]
+        for index, label in enumerate(labels, 1)
+    ]
+    rows.append([InlineKeyboardButton("Hủy", callback_data="clar:scope:no")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _confirmation_keyboard():
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("Xác nhận", callback_data="clar:scope:yes"),
+            InlineKeyboardButton("Hủy", callback_data="clar:scope:no"),
+        ]]
+    )
+
+
+def _undo_keyboard(event_id: str):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("↩ Hoàn tác", callback_data=f"work:u:e:{event_id}")]]
+    )
+
+
+def _completion_reply(
+    task: Task | None,
+    next_task: Task | None,
+    display_timezone: tzinfo = UTC,
+) -> str:
     if task is None:
         return "Em chưa tìm thấy task cần hoàn thành."
     if next_task is None:
         return f"Dạ. Đã đánh dấu xong: {task.title}."
-    next_due = next_task.due_at.strftime("%H:%M %d/%m/%Y") if next_task.due_at else "chưa có hạn"
+    next_due = (
+        next_task.due_at.astimezone(display_timezone).strftime("%H:%M %d/%m/%Y")
+        if next_task.due_at
+        else "chưa có hạn"
+    )
     return (
         f"Dạ, em đã hoàn thành kỳ hiện tại của “{task.title}” và tạo kỳ kế tiếp "
         f"vào {next_due}."
@@ -1984,6 +2438,39 @@ def _extract_task_due_at(raw_text: str, display_timezone) -> datetime | None:
         return None
     now = datetime.now(display_timezone)
     return datetime.combine(now.date(), parsed_time, tzinfo=display_timezone).astimezone(UTC)
+
+
+def _extract_duration_minutes(raw_text: str) -> int | None:
+    normalized = _normalize_text(raw_text)
+    matches = list(
+        re.finditer(
+            r"\b(\d{1,2})(?:h|:)(\d{0,2})\b\s*(sang|chieu|toi|am|pm)?",
+            normalized,
+        )
+    )
+    if len(matches) < 2 or not any(
+        marker in normalized for marker in (" tu ", " den ", "–", "-")
+    ):
+        return None
+
+    def minutes(match) -> int | None:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        period = match.group(3) or ""
+        if period in {"chieu", "toi", "pm"} and hour < 12:
+            hour += 12
+        if hour > 23 or minute > 59:
+            return None
+        return hour * 60 + minute
+
+    start = minutes(matches[0])
+    end = minutes(matches[1])
+    if start is None or end is None:
+        return None
+    if end <= start:
+        end += 24 * 60
+    duration = end - start
+    return duration if 0 < duration <= 24 * 60 else None
 
 
 def _memory_delete_query(raw_text: str) -> str:
@@ -2225,19 +2712,16 @@ def _is_memory_query(normalized: str) -> bool:
 def _is_task_completion(normalized: str) -> bool:
     if _is_completion_status_question(normalized):
         return False
-    return bool(re.search(r"\bda\s+.+\s+xong\b", normalized)) or any(
-        signal in normalized
-        for signal in (
-            "da lam xong",
-            "lam xong",
-            "da xong",
-            "hoan thanh",
-            "da hoan thanh",
-            "i finished",
-            "finished",
-            "completed",
-            "done",
-        )
+    if _is_future_task_capture(normalized):
+        return False
+    return bool(
+        re.search(r"\bda\s+.+\s+xong\b", normalized)
+        or re.search(r"\b(?:danh dau|mark)\s+.+\s+(?:la\s+)?xong\b", normalized)
+        or re.search(r"\b(?:toi\s+)?(?:da|vua)\s+hoan\s+thanh\b", normalized)
+        or "da xong" in normalized
+        or re.search(r"^hoan thanh\s+(?:cai|task|viec|so)\b", normalized)
+        or re.search(r"\b(?:i\s+)?(?:have\s+)?(?:finished|completed)\b", normalized)
+        or normalized in {"xong", "xong roi", "done"}
     )
 
 
@@ -2266,6 +2750,7 @@ def _is_task_due_update(normalized: str) -> bool:
             "sua han",
             "cap nhat gio",
             "cap nhat han",
+            "thoi han",
             "han chot",
             "deadline",
             "due date",
@@ -2336,12 +2821,25 @@ def _is_casual(normalized: str) -> bool:
 
 
 def _parse_clock_time(value: str) -> time | None:
-    match = re.search(r"\b(\d{1,2})(?:[:h](\d{0,2}))?\s*(am|pm)?\b", value)
+    match = re.search(
+        r"\b(\d{1,2})(?:(?:[:h](\d{0,2}))|(?:\s+(\d{1,2})))\s*(am|pm)?\b",
+        value,
+    )
+    if not match:
+        match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", value)
+        if match:
+            hour = int(match.group(1))
+            meridiem = match.group(2)
+            if meridiem == "pm" and hour < 12:
+                hour += 12
+            if meridiem == "am" and hour == 12:
+                hour = 0
+            return time(hour=hour) if hour <= 23 else None
     if not match:
         return None
     hour = int(match.group(1))
-    minute = int(match.group(2) or "0")
-    meridiem = match.group(3)
+    minute = int(match.group(2) or match.group(3) or "0")
+    meridiem = match.group(4)
     if meridiem == "pm" and hour < 12:
         hour += 12
     if meridiem == "am" and hour == 12:
@@ -2349,6 +2847,16 @@ def _parse_clock_time(value: str) -> time | None:
     if hour > 23 or minute > 59:
         return None
     return time(hour=hour, minute=minute)
+
+
+def _format_task_schedule(task: Task, display_timezone: tzinfo) -> str:
+    if task.due_at is None:
+        return "chưa có giờ"
+    start = task.due_at.astimezone(display_timezone)
+    if task.duration_minutes:
+        end = start + timedelta(minutes=task.duration_minutes)
+        return f"{start:%H:%M}–{end:%H:%M}"
+    return f"{start:%H:%M}"
 
 
 def _parse_clock_time_raw(value: str) -> time | None:
@@ -2427,7 +2935,23 @@ def _clean_task_name_query(text: str) -> set[str]:
 
 
 def _localized(raw_text: str, vi: str, en: str) -> str:
-    return vi if _looks_vietnamese(raw_text) else en
+    return vi
+
+
+def _conversation_plan_payload(plan: ConversationPlan | None) -> dict[str, Any]:
+    if plan is None:
+        return {}
+    return {
+        "intent": plan.intent,
+        "goal": plan.goal,
+        "statements": list(plan.statements),
+        "requires_entity": plan.requires_entity,
+        "requested_count": plan.requested_count,
+        "target_entity_ids": list(plan.target_entity_ids),
+        "payload": plan.payload,
+        "confidence": plan.confidence,
+        "reason": plan.reason,
+    }
 
 
 def _looks_vietnamese(raw_text: str) -> bool:

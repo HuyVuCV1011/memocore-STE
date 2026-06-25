@@ -12,6 +12,7 @@ from memocore.adapters.llm.base import (
     StructuredOutputMode,
 )
 from memocore.adapters.storage.repositories import (
+    ActivityLinkRepository,
     ClarificationRequestRepository,
     ChatContextRepository,
     CommitmentRepository,
@@ -28,6 +29,7 @@ from memocore.adapters.storage.repositories import (
 from memocore.adapters.storage.sqlite import Database
 from memocore.adapters.storage.knowledge_repositories import (
     DecisionRepository,
+    KnowledgeRelationRepository,
     OrganizationRepository,
 )
 from memocore.domain.schemas import NoteExtraction
@@ -37,6 +39,10 @@ from memocore.services.event_service import EventService
 from memocore.services.memory_service import MemoryService
 from memocore.services.reminder_service import ReminderService
 from memocore.services.task_extraction_service import ExtractionService
+from memocore.services.activity_reconciliation_service import (
+    ActivityReconciliationService,
+)
+from memocore.services.task_operation_service import TaskOperationService
 from tests.fixtures.extraction_responses import TASK_AND_REMINDER
 
 
@@ -99,12 +105,25 @@ def repos(tmp_database):
         "chat_contexts": ChatContextRepository(tmp_database),
         "organizations": OrganizationRepository(tmp_database),
         "decisions": DecisionRepository(tmp_database),
+        "knowledge_relations": KnowledgeRelationRepository(tmp_database),
+        "activity_links": ActivityLinkRepository(tmp_database),
     }
 
 
 @pytest.fixture
 def capture_service(repos, fake_provider):
     event_service = EventService(repos["events"])
+    activity_reconciliation_service = ActivityReconciliationService(
+        repos["tasks"],
+        repos["meetings"],
+        repos["people"],
+        repos["projects"],
+        repos["activity_links"],
+        event_service,
+    )
+    task_operation_service = TaskOperationService(
+        repos["tasks"], event_service, activity_reconciliation_service
+    )
     reminder_service = ReminderService(repos["reminders"], event_service)
     clarification_service = ClarificationService(
         repos["clarifications"],
@@ -112,6 +131,7 @@ def capture_service(repos, fake_provider):
         reminder_service,
         event_service,
         task_repo=repos["tasks"],
+        task_operation_service=task_operation_service,
     )
     return CaptureService(
         repos["notes"],
@@ -128,4 +148,6 @@ def capture_service(repos, fake_provider):
         repos["commitments"],
         repos["organizations"],
         repos["decisions"],
+        repos["knowledge_relations"],
+        activity_reconciliation_service,
     )

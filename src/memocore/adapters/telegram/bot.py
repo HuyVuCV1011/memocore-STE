@@ -11,6 +11,7 @@ from memocore.services.memory_view_service import MemoryViewService
 from memocore.services.secretary_service import SecretaryService
 from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
+from memocore.services.review_service import ReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ async def post_init(application: Application) -> None:
         BotCommand("context", "People, projects, meeting prep"),
         BotCommand("briefing", "Briefing trong ngày"),
         BotCommand("capture", "Cách lưu task/memory/note"),
+        BotCommand("review", "Các mục cần anh xem lại"),
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Telegram slash command menu synced with %s commands", len(commands))
@@ -38,6 +40,7 @@ def create_bot(
     memory_view_service: MemoryViewService | None = None,
     work_action_service: WorkActionService | None = None,
     entity_confirmation_service: EntityConfirmationService | None = None,
+    review_service: ReviewService | None = None,
 ) -> Application:
     app = ApplicationBuilder().token(token).post_init(post_init).build()
     register_handlers(
@@ -50,5 +53,6 @@ def create_bot(
         memory_view_service,
         work_action_service,
         entity_confirmation_service,
+        review_service,
     )
     return app

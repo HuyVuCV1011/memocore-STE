@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 import re
 import unicodedata
+from typing import TYPE_CHECKING
 
 from memocore.adapters.llm.base import ExtractionError
 from memocore.adapters.storage.repositories import (
@@ -18,9 +19,15 @@ from memocore.adapters.storage.repositories import (
 )
 from memocore.adapters.storage.knowledge_repositories import (
     DecisionRepository,
+    KnowledgeRelationRepository,
     OrganizationRepository,
 )
-from memocore.domain.knowledge import Decision
+from memocore.domain.knowledge import (
+    Decision,
+    DecisionStatus,
+    KnowledgeEntityType,
+    KnowledgeRelation,
+)
 from memocore.domain.models import (
     Commitment,
     CommitmentDirection,
@@ -52,6 +59,15 @@ from memocore.services.clarification_service import (
 from memocore.services.memory_service import MemoryService
 from memocore.services.reminder_service import ReminderService
 from memocore.services.task_extraction_service import ExtractionService
+from memocore.services.schedule_semantics import (
+    is_future_schedule_request as _is_future_schedule_request,
+    normalize_scheduled_work as _normalize_scheduled_work,
+)
+
+if TYPE_CHECKING:
+    from memocore.services.activity_reconciliation_service import (
+        ActivityReconciliationService,
+    )
 
 
 class CaptureService:
@@ -71,6 +87,8 @@ class CaptureService:
         commitment_repo: CommitmentRepository | None = None,
         organization_repo: OrganizationRepository | None = None,
         decision_repo: DecisionRepository | None = None,
+        knowledge_relation_repo: KnowledgeRelationRepository | None = None,
+        activity_reconciliation_service: "ActivityReconciliationService | None" = None,
     ):
         self.note_repo = note_repo
         self.task_repo = task_repo
@@ -86,6 +104,8 @@ class CaptureService:
         self.commitment_repo = commitment_repo
         self.organization_repo = organization_repo
         self.decision_repo = decision_repo
+        self.knowledge_relation_repo = knowledge_relation_repo
+        self.activity_reconciliation_service = activity_reconciliation_service
 
     async def capture(self, request: CaptureRequest) -> CaptureResponse:
         existing = await self.note_repo.find_by_source_message(
@@ -219,6 +239,12 @@ class CaptureService:
                     summary="Raw note saved, but extraction failed.",
                     errors=[str(exc)],
                 )
+
+        extraction = _normalize_scheduled_work(
+            extraction,
+            request.raw_text,
+            datetime.now().astimezone(),
+        )
 
         # Force tag presence if explicit tags are found in raw text or command
         action_tag = _trailing_action_tag(request.raw_text)
@@ -379,6 +405,7 @@ class CaptureService:
                             source_note_id=note.id,
                             confidence=candidate.confidence,
                             recurrence_rule=candidate.recurrence_rule,
+                            duration_minutes=candidate.duration_minutes,
                         )
                         if task.recurrence_rule:
                             task.recurrence_series_id = task.id
@@ -422,6 +449,7 @@ class CaptureService:
                         if not _should_persist_memory(
                             candidate,
                             extraction.tasks,
+                            extraction.meetings,
                             explicit_memory_intent=is_memory_intent,
                         ):
                             continue
@@ -460,7 +488,16 @@ class CaptureService:
                 v4_counts, v4_warnings = await self._persist_v4_entities(
                     extraction, note.id, projects_by_name, people_by_name
                 )
+                if self.activity_reconciliation_service is not None:
+                    await self.activity_reconciliation_service.link_note_artifacts(note.id)
                 decisions_created = await self._persist_decisions(
+                    extraction,
+                    note.id,
+                    projects_by_name,
+                    people_by_name,
+                    organizations_by_name,
+                )
+                relationships_created = await self._persist_relationships(
                     extraction,
                     note.id,
                     projects_by_name,
@@ -482,6 +519,7 @@ class CaptureService:
                         "memories_created": len(memories),
                         "organizations_created": organizations_created,
                         "decisions_created": decisions_created,
+                        "relationships_created": relationships_created,
                         **v4_counts,
                     },
                 )
@@ -505,6 +543,7 @@ class CaptureService:
             people_created=people_created,
             organizations_created=organizations_created,
             decisions_created=decisions_created,
+            relationships_created=relationships_created,
             meetings_created=v4_counts["meetings_created"],
             followups_created=v4_counts["followups_created"],
             commitments_created=v4_counts["commitments_created"],
@@ -567,16 +606,78 @@ class CaptureService:
                 if candidate.organization_name
                 else None
             )
-            await self.decision_repo.create(
+            superseded = (
+                await self.decision_repo.find_current_by_title(candidate.supersedes_title)
+                if candidate.supersedes_title
+                else None
+            )
+            decision = await self.decision_repo.create(
                 Decision(
                     title=candidate.title,
                     summary=candidate.summary,
+                    status=DecisionStatus(candidate.status),
                     project_id=project_id,
                     person_id=person_id,
                     organization_id=organization_id,
                     source_note_id=note_id,
                     confidence=candidate.confidence,
+                    supersedes_decision_id=superseded.id if superseded else None,
                 )
+            )
+            if superseded is not None:
+                await self.decision_repo.supersede(superseded.id, decision.id)
+                await self.event_service.append_event(
+                    EventType.DECISION_SUPERSEDED,
+                    "decision",
+                    superseded.id,
+                    {"replacement_decision_id": decision.id, "source_note_id": note_id},
+                )
+            created += 1
+        return created
+
+    async def _persist_relationships(
+        self,
+        extraction,
+        note_id: str,
+        projects_by_name: dict[str, str],
+        people_by_name: dict[str, str],
+        organizations_by_name: dict[str, str],
+    ) -> int:
+        if self.knowledge_relation_repo is None:
+            return 0
+        entity_maps = {
+            "project": projects_by_name,
+            "person": people_by_name,
+            "organization": organizations_by_name,
+        }
+        created = 0
+        for candidate in extraction.relationships:
+            if candidate.confidence < _MIN_V4_CONFIDENCE:
+                continue
+            source_id = entity_maps[candidate.source_type].get(
+                normalize_lookup(candidate.source_name)
+            )
+            target_id = entity_maps[candidate.target_type].get(
+                normalize_lookup(candidate.target_name)
+            )
+            if not source_id or not target_id or source_id == target_id:
+                continue
+            relation = await self.knowledge_relation_repo.create(
+                KnowledgeRelation(
+                    source_type=KnowledgeEntityType(candidate.source_type),
+                    source_id=source_id,
+                    target_type=KnowledgeEntityType(candidate.target_type),
+                    target_id=target_id,
+                    relation_type=candidate.relation_type.strip().lower(),
+                    source_note_id=note_id,
+                    confidence=candidate.confidence,
+                )
+            )
+            await self.event_service.append_event(
+                EventType.KNOWLEDGE_RELATION_CREATED,
+                "knowledge_relation",
+                relation.id,
+                {"source_note_id": note_id},
             )
             created += 1
         return created
@@ -974,19 +1075,15 @@ class CaptureService:
 
 def _is_completion_note(raw_text: str) -> bool:
     normalized = _normalize_text(raw_text)
-    signals = (
-        "da lam xong",
-        "lam xong",
-        "da xong",
-        "hoan thanh",
-        "da hoan thanh",
-        "done",
-        "finished",
-        "completed",
-        "complete",
-    )
-    return bool(re.search(r"\bda\s+.+\s+xong\b", normalized)) or any(
-        signal in normalized for signal in signals
+    if _is_future_schedule_request(normalized):
+        return False
+    return bool(
+        re.search(r"\bda\s+.+\s+xong\b", normalized)
+        or re.search(r"\b(?:toi\s+)?(?:da|vua)\s+hoan\s+thanh\b", normalized)
+        or "da xong" in normalized
+        or re.search(r"^hoan thanh\s+(?:cai|task|viec|so)\b", normalized)
+        or re.search(r"\b(?:i\s+)?(?:have\s+)?(?:finished|completed)\b", normalized)
+        or normalized in {"xong", "xong roi", "done"}
     )
 
 
@@ -1351,9 +1448,15 @@ def _task_identity_tokens(value: str) -> set[str]:
 def _should_persist_memory(
     candidate: MemoryCandidate,
     tasks: list[TaskCandidate],
+    meetings: list,
     *,
     explicit_memory_intent: bool,
 ) -> bool:
-    if explicit_memory_intent or str(candidate.kind) != MemoryKind.GOAL.value:
+    if explicit_memory_intent:
+        return True
+    # Ordinary durable facts and preferences may mention the same person/project as
+    # operational records. Only suppress a goal that merely restates a task; dated
+    # appointment restatements are removed earlier by _normalize_scheduled_work.
+    if str(candidate.kind) != MemoryKind.GOAL.value:
         return True
     return not any(_matches_task(candidate.content, task.title) for task in tasks)

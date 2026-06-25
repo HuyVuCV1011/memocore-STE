@@ -21,6 +21,23 @@ class DecisionStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class KnowledgeRelationStatus(StrEnum):
+    CANDIDATE = "candidate"
+    ACTIVE = "active"
+    REJECTED = "rejected"
+
+
+class KnowledgeRelation(TimestampedModel):
+    source_type: KnowledgeEntityType
+    source_id: str
+    target_type: KnowledgeEntityType
+    target_id: str
+    relation_type: str
+    source_note_id: str
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    status: KnowledgeRelationStatus = KnowledgeRelationStatus.CANDIDATE
+
+
 class Organization(TimestampedModel):
     name: str
     aliases: list[str] = Field(default_factory=list)
@@ -39,3 +56,4 @@ class Decision(TimestampedModel):
     organization_id: str | None = None
     source_note_id: str
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    supersedes_decision_id: str | None = None

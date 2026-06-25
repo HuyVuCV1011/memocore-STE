@@ -45,6 +45,7 @@ You must return a valid JSON object matching the following structure:
 14. `capture_task`: User explicitly wants to create a new task/todo.
    - Examples: "nhớ đi siêu thị", "need to finish homework", "capture task study python"
    - Vietnamese planning/checklist messages with phrases like "cần check", "check nhanh", "xong chưa", "tiến độ", "sắp xếp nhân sự", "bài tập", "CV", or "PC mới" are capture tasks/checklists, not completion.
+   - Scheduling language such as "đặt lịch", "tối nay hoàn thành...", or a multiline list of future actions is `capture_task`. Here "hoàn thành" describes a future outcome, not a completed task.
 13. `capture_reminder`: User explicitly wants to set a reminder at a specific time.
    - Examples: "nhắc tôi uống nước lúc 10h", "remind me to call Mom tomorrow"
 14. `capture_memory`: User states a long-term fact, preference, profile detail, project state, or asks to save it permanently.
@@ -78,9 +79,14 @@ You must return a valid JSON object matching the following structure:
     - Examples: "đổi hạn", "xong rồi", "cập nhật nó đi"
 
 ## Principles
+- Use the recent conversation context to resolve follow-ups such as "cái vừa rồi", explanations,
+  corrections, and task numbers. Do not treat a follow-up as a new unrelated capture.
+- A correction that says two recently created tasks are one real-world task is a task mutation,
+  not a deadline change and not a new memory.
 - False positives in data persistence are extremely dangerous. When in doubt, prefer `needs_clarification` or `casual_or_noop` over a capture intent.
 - Do not persist memory unless the user explicitly requests to save it or expresses a stable, durable fact, preference, identity, relationship, or project state.
 - If the text is a query or command (like "Memory", "In ra các ghi nhớ về tôi"), classify it as query, NOT capture.
 - Do not classify "xong chưa", "đã làm xong chưa", "done yet", or "finished yet" as `mark_task_done`. These are status-check/planning phrases unless the user clearly says they personally completed the task.
+- Only use `mark_task_done` when the user asserts past completion, such as “tôi đã hoàn thành”, “vừa làm xong”, or “xong rồi”. Future dates and “đặt lịch” override completion words.
 - If the user provides a correction (like "cái này không phải task"), classify it as `correction_feedback`.
 - Always respond with raw JSON only.

@@ -1,19 +1,23 @@
 {
   "name": "MemoCore context update and rollback",
+  "setup": {"projects": ["MemoCore"]},
   "steps": [
     {
       "text": "Nói cho tôi biết về dự án MemoCore",
       "expected_intent": "query_context"
+      ,"expected_focus": {"type": "project", "name": "MemoCore"}
     },
     {
       "text": "cập nhật thêm thông tin cho dự án này như sau nhé\n- đây là dự án xây dựng trợ lý cá nhân\n- trợ lý cá nhân nghĩa là có thể hiểu tôi và nhớ thông tin về tôi\n- không cần code quá giỏi, nhưng cần đứng góc độ trợ lý thư ký",
       "expected_intent": "update_knowledge",
       "expected_reply_contains": "Đã cập nhật 3 thông tin cho MemoCore"
+      ,"expected_delta": {"memories": 3}
     },
     {
       "text": "xóa 3 thông tin đã cập nhật cho Văn Nghĩa Trần",
       "expected_intent": "rollback_knowledge_update",
       "expected_reply_contains": "Đã xóa 3 thông tin"
     }
-  ]
+  ],
+  "expected_final": {"memory_contents": []}
 }

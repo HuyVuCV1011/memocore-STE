@@ -28,6 +28,7 @@ class TaskCandidate(BaseModel):
     person_name: str | None = None
     project_name: str | None = None
     recurrence_rule: Literal["daily", "weekly"] | None = None
+    duration_minutes: int | None = Field(default=None, ge=1)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("confidence", mode="before")
@@ -102,6 +103,22 @@ class DecisionCandidate(BaseModel):
     project_name: str | None = None
     person_name: str | None = None
     organization_name: str | None = None
+    status: Literal["proposed", "decided", "superseded"] = "decided"
+    supersedes_title: str | None = None
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, value: Any) -> float:
+        return normalize_confidence(value)
+
+
+class KnowledgeRelationCandidate(BaseModel):
+    source_type: Literal["project", "person", "organization"]
+    source_name: str
+    target_type: Literal["project", "person", "organization"]
+    target_name: str
+    relation_type: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator("confidence", mode="before")
@@ -164,6 +181,7 @@ class NoteExtraction(BaseModel):
     people: list[PersonCandidate] = Field(default_factory=list)
     organizations: list[OrganizationCandidate] = Field(default_factory=list)
     decisions: list[DecisionCandidate] = Field(default_factory=list)
+    relationships: list[KnowledgeRelationCandidate] = Field(default_factory=list)
     meetings: list[MeetingCandidate] = Field(default_factory=list)
     followups: list[FollowUpCandidate] = Field(default_factory=list)
     commitments: list[CommitmentCandidate] = Field(default_factory=list)
@@ -186,6 +204,7 @@ class CaptureResponse(BaseModel):
     people_created: int = 0
     organizations_created: int = 0
     decisions_created: int = 0
+    relationships_created: int = 0
     meetings_created: int = 0
     followups_created: int = 0
     commitments_created: int = 0
@@ -247,6 +266,7 @@ class KnowledgeQueryPlan(BaseModel):
             "person",
             "organization",
             "decision",
+            "relationship",
             "task",
             "followup",
             "commitment",

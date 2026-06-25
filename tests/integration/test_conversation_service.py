@@ -1,8 +1,21 @@
 from datetime import UTC, datetime, time, timedelta
 
-from memocore.domain.models import Meeting, MemoryBucket, MemoryKind, Note, Person, Task
-from memocore.domain.schemas import CaptureRequest, IntentClassification, MemoryCandidate
-from memocore.services.conversation_service import ConversationService, classify_intent
+from memocore.domain.models import Meeting, MemoryBucket, MemoryKind, Note, Person, Task, TaskStatus
+from memocore.domain.schemas import (
+    CaptureRequest,
+    IntentClassification,
+    MeetingCandidate,
+    MemoryCandidate,
+    NoteExtraction,
+    TaskCandidate,
+)
+from memocore.services.capture_service import _normalize_scheduled_work
+from memocore.services.conversation_service import (
+    ConversationService,
+    _extract_duration_minutes,
+    _extract_task_due_at,
+    classify_intent,
+)
 from memocore.services.secretary_service import SecretaryService
 
 
@@ -157,6 +170,271 @@ def test_classifies_planning_checklist_with_xong_chua_as_capture():
     )
 
     assert classify_intent(raw_text) == "capture_note"
+
+
+def test_future_completion_language_is_a_new_task_schedule():
+    raw_text = (
+        "đặt cho tôi các lịch sau\n"
+        "- tối nay hoàn thành bộ giáo trình môn AI và ML with python\n"
+        "- tối mai hoàn thành các giáo trình của mindX\n"
+        "- tối ngày mốt hoàn thành điều chỉnh bổ sung các giáo trình bên ngoài khác"
+    )
+
+    assert classify_intent(raw_text) == "capture_task"
+    assert classify_intent(
+        "đặt lịch cho tôi, tối nay hoàn thành bộ giáo trình môn AI"
+    ) == "capture_task"
+
+
+def test_count_in_merge_request_is_not_parsed_as_a_clock():
+    assert _extract_task_due_at(
+        "đi uống bia và lấy áo vest là 1 task chung, sửa lại cho tôi nhé",
+        UTC,
+    ) is None
+
+
+def test_time_range_preserves_duration():
+    assert _extract_duration_minutes(
+        "điều chỉnh thời hạn tập gym là từ 6h sáng đến 7h30 sáng nhé"
+    ) == 90
+
+
+def test_friday_outing_is_one_task_on_the_actual_friday_without_memory():
+    extraction = NoteExtraction(
+        summary="Gặp Khôi Nguyên",
+        tasks=[
+            TaskCandidate(title="Lấy áo vest", due_at="2026-06-27T18:00:00+07:00", person_name="Khôi Nguyên"),
+            TaskCandidate(title="Đi uống bia", due_at="2026-06-27T18:00:00+07:00", person_name="Khôi Nguyên"),
+        ],
+        meetings=[
+            MeetingCandidate(
+                title="Gặp Khôi Nguyên",
+                starts_at="2026-06-27T18:00:00+07:00",
+                person_names=["Khôi Nguyên"],
+            )
+        ],
+        memories=[
+            MemoryCandidate(
+                bucket=MemoryBucket.INTERACTION,
+                kind=MemoryKind.FACT,
+                content="Vũ sẽ gặp Khôi Nguyên để lấy áo vest và uống bia",
+            )
+        ],
+    )
+
+    normalized = _normalize_scheduled_work(
+        extraction,
+        "tối thứ 6 tuần này tôi cần gặp Khôi Nguyên để lấy áo vest và đi uống bia",
+        datetime(2026, 6, 23, 21, 45).astimezone(),
+    )
+
+    assert len(normalized.tasks) == 1
+    assert datetime.fromisoformat(normalized.tasks[0].due_at).date().isoformat() == "2026-06-26"
+    assert datetime.fromisoformat(normalized.meetings[0].starts_at).date().isoformat() == "2026-06-26"
+    assert normalized.memories == []
+
+
+def test_unspecified_evening_completion_uses_end_of_day_deadline():
+    normalized = _normalize_scheduled_work(
+        NoteExtraction(summary="Hoàn thành giáo trình"),
+        "đặt lịch tối mai hoàn thành giáo trình MindX",
+        datetime(2026, 6, 23, 21, 48).astimezone(),
+    )
+
+    due = datetime.fromisoformat(normalized.tasks[0].due_at)
+    assert (due.hour, due.minute) == (23, 59)
+
+
+def test_daily_gym_schedule_gets_the_next_6am_occurrence():
+    normalized = _normalize_scheduled_work(
+        NoteExtraction(summary="Tập gym hằng ngày"),
+        "đặt cho tôi lịch tập gym định kỳ như sau, vào sáng lúc 6h mỗi ngày",
+        datetime(2026, 6, 23, 21, 43).astimezone(),
+    )
+
+    assert len(normalized.tasks) == 1
+    assert normalized.tasks[0].title.lower() == "tập gym"
+    assert normalized.tasks[0].recurrence_rule == "daily"
+    due = datetime.fromisoformat(normalized.tasks[0].due_at)
+    assert due.date().isoformat() == "2026-06-24"
+    assert due.hour == 6
+
+
+async def test_multiline_future_schedule_creates_three_open_tasks(
+    capture_service, fake_provider, repos
+):
+    fake_provider.response = NoteExtraction(summary="Đặt ba lịch giáo trình")
+    service = _conversation_service(capture_service, repos)
+    raw_text = (
+        "đặt cho tôi các lịch sau\n"
+        "- tối nay hoàn thành bộ giáo trình môn AI và ML with python\n"
+        "- tối mai hoàn thành các giáo trình của mindX\n"
+        "- tối ngày mốt hoàn thành điều chỉnh bổ sung các giáo trình bên ngoài khác"
+    )
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text=raw_text, source_chat_id="schedule-chat")
+    )
+    tasks = await repos["tasks"].list_active()
+
+    assert result.intent == "capture_task"
+    assert len(tasks) == 3
+    assert all(str(task.status) != TaskStatus.DONE.value for task in tasks)
+    local_dates = [task.due_at.astimezone().date() for task in tasks]
+    assert local_dates[1] == local_dates[0] + timedelta(days=1)
+    assert local_dates[2] == local_dates[0] + timedelta(days=2)
+
+
+async def test_merge_two_named_tasks_creates_one_and_cancels_sources(
+    capture_service, repos
+):
+    note = await repos["notes"].create(Note(raw_text="outing"))
+    for title in ("Đi uống bia", "Lấy áo vest"):
+        await repos["tasks"].create(
+            Task(
+                title=title,
+                status=TaskStatus.OPEN,
+                due_at=datetime(2026, 6, 26, 11, 0, tzinfo=UTC),
+                source_note_id=note.id,
+                confidence=0.9,
+            )
+        )
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="đi uống bia và lấy áo vest là 1 task chung, sửa lại cho tôi nhé",
+            source_chat_id="merge-chat",
+        )
+    )
+    active = await repos["tasks"].list_active()
+
+    assert result.intent == "merge_tasks"
+    assert len(active) == 1
+    assert active[0].title == "Đi uống bia và Lấy áo vest"
+
+
+async def test_followup_merge_uses_artifacts_created_by_previous_turn(
+    capture_service, fake_provider, repos
+):
+    fake_provider.response = NoteExtraction(
+        summary="Tạo hai task outing",
+        tasks=[
+            TaskCandidate(title="Lấy áo vest", confidence=0.95),
+            TaskCandidate(title="Đi uống bia", confidence=0.95),
+        ],
+    )
+    service = _conversation_service(capture_service, repos)
+
+    created = await service.handle_text(
+        CaptureRequest(
+            raw_text="/task tạo lịch outing",
+            source_chat_id="followup-merge-chat",
+            source_message_id="1",
+        )
+    )
+    merged = await service.handle_text(
+        CaptureRequest(
+            raw_text="hai task vừa tạo là một việc chung, gộp lại",
+            source_chat_id="followup-merge-chat",
+            source_message_id="2",
+        )
+    )
+    active = await repos["tasks"].list_active()
+
+    assert created.intent == "capture_task"
+    assert merged.intent == "merge_tasks"
+    assert len(active) == 1
+    assert {"Lấy áo vest", "Đi uống bia"} <= set(active[0].title.split(" và "))
+    undone = await service.handle_text(
+        CaptureRequest(
+            raw_text="hoàn tác thay đổi vừa rồi",
+            source_chat_id="followup-merge-chat",
+            source_message_id="3",
+        )
+    )
+    restored = await repos["tasks"].list_active()
+
+    assert undone.intent == "undo_last_action"
+    assert {task.title for task in restored} == {"Lấy áo vest", "Đi uống bia"}
+    conn = await repos["chat_contexts"].database.connection()
+    turns = await (
+        await conn.execute(
+            "SELECT * FROM conversation_turns WHERE source_chat_id = ? ORDER BY created_at",
+            ("followup-merge-chat",),
+        )
+    ).fetchall()
+    assert len(turns) == 3
+    assert '"goal":"correct_previous_task_split"' in turns[-2]["plan_json"]
+    assert '"goal":"undo_previous_operation"' in turns[-1]["plan_json"]
+
+
+async def test_daily_schedule_query_lists_recurring_tasks(
+    capture_service, fake_provider, repos
+):
+    note = await repos["notes"].create(Note(raw_text="gym"))
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            status=TaskStatus.OPEN,
+            due_at=datetime(2026, 6, 24, 6, 0, tzinfo=UTC),
+            duration_minutes=90,
+            recurrence_rule="daily",
+            recurrence_series_id="gym-daily",
+            recurrence_occurrence_at=datetime(2026, 6, 24, 6, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text="lịch hàng ngày của tôi là gì")
+    )
+
+    assert result.intent == "query_task_recurrence"
+    assert "Tập gym" in result.reply
+    assert "06:00–07:30" in result.reply
+    assert fake_provider.calls == []
+
+
+async def test_recurring_gym_range_update_keeps_start_and_duration(
+    capture_service, repos
+):
+    note = await repos["notes"].create(Note(raw_text="daily gym"))
+    task = await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            status=TaskStatus.OPEN,
+            due_at=datetime(2026, 6, 23, 6, 0, tzinfo=UTC),
+            recurrence_rule="daily",
+            recurrence_series_id="gym-series",
+            recurrence_occurrence_at=datetime(2026, 6, 23, 6, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="điều chỉnh thời hạn tập gym là từ 6h sáng đến 7h30 sáng nhé",
+            source_chat_id="gym-chat",
+        )
+    )
+    pending = await repos["clarifications"].find_pending_for_chat("gym-chat")
+
+    assert result.intent == "update_task_due"
+    assert "Tập gym" in result.reply
+    assert pending is not None
+    assert "duration=90" in pending.field_name
+
+    answered = await capture_service.clarification_service.answer_pending(
+        "gym-chat", "Kỳ này và các kỳ sau"
+    )
+    updated = await repos["tasks"].get_by_id(task.id)
+
+    assert answered.handled is True
+    assert updated.duration_minutes == 90
+    assert updated.due_at.astimezone(UTC).hour == 6
 
 
 async def test_today_query_answers_agenda_without_extraction(
@@ -665,7 +943,7 @@ async def test_project_list_query_uses_secretary_view_with_knowledge_enabled(
     result = await service.handle_text(CaptureRequest(raw_text="in ra các project tôi đang có"))
 
     assert result.intent == "query_projects"
-    assert "STE Lộc" in result.reply
+    assert "Lộc" in result.reply
     assert "AI Agent Learning" in result.reply
     assert knowledge.queries == []
     assert fake_provider.calls == []

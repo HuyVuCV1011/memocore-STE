@@ -14,9 +14,37 @@ The conversation pipeline is split into five explicit responsibilities:
 | `ReferenceResolver` | Resolve canonical project, person, organization, task, and chat focus. |
 | `ConversationExecutor` | Dispatch resolved intents only to registered action handlers. |
 | `ConversationComposer` | Own reusable user-facing prompts and confirmations. |
+| `ConversationFrameBuilder` | Build bounded turn, artifact, focus, and clarification context. |
+| `ScheduleSemantics` | Normalize future, recurring, weekday, and time-range meaning. |
+| `ActivityReconciliationService` | Keep linked task, meeting, person, and project projections consistent. |
 
 `ConversationService` remains the compatibility orchestrator while legacy actions move behind
 these boundaries incrementally.
+
+Query dispatch, task mutations, memory lifecycle operations, clarification fallback, and shared
+response copy now have dedicated executors/workflows. The compatibility service still hosts a few
+specialized handler implementations, but orchestration no longer owns their dispatch policy.
+
+## Transcript Corpus
+
+The offline corpus contains 42 isolated conversations. Each fixture can assert intent, reply,
+durable-write deltas, focused entity, final task state, final memory state, and batch rollback.
+The corpus covers read-only queries, casual/no-op input, ambiguous writes, person/project/
+organization focus, focus switching, scoped knowledge updates, wrong-entity isolation, task
+mutations, recurring schedule queries, future-completion wording, task merge corrections, timezone
+explanations, and rollback integrity.
+It also includes fuzzy recurring-task completion taken from a real Telegram failure.
+
+The release metrics are:
+
+| Metric | Gate |
+| --- | --- |
+| Wrong intent | 0 known high-severity failures |
+| Wrong entity write | 0 |
+| Unintended task/memory/reminder write | 0 |
+| Rollback integrity | 100% for covered batches |
+
+Every production failure must be added to this corpus before its fix is merged.
 
 ## Required Gates
 
@@ -28,6 +56,14 @@ these boundaries incrementally.
 6. Full offline tests, migration smoke tests, compile checks, and `memocore doctor` must pass.
 7. Real Telegram usage must complete a review window without unresolved high-severity routing or
    wrong-entity writes.
+8. Every production turn must preserve the assistant outcome and affected artifact ids so later
+   corrections can refer to the exact prior operation.
+9. Clarification choices must remain active for numeric and exact-title replies and must never
+   switch assistant language because the reply is short.
+10. Default Telegram views must not expose internal relationship codes, source ids, confidence,
+    or evidence metadata.
+11. Mutating one projection of an activity must reconcile linked task/meeting/entity state and be
+    undoable from one event snapshot.
 
 ## Orchestration Hold
 

@@ -25,9 +25,16 @@ class MemoryService:
     ) -> list[MemoryItem]:
         created: list[MemoryItem] = []
         for candidate in candidates:
-            related = await self.related_items(candidate)
-            if supersede_related or await self.has_related_conflict(candidate):
-                await self.supersede_related(candidate)
+            related = await self.related_items(
+                candidate,
+                project_id=project_id,
+                person_id=person_id,
+                organization_id=organization_id,
+                decision_id=decision_id,
+            )
+            if supersede_related:
+                for related_item in related:
+                    await self.forget(related_item.id)
             now = utc_now()
             item = MemoryItem(
                 bucket=candidate.bucket,
@@ -48,6 +55,7 @@ class MemoryService:
                 ),
                 last_confirmed_at=None,
                 revision_of_id=related[0].id if related else None,
+                conflict_state="conflict" if related and not supersede_related else "none",
             )
             created_item = await self.memory_repo.create(item)
             await self.event_service.append_event(
@@ -56,6 +64,18 @@ class MemoryService:
                 created_item.id,
                 {"source_note_id": source_note_id},
             )
+            if related and not supersede_related:
+                conflict_ids = [created_item.id, *(item.id for item in related)]
+                await self.memory_repo.mark_conflict(conflict_ids)
+                await self.event_service.append_event(
+                    EventType.MEMORY_CONFLICT_DETECTED,
+                    "memory_item",
+                    created_item.id,
+                    {
+                        "conflicting_item_ids": [item.id for item in related],
+                        "source_note_id": source_note_id,
+                    },
+                )
             created.append(created_item)
         return created
 
@@ -101,12 +121,24 @@ class MemoryService:
             await self.forget(item.id)
         return len(matches)
 
-    async def related_items(self, candidate: MemoryCandidate) -> list[MemoryItem]:
+    async def related_items(
+        self,
+        candidate: MemoryCandidate,
+        *,
+        project_id: str | None = None,
+        person_id: str | None = None,
+        organization_id: str | None = None,
+        decision_id: str | None = None,
+    ) -> list[MemoryItem]:
         existing = await self.memory_repo.list_by_bucket(candidate.bucket)
         return [
             item
             for item in existing
             if item.status in {MemoryStatus.CANDIDATE.value, MemoryStatus.ACTIVE.value}
+            and item.project_id == project_id
+            and item.person_id == person_id
+            and item.organization_id == organization_id
+            and item.decision_id == decision_id
             and item.kind == candidate.kind
             and item.content != candidate.content
             and _related_memory(candidate.content, item.content)
@@ -121,6 +153,31 @@ class MemoryService:
             and _related_memory(candidate.content, item.content)
             for item in existing
         )
+
+    async def select_canonical(self, item_id: str) -> list[str]:
+        item = await self.memory_repo.get_by_id(item_id)
+        if item is None:
+            return []
+        related = [
+            candidate
+            for candidate in await self.memory_repo.list_all()
+            if candidate.id == item.id
+            or candidate.revision_of_id == item.id
+            or item.revision_of_id == candidate.id
+            or (
+                item.revision_of_id is not None
+                and candidate.revision_of_id == item.revision_of_id
+            )
+        ]
+        related_ids = [candidate.id for candidate in related]
+        await self.memory_repo.select_canonical(item.id, related_ids)
+        await self.event_service.append_event(
+            EventType.MEMORY_CANONICAL_SELECTED,
+            "memory_item",
+            item.id,
+            {"related_item_ids": related_ids},
+        )
+        return related_ids
 
     def _match_items(self, items: list[MemoryItem], query: str) -> list[MemoryItem]:
         query_tokens = _meaningful_tokens(query)

@@ -165,6 +165,8 @@ async def test_conversation_turns_record_resolved_focus(capture_service, repos):
     assert turn is not None
     assert turn["focused_entity_type"] == "project"
     assert turn["focused_entity_id"] == project.id
+    assert turn["assistant_reply"]
+    assert turn["plan_json"] is not None
 
 
 async def test_project_overview_then_multiline_update_uses_conversation_focus(

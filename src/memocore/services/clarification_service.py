@@ -84,6 +84,16 @@ class ClarificationService:
     ) -> bool:
         if pending.entity_type == "task" and pending.field_name.startswith("status|"):
             return _is_yes(answer_text) or _is_no(answer_text)
+        if pending.entity_type.startswith("task_selection_"):
+            normalized = _normalize_text(answer_text)
+            if _is_no(answer_text) or re.search(r"\b\d+\b", normalized):
+                return True
+            # Option titles are embedded in the persisted question.  Treat an
+            # exact-name reply as part of the active selection instead of a new
+            # capture intent.
+            return bool(normalized) and normalized in _normalize_text(pending.question)
+        if pending.entity_type == "task_recurrence_scope":
+            return _recurrence_scope_choice(answer_text, recurring=True) is not None
         return False
 
     async def cancel_pending_for_chat(self, source_chat_id: str, reason: str) -> bool:
@@ -125,7 +135,9 @@ class ClarificationService:
             if task is None:
                 await self.clarification_repo.cancel(pending.id, answer_text)
                 return ClarificationResult(True, "Task này không còn tồn tại.")
-            due_str, requested_rule = pending.field_name.split("|", 2)[1:]
+            field_parts = pending.field_name.split("|")
+            due_str, requested_rule = field_parts[1:3]
+            duration_minutes = _duration_from_field_parts(field_parts[3:])
             due_at = datetime.fromisoformat(due_str)
             choice = _recurrence_scope_choice(answer_text, recurring=bool(task.recurrence_rule))
             if choice == "cancel":
@@ -145,22 +157,30 @@ class ClarificationService:
                         else "Anh chọn “Chỉ lần này”, “Lặp hằng ngày” hoặc “Hủy” nha."
                     ),
                 )
-            await self.task_repo.update_due_at(task.id, due_at)
-            if choice == "recurring":
-                await self.task_repo.update_recurrence(task.id, requested_rule)
-            await self.clarification_repo.resolve(pending.id, answer_text)
-            await self.event_service.append_event(
-                EventType.CLARIFICATION_RESOLVED,
-                "clarification_request",
-                pending.id,
-                {
-                    "entity_type": "task",
-                    "entity_id": task.id,
-                    "scope": choice,
-                    "due_at": due_at.isoformat(),
-                    "recurrence_rule": requested_rule if choice == "recurring" else task.recurrence_rule,
-                },
-            )
+            async with self.task_repo.database.transaction():
+                await self.task_repo.update_due_at(task.id, due_at)
+                if duration_minutes is not None:
+                    await self.task_repo.update_duration(task.id, duration_minutes)
+                if choice == "recurring":
+                    await self.task_repo.update_recurrence(task.id, requested_rule)
+                await self.clarification_repo.resolve(pending.id, answer_text)
+                await self.event_service.append_event(
+                    EventType.CLARIFICATION_RESOLVED,
+                    "clarification_request",
+                    pending.id,
+                    {
+                        "entity_type": "task",
+                        "entity_id": task.id,
+                        "scope": choice,
+                        "due_at": due_at.isoformat(),
+                        "recurrence_rule": (
+                            requested_rule
+                            if choice == "recurring"
+                            else task.recurrence_rule
+                        ),
+                        "duration_minutes": duration_minutes,
+                    },
+                )
             local_due = due_at.astimezone(self.default_timezone).strftime("%H:%M %d/%m/%Y")
             if choice == "recurring":
                 label = "hằng ngày" if requested_rule == "daily" else "hằng tuần"
@@ -201,9 +221,15 @@ class ClarificationService:
         if pending.entity_type == "task" and self.task_repo:
             if pending.field_name.startswith("due_at|"):
                 if _is_yes(answer_text):
-                    due_str = pending.field_name.split("|", 1)[1]
+                    field_parts = pending.field_name.split("|")
+                    due_str = field_parts[1]
+                    duration_minutes = _duration_from_field_parts(field_parts[2:])
                     due_at = datetime.fromisoformat(due_str)
                     await self.task_repo.update_due_at(pending.entity_id, due_at)
+                    if duration_minutes is not None:
+                        await self.task_repo.update_duration(
+                            pending.entity_id, duration_minutes
+                        )
                     await self.clarification_repo.resolve(pending.id, answer_text)
                     task = await self.task_repo.get_by_id(pending.entity_id)
                     title = task.title if task else ""
@@ -363,9 +389,15 @@ class ClarificationService:
                             ),
                         )
                     elif pending.entity_type == "task_selection_due_update":
-                        due_str = pending.field_name.split("|", 1)[1]
+                        field_parts = pending.field_name.split("|")
+                        due_str = field_parts[1]
+                        duration_minutes = _duration_from_field_parts(field_parts[2:])
                         due_at = datetime.fromisoformat(due_str)
                         await self.task_repo.update_due_at(target_task_id, due_at)
+                        if duration_minutes is not None:
+                            await self.task_repo.update_duration(
+                                target_task_id, duration_minutes
+                            )
                         await self.clarification_repo.resolve(pending.id, answer_text)
                         return ClarificationResult(
                             handled=True,
@@ -377,26 +409,34 @@ class ClarificationService:
                         )
                     elif pending.entity_type == "task_selection_rename":
                         new_title = pending.field_name.split("|", 1)[1]
-                        await self.task_repo.update_title(target_task_id, new_title)
-                        await self.event_service.append_event(
-                            EventType.NOTE_PROCESSED,
-                            "task",
+                        operation = await self.task_operation_service.rename(
                             target_task_id,
-                            {
-                                "transition": "renamed_from_selection_confirmation",
-                                "new_title": new_title,
-                            },
+                            new_title,
+                            transition="renamed_from_selection_confirmation",
                         )
                         await self.clarification_repo.resolve(pending.id, answer_text)
                         return ClarificationResult(
                             handled=True,
-                            message=_localized(
-                                answer_text,
-                                f"Đã rõ. Đã sửa tên task thành: {new_title}.",
-                                f"Got it. Renamed task to: {new_title}.",
+                            message=(
+                                f"Dạ, em đã đổi tên task thành “{new_title}”."
+                                + (
+                                    f" Em cũng đã đồng bộ {operation.linked_artifacts_updated} lịch liên quan."
+                                    if operation.linked_artifacts_updated
+                                    else ""
+                                )
                             ),
                         )
-            
+
+            await self.event_service.append_event(
+                EventType.CLARIFICATION_FAILED,
+                "clarification_request",
+                pending.id,
+                {
+                    "reason": "invalid_selection",
+                    "answer_text": answer_text,
+                    "options": num_tasks,
+                },
+            )
             return ClarificationResult(
                 handled=True,
                 message=_localized(
@@ -528,7 +568,9 @@ def parse_clarification_datetime(
         return relative.astimezone(UTC)
 
     target_date = None
-    if "tomorrow" in lowered or "ngay mai" in lowered or _has_word(lowered, "mai"):
+    if "day after tomorrow" in lowered or "ngay mot" in lowered:
+        target_date = now.date() + timedelta(days=2)
+    elif "tomorrow" in lowered or "ngay mai" in lowered or _has_word(lowered, "mai"):
         target_date = now.date() + timedelta(days=1)
     elif "today" in lowered or "hom nay" in lowered or "toi nay" in lowered:
         target_date = now.date()
@@ -683,6 +725,18 @@ def _recurrence_scope_choice(text: str, *, recurring: bool) -> str | None:
     return None
 
 
+def _duration_from_field_parts(parts: list[str]) -> int | None:
+    for part in parts:
+        if not part.startswith("duration="):
+            continue
+        try:
+            value = int(part.split("=", 1)[1])
+        except ValueError:
+            return None
+        return value if value > 0 else None
+    return None
+
+
 async def _selection_choice(
     answer_text: str, task_ids: list[str], task_repo: TaskRepository
 ) -> int | None:
@@ -728,4 +782,7 @@ def _looks_vietnamese(raw_text: str) -> bool:
 
 
 def _localized(raw_text: str, vi: str, en: str) -> str:
-    return vi if _looks_vietnamese(raw_text) else en
+    # MemoCore V4 currently has one Vietnamese assistant voice.  Guessing the
+    # reply language from a short answer such as "1" or "task 1" caused the
+    # assistant to switch to English mid-conversation.
+    return vi

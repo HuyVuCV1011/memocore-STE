@@ -277,6 +277,32 @@ async def test_done_confirmation_creates_next_recurring_occurrence(
     assert active[0].recurrence_rule == "daily"
 
 
+async def test_direct_completion_formats_next_occurrence_in_user_timezone(
+    capture_service, repos
+):
+    note = await repos["notes"].create(Note(raw_text="daily local time"))
+    await repos["tasks"].create(
+        Task(
+            title="Tạo kịch bản audio sảng văn",
+            status=TaskStatus.OPEN,
+            due_at=datetime(2026, 6, 22, 16, 59, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="daily",
+            recurrence_series_id="daily-local-time",
+            recurrence_occurrence_at=datetime(2026, 6, 22, 16, 59, tzinfo=UTC),
+        )
+    )
+    service = _service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text="đã xong kịch bản sảng văn hôm nay")
+    )
+
+    assert result.intent == "mark_task_done"
+    assert "23:59 23/06/2026" in result.reply
+    assert "16:59" not in result.reply
+
+
 @pytest.mark.parametrize(
     "answer",
     [
@@ -370,6 +396,35 @@ async def test_recurrence_status_question_is_query_not_correction(
     assert result.intent == "query_task_recurrence"
     assert "là task hằng ngày" in result.reply
     assert "tạo kỳ kế tiếp" in result.reply
+
+
+async def test_recurrence_time_followup_explains_utc_instead_of_querying_context(
+    capture_service, repos
+):
+    note = await repos["notes"].create(Note(raw_text="daily time explanation"))
+    await repos["tasks"].create(
+        Task(
+            title="Tạo kịch bản audio sảng văn",
+            status=TaskStatus.OPEN,
+            due_at=datetime(2026, 6, 23, 16, 59, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="daily",
+            recurrence_series_id="daily-time-explanation",
+            recurrence_occurrence_at=datetime(2026, 6, 23, 16, 59, tzinfo=UTC),
+        )
+    )
+    service = _service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="tại sao lại là 16:59? tôi nhớ là định kỳ sẽ là 23h:59?"
+        )
+    )
+
+    assert result.intent == "query_task_recurrence"
+    assert "16:59 là giờ UTC" in result.reply
+    assert "23:59 23/06/2026" in result.reply
+    assert "person hoặc project" not in result.reply
 
 
 async def test_tomorrow_query_supersedes_pending_clarification(capture_service, repos):

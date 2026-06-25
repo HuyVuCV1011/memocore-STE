@@ -3,7 +3,7 @@
 ## Goal
 
 Keep Telegram easy to scan without removing specialist workflows. The visible slash menu contains
-only the six primary entry points; inline buttons provide discovery; exact commands remain as
+only the seven primary entry points; inline buttons provide discovery; exact commands remain as
 power-user shortcuts.
 
 ## Visible Slash Menu
@@ -16,6 +16,7 @@ power-user shortcuts.
 | `/work` | Work/open-loop hub. |
 | `/memory` | Memory overview, review, stale, and topic slices. |
 | `/context` | People, projects, meeting prep, and linked memory. |
+| `/review` | Uncertain memory, aliases, pending clarification, and quality signals. |
 | `/briefing` | Current daily briefing. |
 | `/capture` | Task, memory, and content capture guidance. |
 
@@ -28,6 +29,7 @@ to discover.
 - `/context`: people, projects, meeting prep, and memory.
 - `/capture`: task, memory, and LinkedIn/content capture patterns.
 - `/memory`: review queue, stale queue, self, goals, people, projects, and topic slices.
+- `/review`: uncertain memory, aliases, pending clarification, undated tasks, and quality signals.
 
 Navigation callbacks edit the existing message and acknowledge the callback before longer work.
 Callback payloads must remain short, stable, and safe across process restarts.

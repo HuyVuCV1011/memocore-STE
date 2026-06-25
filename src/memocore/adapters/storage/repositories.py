@@ -26,6 +26,8 @@ from memocore.domain.models import (
     NoteStatus,
     Person,
     Project,
+    ProjectStatus,
+    ProjectType,
     Reminder,
     ReminderStatus,
     Task,
@@ -201,8 +203,9 @@ class TaskRepository(BaseRepository):
             INSERT INTO tasks (
                 id, title, description, status, priority, due_at, project_id,
                 person_id, source_note_id, confidence, recurrence_rule,
-                recurrence_series_id, recurrence_occurrence_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                recurrence_series_id, recurrence_occurrence_at, duration_minutes,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task.id,
@@ -218,6 +221,7 @@ class TaskRepository(BaseRepository):
                 task.recurrence_rule,
                 task.recurrence_series_id,
                 _dt(task.recurrence_occurrence_at),
+                task.duration_minutes,
                 _dt(task.created_at),
                 _dt(task.updated_at),
             ),
@@ -317,10 +321,32 @@ class TaskRepository(BaseRepository):
             (_dt(due_at), _dt(utc_now()), task_id),
         )
 
+    async def update_duration(self, task_id: str, duration_minutes: int | None) -> None:
+        await self._execute(
+            "UPDATE tasks SET duration_minutes = ?, updated_at = ? WHERE id = ?",
+            (duration_minutes, _dt(utc_now()), task_id),
+        )
+
     async def update_title(self, task_id: str, title: str) -> None:
         await self._execute(
             "UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?",
             (title, _dt(utc_now()), task_id),
+        )
+
+    async def update_links(
+        self,
+        task_id: str,
+        *,
+        person_id: str | None,
+        project_id: str | None,
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE tasks
+            SET person_id = ?, project_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (person_id, project_id, _dt(utc_now()), task_id),
         )
 
     async def update_priority(self, task_id: str, priority: str) -> None:
@@ -401,6 +427,7 @@ class TaskRepository(BaseRepository):
                     recurrence_rule=task.recurrence_rule,
                     recurrence_series_id=series_id,
                     recurrence_occurrence_at=next_due,
+                    duration_minutes=task.duration_minutes,
                 )
                 await self.create(next_task)
                 return task, next_task, True
@@ -429,6 +456,7 @@ class TaskRepository(BaseRepository):
                 recurrence_rule=task.recurrence_rule,
                 recurrence_series_id=series_id,
                 recurrence_occurrence_at=next_due,
+                duration_minutes=task.duration_minutes,
             )
             await self.create(next_task)
             return await self.get_by_id(task.id), next_task, True
@@ -520,13 +548,16 @@ class ChatContextRepository(BaseRepository):
         focused_entity_type: str | None,
         focused_entity_id: str | None,
         result_entity_ids: list[str] | None = None,
+        assistant_reply: str | None = None,
+        plan: dict[str, Any] | None = None,
     ) -> None:
         await self._execute(
             """
             INSERT INTO conversation_turns (
                 id, source_chat_id, source_message_id, raw_text, intent,
-                focused_entity_type, focused_entity_id, result_entity_ids, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                focused_entity_type, focused_entity_id, result_entity_ids,
+                assistant_reply, plan_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(uuid4()),
@@ -537,9 +568,42 @@ class ChatContextRepository(BaseRepository):
                 focused_entity_type,
                 focused_entity_id,
                 _json(result_entity_ids or []),
+                assistant_reply,
+                _json(plan or {}),
                 _dt(utc_now()),
             ),
         )
+
+    async def list_recent_turns(
+        self, source_chat_id: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT raw_text, intent, focused_entity_type, focused_entity_id,
+                       result_entity_ids, assistant_reply, plan_json, created_at
+                FROM conversation_turns
+                WHERE source_chat_id = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (source_chat_id, limit),
+            )
+        ).fetchall()
+        return [
+            {
+                "raw_text": row["raw_text"],
+                "intent": row["intent"],
+                "focused_entity_type": row["focused_entity_type"],
+                "focused_entity_id": row["focused_entity_id"],
+                "result_entity_ids": _loads(row["result_entity_ids"]),
+                "assistant_reply": row["assistant_reply"],
+                "plan": _loads(row["plan_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
 
 class ReminderRepository(BaseRepository):
@@ -709,11 +773,14 @@ class ProjectRepository(BaseRepository):
             return project
 
         project = Project(name=name)
+        project.status = ProjectStatus.REVIEW
+        project.project_type = None
         await self._execute(
             """
             INSERT INTO projects (
-                id, name, aliases, summary, status, tags, last_seen_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, name, aliases, summary, status, tags, last_seen_at, created_at, updated_at,
+                project_type, parent_project_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project.id,
@@ -725,9 +792,138 @@ class ProjectRepository(BaseRepository):
                 _dt(project.last_seen_at),
                 _dt(project.created_at),
                 _dt(project.updated_at),
+                project.project_type.value if project.project_type else None,
+                project.parent_project_id,
             ),
         )
         return project
+
+    async def list_roots(self) -> list[Project]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM projects WHERE parent_project_id IS NULL AND status NOT IN (?, ?) ORDER BY last_seen_at DESC",
+                ("archived", "review")
+            )
+        ).fetchall()
+        return [_project_from_row(row) for row in rows]
+
+    async def list_children(self, parent_id: str) -> list[Project]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM projects WHERE parent_project_id = ? ORDER BY last_seen_at DESC",
+                (parent_id,)
+            )
+        ).fetchall()
+        return [_project_from_row(row) for row in rows]
+
+    async def list_by_type_or_status(
+        self,
+        project_type: ProjectType | None = None,
+        status: ProjectStatus | None = None,
+    ) -> list[Project]:
+        conn = await self.database.connection()
+        query = "SELECT * FROM projects"
+        clauses = []
+        params = []
+        if project_type:
+            clauses.append("project_type = ?")
+            params.append(project_type.value)
+        if status:
+            clauses.append("status = ?")
+            params.append(status.value)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY last_seen_at DESC"
+        rows = await (await conn.execute(query, tuple(params))).fetchall()
+        return [_project_from_row(row) for row in rows]
+
+    async def update_taxonomy(
+        self,
+        project_id: str,
+        project_type: ProjectType,
+        status: ProjectStatus,
+        parent_project_id: str | None,
+    ) -> None:
+        if isinstance(project_type, str):
+            project_type = ProjectType(project_type)
+        if isinstance(status, str):
+            status = ProjectStatus(status)
+        parent_project_id = parent_project_id or None
+
+        async with self.database.transaction():
+            project = await self.get_by_id(project_id)
+            if not project:
+                raise ValueError("Project not found")
+
+            # Check if there is any real change (idempotency check)
+            if (
+                project.project_type == project_type
+                and project.status == status
+                and project.parent_project_id == parent_project_id
+            ):
+                return
+
+            # Ngăn project tự làm parent của chính nó
+            if parent_project_id and parent_project_id == project_id:
+                raise ValueError("Project cannot be its own parent")
+
+            # Ngăn cycle
+            if parent_project_id:
+                curr_id = parent_project_id
+                visited = {project_id}
+                while curr_id:
+                    if curr_id in visited:
+                        raise ValueError("Cycle detected in project hierarchy")
+                    visited.add(curr_id)
+                    parent_project = await self.get_by_id(curr_id)
+                    if not parent_project:
+                        break
+                    curr_id = parent_project.parent_project_id
+
+            conn = await self.database.connection()
+            # Cập nhật taxonomy
+            now = utc_now()
+            await conn.execute(
+                """
+                UPDATE projects
+                SET project_type = ?, status = ?, parent_project_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    project_type.value,
+                    status.value,
+                    parent_project_id,
+                    _dt(now),
+                    project_id,
+                ),
+            )
+
+            # Ghi audit event log
+            event_id = str(uuid4())
+            payload = {
+                "old_type": project.project_type.value if project.project_type else None,
+                "new_type": project_type.value,
+                "old_status": project.status.value if isinstance(project.status, ProjectStatus) else str(project.status),
+                "new_status": status.value,
+                "old_parent_id": project.parent_project_id,
+                "new_parent_id": parent_project_id,
+            }
+            await conn.execute(
+                """
+                INSERT INTO event_logs (id, event_type, entity_type, entity_id, payload, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    "project_taxonomy_updated",
+                    "project",
+                    project_id,
+                    _json(payload),
+                    _dt(now),
+                ),
+            )
 
     async def list_all(self) -> list[Project]:
         conn = await self.database.connection()
@@ -814,6 +1010,13 @@ class MeetingRepository(BaseRepository):
         )
         return meeting
 
+    async def get_by_id(self, meeting_id: str) -> Meeting | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
+        ).fetchone()
+        return _meeting_from_row(row) if row else None
+
     async def list_all(self) -> list[Meeting]:
         conn = await self.database.connection()
         rows = await (await conn.execute("SELECT * FROM meetings ORDER BY starts_at DESC")).fetchall()
@@ -875,6 +1078,97 @@ class MeetingRepository(BaseRepository):
             """,
             (meeting_id, person_id, role, _dt(utc_now())),
         )
+
+    async def update_activity(
+        self,
+        meeting_id: str,
+        *,
+        title: str,
+        person_id: str | None,
+        project_id: str | None,
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE meetings
+            SET title = ?, person_id = ?, project_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (title, person_id, project_id, _dt(utc_now()), meeting_id),
+        )
+        await self._execute(
+            "DELETE FROM meeting_people WHERE meeting_id = ?",
+            (meeting_id,),
+        )
+        if person_id is not None:
+            await self.add_person(meeting_id, person_id)
+
+
+class ActivityLinkRepository(BaseRepository):
+    """Persistent identity links between task and meeting projections."""
+
+    async def link(
+        self,
+        task_id: str,
+        meeting_id: str,
+        relation_type: str = "same_activity",
+    ) -> None:
+        now = _dt(utc_now())
+        await self._execute(
+            """
+            INSERT INTO activity_links (
+                task_id, meeting_id, relation_type, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, meeting_id) DO UPDATE SET
+                relation_type = excluded.relation_type,
+                updated_at = excluded.updated_at
+            """,
+            (task_id, meeting_id, relation_type, now, now),
+        )
+
+    async def meeting_ids_for_task(self, task_id: str) -> list[str]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT meeting_id FROM activity_links
+                WHERE task_id = ? AND relation_type = 'same_activity'
+                ORDER BY created_at
+                """,
+                (task_id,),
+            )
+        ).fetchall()
+        return [row["meeting_id"] for row in rows]
+
+    async def task_ids_for_meeting(self, meeting_id: str) -> list[str]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT task_id FROM activity_links
+                WHERE meeting_id = ? AND relation_type = 'same_activity'
+                ORDER BY created_at
+                """,
+                (meeting_id,),
+            )
+        ).fetchall()
+        return [row["task_id"] for row in rows]
+
+    async def linked_meeting_ids(self, task_ids: list[str]) -> set[str]:
+        if not task_ids:
+            return set()
+        placeholders = ",".join("?" for _ in task_ids)
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                f"""
+                SELECT meeting_id FROM activity_links
+                WHERE relation_type = 'same_activity'
+                  AND task_id IN ({placeholders})
+                """,
+                tuple(task_ids),
+            )
+        ).fetchall()
+        return {row["meeting_id"] for row in rows}
 
 
 class FollowUpRepository(BaseRepository):
@@ -1036,8 +1330,8 @@ class MemoryItemRepository(BaseRepository):
                 id, bucket, kind, content, source_note_id, project_id,
                 person_id, organization_id, decision_id, confidence, status, source_type, observed_at, valid_from,
                 valid_until, last_confirmed_at, sensitivity, revision_of_id,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                canonical_memory_id, conflict_state, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -1058,6 +1352,8 @@ class MemoryItemRepository(BaseRepository):
                 _dt(item.last_confirmed_at),
                 item.sensitivity,
                 item.revision_of_id,
+                item.canonical_memory_id,
+                item.conflict_state,
                 _dt(item.created_at),
                 _dt(item.updated_at),
             ),
@@ -1154,6 +1450,34 @@ class MemoryItemRepository(BaseRepository):
         )
         await self._execute("DELETE FROM memory_items WHERE id = ?", (item_id,))
 
+    async def mark_conflict(self, item_ids: list[str]) -> None:
+        for item_id in item_ids:
+            await self._execute(
+                "UPDATE memory_items SET conflict_state = 'conflict', updated_at = ? WHERE id = ?",
+                (_dt(utc_now()), item_id),
+            )
+
+    async def select_canonical(self, canonical_id: str, related_ids: list[str]) -> None:
+        await self._execute(
+            """
+            UPDATE memory_items
+            SET status = ?, canonical_memory_id = NULL, conflict_state = 'resolved', updated_at = ?
+            WHERE id = ?
+            """,
+            (MemoryStatus.ACTIVE.value, _dt(utc_now()), canonical_id),
+        )
+        for item_id in related_ids:
+            if item_id == canonical_id:
+                continue
+            await self._execute(
+                """
+                UPDATE memory_items
+                SET status = ?, canonical_memory_id = ?, conflict_state = 'resolved', updated_at = ?
+                WHERE id = ?
+                """,
+                (MemoryStatus.SUPERSEDED.value, canonical_id, _dt(utc_now()), item_id),
+            )
+
 
 class ClarificationRequestRepository(BaseRepository):
     async def create(self, request: ClarificationRequest) -> ClarificationRequest:
@@ -1195,6 +1519,21 @@ class ClarificationRequestRepository(BaseRepository):
             )
         ).fetchone()
         return _clarification_from_row(row) if row else None
+
+    async def list_pending(self, limit: int = 20) -> list[ClarificationRequest]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                """
+                SELECT * FROM clarification_requests
+                WHERE status = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (ClarificationStatus.PENDING.value, limit),
+            )
+        ).fetchall()
+        return [_clarification_from_row(row) for row in rows]
 
     async def resolve(self, request_id: str, answer_text: str) -> None:
         now = utc_now()
@@ -1366,6 +1705,9 @@ def _task_from_row(row: Any) -> Task:
             if "recurrence_occurrence_at" in row.keys()
             else None
         ),
+        duration_minutes=(
+            row["duration_minutes"] if "duration_minutes" in row.keys() else None
+        ),
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )
@@ -1408,6 +1750,8 @@ def _project_from_row(row: Any) -> Project:
         last_seen_at=_parse_dt(row["last_seen_at"]),
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
+        project_type=ProjectType(row["project_type"]) if ("project_type" in row.keys() and row["project_type"]) else None,
+        parent_project_id=row["parent_project_id"] if ("parent_project_id" in row.keys() and row["parent_project_id"]) else None,
     )
 
 
@@ -1478,6 +1822,8 @@ def _memory_from_row(row: Any) -> MemoryItem:
         source_note_id=row["source_note_id"],
         project_id=row["project_id"],
         person_id=row["person_id"] if "person_id" in row.keys() else None,
+        organization_id=(row["organization_id"] if "organization_id" in row.keys() else None),
+        decision_id=row["decision_id"] if "decision_id" in row.keys() else None,
         confidence=row["confidence"],
         status=row["status"],
         source_type=row["source_type"] if "source_type" in row.keys() else "user_note",
@@ -1491,6 +1837,10 @@ def _memory_from_row(row: Any) -> MemoryItem:
         ),
         sensitivity=row["sensitivity"] if "sensitivity" in row.keys() else "normal",
         revision_of_id=row["revision_of_id"] if "revision_of_id" in row.keys() else None,
+        canonical_memory_id=(
+            row["canonical_memory_id"] if "canonical_memory_id" in row.keys() else None
+        ),
+        conflict_state=row["conflict_state"] if "conflict_state" in row.keys() else "none",
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )
