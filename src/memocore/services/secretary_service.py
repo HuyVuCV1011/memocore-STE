@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from memocore.adapters.storage.repositories import (
+    ActivityLinkRepository,
     CommitmentRepository,
     FollowUpRepository,
     MeetingRepository,
@@ -14,8 +15,13 @@ from memocore.adapters.storage.repositories import (
     ReminderRepository,
     TaskRepository,
 )
-from memocore.domain.models import EventType, MemoryBucket, MemoryKind, MemoryStatus
+from memocore.domain.models import EventType, MemoryBucket, MemoryKind, MemoryStatus, ProjectStatus, ProjectType
+from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
+from memocore.services.presentation_labels import person_note_lines, relationship_label
+
+
+PEOPLE_PAGE_SIZE = 6
 
 
 class SecretaryService:
@@ -32,6 +38,7 @@ class SecretaryService:
         commitment_repo: CommitmentRepository | None = None,
         note_repo: NoteRepository | None = None,
         event_service: EventService | None = None,
+        activity_link_repo: ActivityLinkRepository | None = None,
     ):
         self.task_repo = task_repo
         self.reminder_repo = reminder_repo
@@ -44,6 +51,7 @@ class SecretaryService:
         self.commitment_repo = commitment_repo
         self.note_repo = note_repo
         self.event_service = event_service
+        self.activity_link_repo = activity_link_repo
 
     async def today(self) -> str:
         now = datetime.now(UTC)
@@ -88,6 +96,21 @@ class SecretaryService:
                 for meeting in await self.meeting_repo.list_all()
                 if meeting.starts_at and day_start <= meeting.starts_at <= day_end
             ]
+        if meetings and due:
+            linked_meeting_ids = (
+                await self.activity_link_repo.linked_meeting_ids(
+                    [task.id for task in due]
+                )
+                if self.activity_link_repo is not None
+                else set()
+            )
+            meetings = [
+                meeting
+                for meeting in meetings
+                if meeting.id not in linked_meeting_ids
+                and not any(_meeting_duplicates_task(meeting, task) for task in due)
+            ]
+        conflicts = _schedule_conflicts(due, meetings, self.display_timezone)
         heading = title or _day_label(target_date, now.astimezone(self.display_timezone).date()).capitalize()
         lines = [f"{heading} - {_weekday_label(target_date)}, {target_date:%d/%m/%Y}"]
         if due:
@@ -106,10 +129,26 @@ class SecretaryService:
             lines.append("")
             lines.append("Lịch/meeting")
             lines.extend(_meeting_lines(meetings, self.display_timezone))
+        if conflicts:
+            lines.extend(["", "⚠️ Xung đột lịch"])
+            lines.extend(f"- {conflict}" for conflict in conflicts)
         if waiting:
             lines.append("")
             lines.append("Đang chờ hoặc bị chặn")
             lines.extend(_agenda_task_lines(waiting, display_timezone=self.display_timezone))
+        if not due and not reminders and not meetings:
+            upcoming = sorted(
+                [task for task in tasks if task.due_at and task.due_at > day_end],
+                key=lambda item: item.due_at,
+            )
+            if upcoming:
+                lines.extend(
+                    [
+                        "",
+                        "Tiếp theo",
+                        f"- {upcoming[0].title} · {_format_due(upcoming[0].due_at, self.display_timezone)}",
+                    ]
+                )
         return "\n".join(lines)
 
     async def work_dashboard(self, now: datetime | None = None) -> str:
@@ -166,42 +205,103 @@ class SecretaryService:
 
     async def projects(self, scope: str | None = None) -> str:
         projects = await self.project_repo.list_all()
-        if scope:
-            normalized_scope = _normalize_text(scope)
-            projects = [
-                project
-                for project in projects
-                if normalized_scope in _normalize_text(project.name)
-                or normalized_scope in _normalize_text(project.summary)
-            ]
-        if not projects:
-            suffix = f" liên quan đến {scope}" if scope else ""
-            return f"Projects\nEm chưa thấy project nào{suffix}."
         active_tasks = await self.task_repo.list_active()
         tasks_by_project = defaultdict(list)
         for task in active_tasks:
             tasks_by_project[task.project_id].append(task)
-        core_projects = [project for project in projects if not _is_project_idea_or_low_priority(project.name)]
-        idea_projects = [project for project in projects if _is_project_idea_or_low_priority(project.name)]
-        title = f"Projects {scope.upper()}" if scope else "Projects"
-        lines = [title, f"Em đang theo dõi {len(projects)} project/năng lực. Nhóm ý tưởng hoặc ưu tiên thấp được tách riêng để tránh lẫn với project chính."]
-        lines.append("")
-        lines.append("Đang theo dõi chính")
-        for index, project in enumerate(core_projects, 1):
-            project_tasks = tasks_by_project[project.id]
-            lines.append(f"{index}. {project.name}")
-            lines.append(f"   Task đang mở: {len(project_tasks)}")
-            next_task = _next_dated_task(project_tasks)
-            if next_task:
-                lines.append(
-                    f"   Tiếp theo: {_format_due(next_task.due_at, self.display_timezone)} - {next_task.title}"
-                )
-        if idea_projects:
+
+        if scope:
+            normalized_scope = _normalize_text(scope)
+            matching_projects = [
+                project
+                for project in projects
+                if normalized_scope in _normalize_text(project.name)
+                or (project.summary and normalized_scope in _normalize_text(project.summary))
+            ]
+            if not matching_projects:
+                return f"Projects\nEm chưa thấy project nào liên quan đến {scope}."
+            lines = [f"Projects {scope.upper()}"]
+            for index, project in enumerate(matching_projects, 1):
+                p_tasks = tasks_by_project[project.id]
+                task_suffix = f" - {len(p_tasks)} task mở" if len(p_tasks) > 0 else ""
+                lines.append(f"{index}. {project.name}{task_suffix}")
+            return "\n".join(lines)
+
+        # Build dynamic tree
+        non_archived = [p for p in projects if p.status != ProjectStatus.ARCHIVED]
+        ideas_or_review = [p for p in non_archived if p.status in (ProjectStatus.INCUBATING, ProjectStatus.REVIEW)]
+        active_projects = [p for p in non_archived if p.status not in (ProjectStatus.INCUBATING, ProjectStatus.REVIEW)]
+
+        parent_map = defaultdict(list)
+        projects_by_id = {p.id: p for p in active_projects}
+        for p in active_projects:
+            if p.parent_project_id and p.parent_project_id in projects_by_id:
+                parent_map[p.parent_project_id].append(p)
+
+        roots = [p for p in active_projects if not p.parent_project_id or p.parent_project_id not in projects_by_id]
+        portfolio_roots = [p for p in roots if p.project_type == ProjectType.PORTFOLIO]
+        independent_roots = [p for p in roots if p.project_type != ProjectType.PORTFOLIO]
+
+        def render_project_node(proj: Project, level: int, parent_names: list[str]) -> list[str]:
+            clean_name = proj.name
+            for p_name in parent_names:
+                p_name_lower = p_name.lower()
+                if clean_name.lower().startswith(p_name_lower):
+                    clean_name = clean_name[len(p_name):].strip()
+                    clean_name = clean_name.lstrip("/- :").strip()
+            for p_name in parent_names:
+                if p_name.lower() == "ste":
+                    for extra in ["ste edu", "ste data", "ste ai"]:
+                        if clean_name.lower().startswith(extra):
+                            clean_name = clean_name[len(extra):].strip()
+                            clean_name = clean_name.lstrip("/- :").strip()
+
+            p_tasks = tasks_by_project[proj.id]
+            task_suffix = f" ({len(p_tasks)})" if len(p_tasks) > 0 else ""
+            indent = "  " * level
+            node_lines = [f"{indent}- {clean_name}{task_suffix}"]
+
+            children = parent_map.get(proj.id, [])
+            children.sort(key=lambda x: x.name)
+            for child in children:
+                node_lines.extend(render_project_node(child, level + 1, parent_names + [proj.name]))
+            return node_lines
+
+        lines = ["Projects"]
+
+        # 1. Render Portfolios
+        portfolio_roots.sort(key=lambda x: x.name)
+        for root in portfolio_roots:
             lines.append("")
-            lines.append("Ý tưởng / cần review")
-            for index, project in enumerate(idea_projects, 1):
-                project_tasks = tasks_by_project[project.id]
-                lines.append(f"{index}. {project.name} - {len(project_tasks)} task mở")
+            lines.append(root.name)
+            children = parent_map.get(root.id, [])
+            children.sort(key=lambda x: x.name)
+            for child in children:
+                lines.extend(render_project_node(child, 0, [root.name]))
+
+        # 2. Render Independents
+        if independent_roots:
+            lines.append("")
+            lines.append("Independent")
+            independent_roots.sort(key=lambda x: x.name)
+            for root in independent_roots:
+                lines.extend(render_project_node(root, 0, []))
+
+        # 3. Render Ideas / Needs review
+        if ideas_or_review:
+            lines.append("")
+            lines.append("Ideas / Needs review")
+            ideas_or_review.sort(key=lambda x: (x.status.value if x.status else "", x.name))
+            for p in ideas_or_review:
+                p_tasks = tasks_by_project[p.id]
+                task_suffix = f" ({len(p_tasks)})" if len(p_tasks) > 0 else ""
+                clean_name = p.name
+                if clean_name.lower().startswith("ste"):
+                    clean_name = clean_name[3:].strip()
+                    clean_name = clean_name.lstrip("/- :").strip()
+                status_label = "review" if p.status == ProjectStatus.REVIEW else "incubating"
+                lines.append(f"- {clean_name} ({status_label}){task_suffix}")
+
         return "\n".join(lines)
 
     async def ordered_task_ids_for_view(self, source_view: str) -> list[str]:
@@ -239,12 +339,15 @@ class SecretaryService:
         if len(matches) > 1:
             return _ambiguous_entity_message("project", matches)
         project = matches[0]
+        project_ids = await self._get_descendant_ids(project.id)
+        all_projects = {p.id: p for p in await self.project_repo.list_all()}
+        project_names = [all_projects[pid].name for pid in project_ids if pid in all_projects]
         tasks = [
             task
             for task in await self.task_repo.list_active()
-            if task.project_id == project.id
-            or _normalize_text(project.name) in _normalize_text(task.title)
-            or _normalize_text(project.name) in _normalize_text(task.description)
+            if task.project_id in project_ids
+            or any(_normalize_text(name) in _normalize_text(task.title) for name in project_names)
+            or any(_normalize_text(name) in _normalize_text(task.description) for name in project_names)
         ]
         lines = [f"Project {project.name}", "Task đang mở"]
         if tasks:
@@ -323,6 +426,7 @@ class SecretaryService:
                 overdue_followups=overdue_followups,
                 due_commitments=due_commitments,
                 display_timezone=self.display_timezone,
+                reference_date=local_now.date(),
             )
         )
         lines.extend(["", "Điểm cần chú ý"])
@@ -336,11 +440,16 @@ class SecretaryService:
             due_commitments=due_commitments,
             upcoming_top=upcoming_top,
             display_timezone=self.display_timezone,
+            reference_date=local_now.date(),
         )
         lines.extend(signals or ["- Chưa thấy deadline, meeting hay open loop cấp bách hôm nay."])
         lines.extend(["", "Nên làm tiếp"])
         if top:
-            lines.extend(_briefing_action_lines(top, self.display_timezone))
+            lines.extend(
+                _briefing_action_lines(
+                    top, self.display_timezone, reference_date=local_now.date()
+                )
+            )
         elif meetings:
             lines.append(f"1. Chuẩn bị trước cho meeting “{meetings[0].title}”.")
         elif followups:
@@ -355,16 +464,70 @@ class SecretaryService:
 
     async def people(self) -> str:
         if self.person_repo is None:
-            return "People\nPeople repository chưa được cấu hình."
+            return "Nhân sự\nKho nhân sự chưa được cấu hình."
         people = await self.person_repo.list_all()
         if not people:
-            return "People\nChưa có person nào."
-        lines = ["People"]
-        for index, person in enumerate(people, 1):
-            aliases = f" | aliases: {', '.join(person.aliases)}" if person.aliases else ""
-            relationship = f" | {person.relationship}" if person.relationship else ""
-            lines.append(f"{index}. {person.display_name}{relationship}{aliases}")
+            return "Nhân sự\nChưa có ai trong dữ liệu."
+        visible = people[:PEOPLE_PAGE_SIZE]
+        lines = ["Nhân sự"]
+        for index, person in enumerate(visible, 1):
+            relation = relationship_label(person.relationship)
+            lines.append(f"{index}. {person.display_name}")
+            if relation:
+                lines.append(f"   {relation}")
+        if len(people) > len(visible):
+            lines.append(
+                f"\nĐang hiện {len(visible)}/{len(people)} người. Mở /context và dùng nút Sau để xem tiếp."
+            )
         return "\n".join(lines)
+
+    async def people_view(self, page: int = 0) -> AssistantResponse:
+        if self.person_repo is None:
+            return AssistantResponse(title="Nhân sự", summary="Kho nhân sự chưa được cấu hình.")
+        people = await self.person_repo.list_all()
+        total_pages = max(1, (len(people) + PEOPLE_PAGE_SIZE - 1) // PEOPLE_PAGE_SIZE)
+        page = min(max(page, 0), total_pages - 1)
+        start = page * PEOPLE_PAGE_SIZE
+        visible = people[start : start + PEOPLE_PAGE_SIZE]
+        lines = [
+            f"{start + index}. {person.display_name} · {relationship_label(person.relationship)}"
+            for index, person in enumerate(visible, 1)
+        ] or ["Chưa có ai trong dữ liệu."]
+        actions: list[AssistantAction] = []
+        for index, person in enumerate(visible):
+            actions.append(
+                AssistantAction(
+                    label=person.display_name[:32],
+                    action_id=f"nav:context:person:{person.id}",
+                    row=index,
+                )
+            )
+        nav_row = len(visible)
+        if page > 0:
+            actions.append(
+                AssistantAction(
+                    label="‹ Trước",
+                    action_id=f"nav:context:people:{page - 1}",
+                    row=nav_row,
+                )
+            )
+        if page + 1 < total_pages:
+            actions.append(
+                AssistantAction(
+                    label="Sau ›",
+                    action_id=f"nav:context:people:{page + 1}",
+                    row=nav_row,
+                )
+            )
+        actions.append(
+            AssistantAction(label="Quay lại", action_id="nav:context", row=nav_row + 1)
+        )
+        return AssistantResponse(
+            title="Nhân sự",
+            summary=f"{len(people)} người · trang {page + 1}/{total_pages}",
+            sections=[AssistantSection(lines=lines)],
+            actions=actions,
+        )
 
     async def commitments(self) -> str:
         if self.commitment_repo is None:
@@ -379,13 +542,23 @@ class SecretaryService:
 
     async def person_context(self, query: str) -> str:
         if self.person_repo is None:
-            return "Person context\nPeople repository chưa được cấu hình."
+            return "Hồ sơ nhân sự\nKho nhân sự chưa được cấu hình."
         matches = await self.person_repo.find_matches(query)
         if not matches:
-            return f"Person {query}\nEm chưa thấy person này trong dữ liệu."
+            return f"Hồ sơ · {query}\nEm chưa thấy người này trong dữ liệu."
         if len(matches) > 1:
             return _ambiguous_entity_message("person", matches)
-        person = matches[0]
+        return await self._render_person_context(matches[0])
+
+    async def person_context_by_id(self, person_id: str) -> str:
+        if self.person_repo is None:
+            return "Hồ sơ nhân sự\nKho nhân sự chưa được cấu hình."
+        person = await self.person_repo.get_by_id(person_id)
+        if person is None:
+            return "Hồ sơ nhân sự\nNgười này không còn trong dữ liệu."
+        return await self._render_person_context(person)
+
+    async def _render_person_context(self, person) -> str:
         tasks = await self.task_repo.list_active_by_person(person.id)
         followups = await self.followup_repo.list_open_by_person(person.id)
         memories = await self.memory_repo.list_active_by_person(person.id)
@@ -399,39 +572,50 @@ class SecretaryService:
             if self.meeting_repo is not None
             else []
         )
-        note_map = await self._note_map(
+        linked_meeting_ids = (
+            await self.activity_link_repo.linked_meeting_ids([task.id for task in tasks])
+            if self.activity_link_repo is not None
+            else set()
+        )
+        meetings = [
+            meeting
+            for meeting in meetings
+            if meeting.id not in linked_meeting_ids
+            and not any(_meeting_duplicates_task(meeting, task) for task in tasks)
+        ]
+
+        lines = [f"Hồ sơ · {person.display_name}"]
+        if person.relationship:
+            lines.append(f"Quan hệ: {relationship_label(person.relationship)}")
+        if person.notes:
+            lines.extend(f"- {line}" for line in person_note_lines(person.notes))
+        lines.extend(
             [
-                *(item.source_note_id for item in tasks),
-                *(item.source_note_id for item in followups if item.source_note_id),
-                *(item.source_note_id for item in memories),
-                *(item.source_note_id for item in commitments if item.source_note_id),
-                *(item.source_note_id for item in meetings),
+                "",
+                (
+                    f"Tổng quan: {len(tasks)} task · {len(commitments)} cam kết · "
+                    f"{len(followups)} follow-up · {len(meetings)} lịch riêng · "
+                    f"{len(memories)} ghi nhớ."
+                ),
             ]
         )
-        lines = [f"Person {person.display_name}"]
-        if person.relationship:
-            lines.append(f"Quan hệ: {person.relationship}")
-        if person.notes:
-            lines.append(f"Ghi chú: {person.notes}")
-        lines.append("")
-        lines.append(f"Tổng quan: {len(tasks)} task, {len(commitments)} commitment, {len(followups)} follow-up, {len(meetings)} meeting, {len(memories)} memory.")
-        lines.append("")
-        lines.append("Commitments")
-        lines.extend(_commitment_lines(commitments, self.display_timezone, note_map) if commitments else ["Không có commitment đang mở."])
-        lines.append("")
-        lines.append("Task liên quan")
-        lines.extend(_task_lines(tasks, self.display_timezone, note_map) if tasks else ["Không có task đang mở."])
-        lines.append("")
-        lines.append("Follow-up")
-        lines.extend(_followup_lines(followups, self.display_timezone, note_map) if followups else ["Không có follow-up đang mở."])
+        if tasks:
+            lines.extend(["", "Việc đang mở"])
+            lines.extend(_task_lines(tasks, self.display_timezone))
+        if commitments:
+            lines.extend(["", "Cam kết"])
+            lines.extend(_commitment_lines(commitments, self.display_timezone))
+        if followups:
+            lines.extend(["", "Follow-up"])
+            lines.extend(_followup_lines(followups, self.display_timezone))
         if meetings:
-            lines.append("")
-            lines.append("Meeting gần đây/sắp tới")
-            lines.extend(_meeting_lines(meetings[:5], self.display_timezone, note_map))
+            lines.extend(["", "Lịch riêng gần đây/sắp tới"])
+            lines.extend(_meeting_lines(meetings[:5], self.display_timezone))
         if memories:
-            lines.append("")
-            lines.append("Memory liên quan")
-            lines.extend(_memory_lines(memories[:8], note_map))
+            lines.extend(["", "Ghi nhớ liên quan"])
+            lines.extend(_memory_lines(memories[:8]))
+        if not any((tasks, commitments, followups, meetings, memories)):
+            lines.extend(["", "Chưa có việc, cam kết hoặc lịch đang mở với người này."])
         return "\n".join(lines)
 
     async def project_context(self, query: str) -> str:
@@ -441,19 +625,20 @@ class SecretaryService:
         if len(matches) > 1:
             return _ambiguous_entity_message("project", matches)
         project = matches[0]
-        tasks = await self.task_repo.list_active_by_project(project.id)
-        followups = await self.followup_repo.list_open_by_project(project.id)
-        memories = await self.memory_repo.list_active_by_project(project.id)
-        commitments = (
-            await self.commitment_repo.list_open_by_project(project.id)
-            if self.commitment_repo is not None
-            else []
-        )
-        meetings = (
-            await self.meeting_repo.list_by_project(project.id)
-            if self.meeting_repo is not None
-            else []
-        )
+        project_ids = await self._get_descendant_ids(project.id)
+        tasks = []
+        followups = []
+        memories = []
+        commitments = []
+        meetings = []
+        for pid in project_ids:
+            tasks.extend(await self.task_repo.list_active_by_project(pid))
+            followups.extend(await self.followup_repo.list_open_by_project(pid))
+            memories.extend(await self.memory_repo.list_active_by_project(pid))
+            if self.commitment_repo is not None:
+                commitments.extend(await self.commitment_repo.list_open_by_project(pid))
+            if self.meeting_repo is not None:
+                meetings.extend(await self.meeting_repo.list_by_project(pid))
         note_map = await self._note_map(
             [
                 *(item.source_note_id for item in tasks),
@@ -504,11 +689,20 @@ class SecretaryService:
             meetings = await self.meeting_repo.list_by_person(person.id) if self.meeting_repo else []
         elif project is not None:
             heading = f"Meeting prep cho project {project.name}"
-            tasks = await self.task_repo.list_active_by_project(project.id)
-            followups = await self.followup_repo.list_open_by_project(project.id)
-            memories = await self.memory_repo.list_active_by_project(project.id)
-            commitments = await self.commitment_repo.list_open_by_project(project.id) if self.commitment_repo else []
-            meetings = await self.meeting_repo.list_by_project(project.id) if self.meeting_repo else []
+            project_ids = await self._get_descendant_ids(project.id)
+            tasks = []
+            followups = []
+            memories = []
+            commitments = []
+            meetings = []
+            for pid in project_ids:
+                tasks.extend(await self.task_repo.list_active_by_project(pid))
+                followups.extend(await self.followup_repo.list_open_by_project(pid))
+                memories.extend(await self.memory_repo.list_active_by_project(pid))
+                if self.commitment_repo is not None:
+                    commitments.extend(await self.commitment_repo.list_open_by_project(pid))
+                if self.meeting_repo is not None:
+                    meetings.extend(await self.meeting_repo.list_by_project(pid))
         else:
             return f"Meeting prep {query}\nEm chưa tìm thấy person hoặc project khớp."
         note_map = await self._note_map(
@@ -546,6 +740,18 @@ class SecretaryService:
         if projects:
             return await self.project_context(projects[0].name)
         return f"Context {query}\nEm chưa tìm thấy person hoặc project khớp."
+
+    async def _get_descendant_ids(self, project_id: str) -> list[str]:
+        descendant_ids = [project_id]
+        queue = [project_id]
+        while queue:
+            curr_id = queue.pop(0)
+            children = await self.project_repo.list_children(curr_id)
+            for child in children:
+                if child.id not in descendant_ids:
+                    descendant_ids.append(child.id)
+                    queue.append(child.id)
+        return descendant_ids
 
     async def _find_project(self, query: str):
         matches = await self.project_repo.find_matches(query)
@@ -731,6 +937,7 @@ def _briefing_assessment(
     overdue_followups,
     due_commitments,
     display_timezone: tzinfo,
+    reference_date=None,
 ) -> str:
     pressure = (
         len(overdue) * 3
@@ -766,7 +973,7 @@ def _briefing_assessment(
         task = due_today[0]
         return (
             f"Việc cần chốt hôm nay là “{task.title}”, hạn "
-            f"{_format_due(task.due_at, display_timezone)}. Khối lượng hiện vẫn ở mức "
+            f"{_format_due(task.due_at, display_timezone, reference_date)}. Khối lượng hiện vẫn ở mức "
             "kiểm soát được nếu anh bảo vệ thời gian cho việc này."
         )
     if pressure >= 5:
@@ -791,6 +998,7 @@ def _briefing_signals(
     due_commitments,
     upcoming_top,
     display_timezone: tzinfo,
+    reference_date=None,
 ) -> list[str]:
     signals: list[str] = []
     if overdue:
@@ -803,11 +1011,11 @@ def _briefing_signals(
         signals.append(f"- {len(due_commitments)} cam kết đến hạn hoặc đã trễ, nên phản hồi sớm.")
     if due_today:
         signals.append(
-            f"- Hôm nay: {_task_due_list(due_today, display_timezone)}."
+            f"- Hôm nay: {_task_due_list(due_today, display_timezone, reference_date)}."
         )
     if upcoming_top:
         signals.append(
-            f"- Sắp tới: {_task_due_list(upcoming_top, display_timezone)}."
+            f"- Sắp tới: {_task_due_list(upcoming_top, display_timezone, reference_date)}."
         )
     if meetings:
         first = min(
@@ -832,18 +1040,20 @@ def _task_title_list(tasks) -> str:
     return ", ".join(titles[:-1]) + f" và {titles[-1]}"
 
 
-def _task_due_list(tasks, display_timezone: tzinfo) -> str:
+def _task_due_list(tasks, display_timezone: tzinfo, reference_date=None) -> str:
     return "; ".join(
-        f"“{task.title}” hạn {_format_due(task.due_at, display_timezone)}"
+        f"“{task.title}” hạn {_format_due(task.due_at, display_timezone, reference_date)}"
         for task in tasks
     )
 
 
-def _briefing_action_lines(scored_tasks, display_timezone: tzinfo) -> list[str]:
+def _briefing_action_lines(
+    scored_tasks, display_timezone: tzinfo, reference_date=None
+) -> list[str]:
     lines: list[str] = []
     for index, (task, _score, reasons) in enumerate(scored_tasks, 1):
         reason = _briefing_reason(reasons)
-        due = _format_due(task.due_at, display_timezone)
+        due = _format_due(task.due_at, display_timezone, reference_date)
         lines.append(
             f"{index}. {task.title}{_task_recurrence_badge(task)} — {reason}; hạn {due}."
         )
@@ -869,7 +1079,7 @@ def _briefing_reason(reasons: list[str]) -> str:
 
 
 def _ambiguous_entity_message(entity_type: str, matches) -> str:
-    label = "person" if entity_type == "person" else "project"
+    label = "người" if entity_type == "person" else "dự án"
     names = [
         match.display_name if entity_type == "person" else match.name
         for match in matches
@@ -881,9 +1091,9 @@ def _ambiguous_entity_message(entity_type: str, matches) -> str:
 def _ambiguous_prep_message(people, projects) -> str:
     lines: list[str] = []
     for person in people:
-        lines.append(f"- Person: {person.display_name}")
+        lines.append(f"- Người: {person.display_name}")
     for project in projects:
-        lines.append(f"- Project: {project.name}")
+        lines.append(f"- Dự án: {project.name}")
     return "Em thấy nhiều kết quả cùng khớp. Anh chọn tên đầy đủ giúp em:\n" + "\n".join(lines)
 
 
@@ -894,7 +1104,6 @@ def _task_lines(tasks, display_timezone: tzinfo = UTC, note_map: dict | None = N
         details.append(f"Trạng thái: {_label_status(task.status)}")
         if task.priority:
             details.append(f"Ưu tiên: {_label_priority(task.priority)}")
-        details.append(_evidence("task", task.source_note_id, task.confidence, note_map))
         lines.append(f"{index}. {task.title}{_task_recurrence_badge(task)}")
         lines.append(f"   {' | '.join(details)}")
     return lines
@@ -902,7 +1111,7 @@ def _task_lines(tasks, display_timezone: tzinfo = UTC, note_map: dict | None = N
 
 def _agenda_task_lines(tasks, display_timezone: tzinfo = UTC) -> list[str]:
     return [
-        f"{index}. {task.title}{_task_recurrence_badge(task)} — hạn {_format_due(task.due_at, display_timezone)}"
+        f"{index}. {_format_due(task.due_at, display_timezone)} · {task.title}{_task_recurrence_badge(task)}"
         for index, task in enumerate(tasks, 1)
     ]
 
@@ -929,11 +1138,13 @@ def _format_time(value: datetime | None, display_timezone: tzinfo) -> str:
     return value.astimezone(display_timezone).strftime("%H:%M")
 
 
-def _format_due(value: datetime | None, display_timezone: tzinfo) -> str:
+def _format_due(
+    value: datetime | None, display_timezone: tzinfo, reference_date=None
+) -> str:
     if value is None:
         return "chưa có hạn"
     local_value = value.astimezone(display_timezone)
-    today = datetime.now(UTC).astimezone(display_timezone).date()
+    today = reference_date or datetime.now(UTC).astimezone(display_timezone).date()
     day_label = _day_label(local_value.date(), today)
     return f"{_format_time(value, display_timezone)} {day_label}"
 
@@ -957,8 +1168,6 @@ def _followup_lines(followups, display_timezone: tzinfo, note_map: dict | None =
     lines: list[str] = []
     for index, item in enumerate(followups, 1):
         details = [f"Hạn: {_format_due(item.due_at, display_timezone)}"]
-        if item.source_note_id:
-            details.append(_evidence("follow-up", item.source_note_id, None, note_map))
         lines.append(f"{index}. {item.title}")
         lines.append(f"   {' | '.join(details)}")
     return lines
@@ -971,8 +1180,6 @@ def _commitment_lines(commitments, display_timezone: tzinfo, note_map: dict | No
             f"Chiều: {_label_commitment_direction(item.direction)}",
             f"Hạn: {_format_due(item.due_at, display_timezone)}",
         ]
-        if item.source_note_id:
-            details.append(_evidence("commitment", item.source_note_id, None, note_map))
         lines.append(f"{index}. {item.title}")
         lines.append(f"   {' | '.join(details)}")
     return lines
@@ -982,7 +1189,6 @@ def _memory_lines(memories, note_map: dict | None = None) -> list[str]:
     lines = []
     for index, item in enumerate(memories, 1):
         lines.append(f"{index}. [{item.bucket}/{item.kind}] {item.content}")
-        lines.append(f"   {_evidence('memory', item.source_note_id, item.confidence, note_map)}")
     return lines
 
 
@@ -991,8 +1197,45 @@ def _meeting_lines(meetings, display_timezone: tzinfo, note_map: dict | None = N
     for index, item in enumerate(meetings, 1):
         starts = _format_due(item.starts_at, display_timezone)
         lines.append(f"{index}. {item.title}")
-        lines.append(f"   Bắt đầu: {starts} | {_evidence('meeting', item.source_note_id, None, note_map)}")
+        lines.append(f"   Bắt đầu: {starts}")
     return lines
+
+
+def _schedule_conflicts(tasks, meetings, display_timezone: tzinfo) -> list[str]:
+    intervals: list[tuple[str, datetime, datetime]] = []
+    for task in tasks:
+        if task.due_at is None:
+            continue
+        end = task.due_at + timedelta(minutes=task.duration_minutes or 30)
+        intervals.append((task.title, task.due_at, end))
+    for meeting in meetings:
+        if meeting.starts_at is None:
+            continue
+        end = meeting.ends_at or meeting.starts_at + timedelta(minutes=60)
+        intervals.append((meeting.title, meeting.starts_at, end))
+    intervals.sort(key=lambda item: item[1])
+    conflicts: list[str] = []
+    for index, current in enumerate(intervals):
+        for other in intervals[index + 1 :]:
+            if other[1] >= current[2]:
+                break
+            start = max(current[1], other[1]).astimezone(display_timezone)
+            conflicts.append(
+                f"{start:%H:%M}: “{current[0]}” trùng với “{other[0]}”"
+            )
+            if len(conflicts) >= 3:
+                return conflicts
+    return conflicts
+
+
+def _meeting_duplicates_task(meeting, task) -> bool:
+    if meeting.starts_at is None or task.due_at is None:
+        return False
+    if abs((meeting.starts_at - task.due_at).total_seconds()) > 60:
+        return False
+    if meeting.person_id and task.person_id and meeting.person_id != task.person_id:
+        return False
+    return meeting.source_note_id == task.source_note_id
 
 
 def _evidence(kind: str, source_note_id: str | None, confidence: float | None, note_map: dict | None) -> str:

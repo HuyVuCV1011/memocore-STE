@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from memocore.adapters.storage.repositories import (
     MemoryItemRepository,
+    NoteRepository,
     PersonRepository,
     ProjectRepository,
 )
@@ -17,7 +18,9 @@ from memocore.services.event_service import EventService
 
 MEMORY_PAGE_SIZE = 4
 _STALE_AFTER = timedelta(days=120)
-MEMORY_TOPICS = ("review", "stale", "self", "goals", "people", "projects", "mindx", "ste")
+MEMORY_TOPICS = (
+    "review", "conflicts", "stale", "self", "goals", "people", "projects", "mindx", "ste"
+)
 
 TOPIC_LABELS = {
     "self": "Bản thân",
@@ -27,6 +30,7 @@ TOPIC_LABELS = {
     "people": "Con người",
     "projects": "Dự án",
     "review": "Cần xác nhận",
+    "conflicts": "Đang xung đột",
     "stale": "Có thể lỗi thời",
 }
 
@@ -38,11 +42,13 @@ class MemoryViewService:
         project_repo: ProjectRepository,
         person_repo: PersonRepository,
         event_service: EventService | None = None,
+        note_repo: NoteRepository | None = None,
     ):
         self.memory_repo = memory_repo
         self.project_repo = project_repo
         self.person_repo = person_repo
         self.event_service = event_service
+        self.note_repo = note_repo
 
     async def overview(self) -> AssistantResponse:
         memories = await self._visible_memories()
@@ -98,7 +104,13 @@ class MemoryViewService:
         page = min(max(page, 0), total_pages - 1)
         start = page * MEMORY_PAGE_SIZE
         visible_items = selected[start : start + MEMORY_PAGE_SIZE]
-        page_items = _memory_card_lines(visible_items, topic)
+        note_map = {}
+        if self.note_repo is not None:
+            for item in visible_items:
+                note = await self.note_repo.get_by_id(item.source_note_id)
+                if note is not None:
+                    note_map[item.source_note_id] = note
+        page_items = _memory_card_lines(visible_items, topic, note_map)
 
         if not page_items:
             page_items = ["Chưa có ghi nhớ phù hợp trong chủ đề này."]
@@ -122,7 +134,7 @@ class MemoryViewService:
                 )
             )
         actions.append(AssistantAction(label="Quay lại", action_id="mem:o", row=1))
-        if topic in {"review", "stale"}:
+        if topic in {"review", "conflicts", "stale"}:
             for index, item in enumerate(visible_items, 2):
                 actions.append(
                     AssistantAction(
@@ -148,6 +160,14 @@ class MemoryViewService:
                 actions.append(
                     AssistantAction(label="Gộp", action_id=f"mem:g:{item.id}", row=index)
                 )
+                if item.conflict_state == "conflict":
+                    actions.append(
+                        AssistantAction(
+                            label="Chọn chuẩn",
+                            action_id=f"mem:x:{item.id}:{topic}:{page}",
+                            row=index,
+                        )
+                    )
 
         return AssistantResponse(
             title=f"Ghi nhớ: {TOPIC_LABELS[topic]}",
@@ -166,6 +186,8 @@ class MemoryViewService:
         memories = await self._visible_memories()
         if topic == "review":
             return await self._review_memories()
+        if topic == "conflicts":
+            return [item for item in memories if item.conflict_state == "conflict"]
         if topic == "stale":
             return await self._stale_memories()
         projects = await self.project_repo.list_all()
@@ -251,6 +273,34 @@ class MemoryViewService:
             actions=[AssistantAction(label="Quay lại", action_id="mem:t:review:0")],
         )
 
+    async def select_canonical(self, item_id: str) -> AssistantResponse | None:
+        item = await self.memory_repo.get_by_id(item_id)
+        if item is None:
+            return None
+        all_items = await self.memory_repo.list_all()
+        related_ids = [
+            candidate.id
+            for candidate in all_items
+            if candidate.id == item.id
+            or candidate.revision_of_id == item.id
+            or item.revision_of_id == candidate.id
+            or (
+                item.revision_of_id is not None
+                and candidate.revision_of_id == item.revision_of_id
+            )
+        ]
+        await self.memory_repo.select_canonical(item.id, related_ids)
+        await self._log(
+            EventType.MEMORY_CANONICAL_SELECTED,
+            item.id,
+            {"related_item_ids": related_ids, "source": "telegram_review"},
+        )
+        return AssistantResponse(
+            title="Đã chọn memory chuẩn",
+            summary=item.content,
+            actions=[AssistantAction(label="Quay lại", action_id="mem:t:conflicts:0")],
+        )
+
     async def stale(self, page: int = 0) -> AssistantResponse:
         response = await self.topic("stale", page)
         return response or AssistantResponse(title="Memory stale", summary="Không có memory stale.")
@@ -261,6 +311,7 @@ class MemoryViewService:
             item
             for item in await self._visible_memories()
             if str(item.status) == MemoryStatus.CANDIDATE.value
+            or item.conflict_state == "conflict"
             or (
                 (item.valid_until is None or item.valid_until > now)
                 and (
@@ -299,12 +350,18 @@ def _topic_actions() -> list[AssistantAction]:
     ]
 
 
-def _memory_card_lines(items: list[MemoryItem], topic: str) -> list[str]:
+def _memory_card_lines(items: list[MemoryItem], topic: str, note_map: dict | None = None) -> list[str]:
     lines: list[str] = []
     for index, item in enumerate(items, 1):
         lines.append(f"{index}. {_compact_content(item.content)}")
+        if topic in {"review", "conflicts", "stale"}:
+            note = (note_map or {}).get(item.source_note_id)
+            source = _compact_content(note.raw_text, 90) if note is not None else item.source_note_id
+            lines.append(f"   Nguồn: {source} · Tin cậy: {round(item.confidence * 100)}%")
         if topic == "review":
             lines.append(f"   Cần duyệt vì {_review_reason(item)}.")
+        elif topic == "conflicts":
+            lines.append("   Xung đột với một claim cùng chủ đề; cần chọn phiên bản chuẩn.")
         elif topic == "stale":
             lines.append(f"   {_stale_reason(item)}.")
     return lines

@@ -10,6 +10,7 @@ from telegram.ext import Application
 
 from memocore.adapters.llm.provider_factory import create_provider_with_fallback
 from memocore.adapters.storage.repositories import (
+    ActivityLinkRepository,
     ClarificationRequestRepository,
     ChatContextRepository,
     CommitmentRepository,
@@ -26,6 +27,7 @@ from memocore.adapters.storage.repositories import (
 )
 from memocore.adapters.storage.knowledge_repositories import (
     DecisionRepository,
+    KnowledgeRelationRepository,
     OrganizationRepository,
 )
 from memocore.adapters.storage.sqlite import Database
@@ -47,6 +49,10 @@ from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
 from memocore.services.reference_resolver import ReferenceResolver
 from memocore.services.task_operation_service import TaskOperationService
+from memocore.services.activity_reconciliation_service import (
+    ActivityReconciliationService,
+)
+from memocore.services.review_service import ReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +75,32 @@ async def create_app(settings: Settings | None = None) -> Application:
     project_repo = ProjectRepository(database)
     person_repo = PersonRepository(database)
     meeting_repo = MeetingRepository(database)
+    activity_link_repo = ActivityLinkRepository(database)
     followup_repo = FollowUpRepository(database)
     memory_repo = MemoryItemRepository(database)
     event_repo = EventLogRepository(database)
     commitment_repo = CommitmentRepository(database)
     organization_repo = OrganizationRepository(database)
     decision_repo = DecisionRepository(database)
+    knowledge_relation_repo = KnowledgeRelationRepository(database)
 
     event_service = EventService(event_repo)
-    task_operation_service = TaskOperationService(task_repo, event_service)
+    activity_reconciliation_service = ActivityReconciliationService(
+        task_repo,
+        meeting_repo,
+        person_repo,
+        project_repo,
+        activity_link_repo,
+        event_service,
+    )
+    repaired_activities = await activity_reconciliation_service.repair_legacy_renames()
+    if repaired_activities:
+        logger.info("Reconciled %s legacy renamed activities", repaired_activities)
+    task_operation_service = TaskOperationService(
+        task_repo,
+        event_service,
+        activity_reconciliation_service,
+    )
     provider = create_provider_with_fallback(settings.model, settings.fallback)
     extraction_service = ExtractionService(provider, temperature=settings.model.temperature)
     intent_classifier_service = IntentClassifierService(provider, temperature=settings.model.temperature)
@@ -93,9 +116,12 @@ async def create_app(settings: Settings | None = None) -> Application:
         reminder_repo,
         organization_repo,
         decision_repo,
+        knowledge_relation_repo,
     )
     memory_service = MemoryService(memory_repo, event_service)
-    memory_view_service = MemoryViewService(memory_repo, project_repo, person_repo, event_service)
+    memory_view_service = MemoryViewService(
+        memory_repo, project_repo, person_repo, event_service, note_repo
+    )
     reminder_service = ReminderService(reminder_repo, event_service)
     clarification_service = ClarificationService(
         clarification_repo,
@@ -121,6 +147,8 @@ async def create_app(settings: Settings | None = None) -> Application:
         commitment_repo,
         organization_repo,
         decision_repo,
+        knowledge_relation_repo,
+        activity_reconciliation_service,
     )
     secretary_service = SecretaryService(
         task_repo,
@@ -134,16 +162,24 @@ async def create_app(settings: Settings | None = None) -> Application:
         commitment_repo=commitment_repo,
         note_repo=note_repo,
         event_service=event_service,
+        activity_link_repo=activity_link_repo,
     )
     work_action_service = WorkActionService(
         task_repo,
         reminder_repo,
         event_service,
         display_timezone=ZoneInfo(settings.user_timezone),
+        task_operation_service=task_operation_service,
     )
     entity_confirmation_service = EntityConfirmationService(
         person_repo,
         project_repo,
+        event_service,
+    )
+    review_service = ReviewService(
+        memory_repo,
+        task_repo,
+        clarification_repo,
         event_service,
     )
     reference_resolver = ReferenceResolver(
@@ -177,6 +213,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         memory_view_service,
         work_action_service,
         entity_confirmation_service,
+        review_service,
     )
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(

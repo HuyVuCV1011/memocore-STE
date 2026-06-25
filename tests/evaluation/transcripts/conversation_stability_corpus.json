@@ -1,0 +1,139 @@
+{
+  "transcripts": [
+    {"name":"query today command","steps":[{"text":"/today","expected_intent":"query_today","expected_no_durable_writes":true}]},
+    {"name":"query today natural","steps":[{"text":"Hôm nay tôi cần làm gì?","expected_intent":"query_today","expected_no_durable_writes":true}]},
+    {"name":"query tomorrow command","steps":[{"text":"/tomorrow","expected_intent":"query_tomorrow","expected_no_durable_writes":true}]},
+    {"name":"query tomorrow natural","steps":[{"text":"Ngày mai tôi cần làm gì?","expected_intent":"query_tomorrow","expected_no_durable_writes":true}]},
+    {"name":"query tasks command","steps":[{"text":"/tasks","expected_intent":"query_tasks","expected_no_durable_writes":true}]},
+    {"name":"query tasks natural vi","steps":[{"text":"Tôi đang có task gì?","expected_intent":"query_tasks","expected_no_durable_writes":true}]},
+    {"name":"query tasks natural en","steps":[{"text":"What open tasks do I have?","expected_intent":"query_tasks","expected_no_durable_writes":true}]},
+    {"name":"query reminders command","steps":[{"text":"/reminders","expected_intent":"query_reminders","expected_no_durable_writes":true}]},
+    {"name":"query reminders natural","steps":[{"text":"Cho tôi xem lịch nhắc","expected_intent":"query_reminders","expected_no_durable_writes":true}]},
+    {"name":"query projects command","steps":[{"text":"/projects","expected_intent":"query_projects","expected_no_durable_writes":true}]},
+    {"name":"query people command","steps":[{"text":"/people","expected_intent":"query_people","expected_no_durable_writes":true}]},
+    {"name":"query people natural","steps":[{"text":"Danh sách người liên quan","expected_intent":"query_people","expected_no_durable_writes":true}]},
+    {"name":"query commitments command","steps":[{"text":"/commitments","expected_intent":"query_commitments","expected_no_durable_writes":true}]},
+    {"name":"query commitments natural","steps":[{"text":"Tôi nợ ai việc gì?","expected_intent":"query_commitments","expected_no_durable_writes":true}]},
+    {"name":"query memory command","steps":[{"text":"/memory","expected_intent":"query_memory","expected_no_durable_writes":true}]},
+    {"name":"query memory natural","steps":[{"text":"Tôi đã lưu gì về bản thân","expected_intent":"query_memory","expected_no_durable_writes":true}]},
+    {"name":"assistant identity","steps":[{"text":"Bạn là ai","expected_intent":"query_assistant_identity","expected_reply_contains":"MemoCore","expected_no_durable_writes":true}]},
+    {"name":"profile identity","steps":[{"text":"Tôi là ai","expected_intent":"query_profile","expected_no_durable_writes":true}]},
+    {"name":"casual hello","steps":[{"text":"hello","expected_intent":"casual_or_noop","expected_no_durable_writes":true}]},
+    {"name":"casual thanks","steps":[{"text":"cảm ơn","expected_intent":"casual_or_noop","expected_no_durable_writes":true}]},
+    {"name":"casual ok","steps":[{"text":"ok","expected_intent":"casual_or_noop","expected_no_durable_writes":true}]},
+    {"name":"empty task command","steps":[{"text":"/task","expected_intent":"empty_command","expected_no_durable_writes":true}]},
+    {"name":"empty memory command","steps":[{"text":"/mem","expected_intent":"empty_command","expected_no_durable_writes":true}]},
+    {"name":"empty linkedin command","steps":[{"text":"/li","expected_intent":"empty_command","expected_no_durable_writes":true}]},
+    {"name":"ambiguous delete","steps":[{"text":"xóa","expected_intent":"needs_clarification","expected_no_durable_writes":true}]},
+    {"name":"ambiguous update","steps":[{"text":"cập nhật","expected_intent":"needs_clarification","expected_no_durable_writes":true}]},
+    {
+      "name":"project focus and scoped update",
+      "setup":{"projects":["Atlas Eval"]},
+      "steps":[
+        {"text":"Nói về dự án Atlas Eval","expected_intent":"query_context","expected_focus":{"type":"project","name":"Atlas Eval"},"expected_no_durable_writes":true},
+        {"text":"cập nhật thêm thông tin cho dự án này:\n- Atlas ưu tiên conversation quality","expected_intent":"update_knowledge","expected_delta":{"memories":1},"expected_focus":{"type":"project","name":"Atlas Eval"}}
+      ],
+      "expected_final":{"memory_contents":["Atlas ưu tiên conversation quality"]}
+    },
+    {
+      "name":"person focus and scoped update",
+      "setup":{"people":["Lan Evaluation"]},
+      "steps":[
+        {"text":"Nói về Lan Evaluation","expected_intent":"query_context","expected_focus":{"type":"person","name":"Lan Evaluation"},"expected_no_durable_writes":true},
+        {"text":"cập nhật thêm thông tin cho người này:\n- Lan phụ trách quality review","expected_intent":"update_knowledge","expected_delta":{"memories":1},"expected_focus":{"type":"person","name":"Lan Evaluation"}}
+      ],
+      "expected_final":{"memory_contents":["Lan phụ trách quality review"]}
+    },
+    {
+      "name":"organization focus and scoped update",
+      "setup":{"organizations":["Orion Evaluation"]},
+      "steps":[
+        {"text":"Nói về tổ chức Orion Evaluation","expected_intent":"query_context","expected_focus":{"type":"organization","name":"Orion Evaluation"},"expected_no_durable_writes":true},
+        {"text":"cập nhật thêm thông tin cho tổ chức này:\n- Orion vận hành knowledge review","expected_intent":"update_knowledge","expected_delta":{"memories":1},"expected_focus":{"type":"organization","name":"Orion Evaluation"}}
+      ],
+      "expected_final":{"memory_contents":["Orion vận hành knowledge review"]}
+    },
+    {
+      "name":"wrong entity isolation",
+      "setup":{"projects":["Red Evaluation","Blue Evaluation"]},
+      "steps":[
+        {"text":"Nói về dự án Red Evaluation","expected_intent":"query_context","expected_focus":{"type":"project","name":"Red Evaluation"},"expected_no_durable_writes":true},
+        {"text":"Nói về dự án Blue Evaluation","expected_intent":"query_context","expected_focus":{"type":"project","name":"Blue Evaluation"},"expected_no_durable_writes":true},
+        {"text":"cập nhật thêm thông tin cho dự án này:\n- Blue có canonical context riêng","expected_intent":"update_knowledge","expected_delta":{"memories":1},"expected_focus":{"type":"project","name":"Blue Evaluation"}}
+      ],
+      "expected_final":{"memory_contents":["Blue có canonical context riêng"]}
+    },
+    {
+      "name":"batch rollback integrity",
+      "setup":{"projects":["Rollback Evaluation"],"memories":[{"content":"Thông tin nền được giữ lại","project":"Rollback Evaluation"}]},
+      "steps":[
+        {"text":"Nói về dự án Rollback Evaluation","expected_intent":"query_context","expected_focus":{"type":"project","name":"Rollback Evaluation"},"expected_no_durable_writes":true},
+        {"text":"cập nhật thêm thông tin cho dự án này:\n- Claim tạm một\n- Claim tạm hai","expected_intent":"update_knowledge","expected_delta":{"memories":2}},
+        {"text":"xóa 2 thông tin vừa cập nhật","expected_intent":"rollback_knowledge_update","expected_delta":{"memories":-2}}
+      ],
+      "expected_final":{"memory_contents":["Thông tin nền được giữ lại"]}
+    },
+    {
+      "name":"complete exact task",
+      "setup":{"tasks":[{"title":"Viết báo cáo Alpha Evaluation"}]},
+      "steps":[{"text":"đánh dấu task Viết báo cáo Alpha Evaluation là xong","expected_intent":"mark_task_done","expected_delta":{"tasks":-1}}],
+      "expected_final":{"active_task_titles":[]}
+    },
+    {
+      "name":"cancel exact task",
+      "setup":{"tasks":[{"title":"Chuẩn bị demo Beta Evaluation"}]},
+      "steps":[{"text":"hủy task Chuẩn bị demo Beta Evaluation","expected_intent":"cancel_task","expected_delta":{"tasks":-1}}],
+      "expected_final":{"active_task_titles":[]}
+    },
+    {
+      "name":"update exact task priority",
+      "setup":{"tasks":[{"title":"Review Gamma Evaluation"}]},
+      "steps":[{"text":"đổi ưu tiên task Review Gamma Evaluation thành cao","expected_intent":"update_task_priority","expected_no_durable_writes":true}],
+      "expected_final":{"active_task_titles":["Review Gamma Evaluation"]}
+    },
+    {
+      "name":"query project without entity leakage",
+      "setup":{"projects":["One Evaluation","Two Evaluation"]},
+      "steps":[
+        {"text":"Nói về dự án One Evaluation","expected_intent":"query_context","expected_focus":{"type":"project","name":"One Evaluation"},"expected_no_durable_writes":true},
+        {"text":"/tasks","expected_intent":"query_tasks","expected_no_durable_writes":true}
+      ]
+    },
+    {
+      "name":"merge split outing into one task",
+      "setup":{"tasks":[{"title":"Đi uống bia"},{"title":"Lấy áo vest"}]},
+      "steps":[
+        {"text":"đi uống bia và lấy áo vest là 1 task chung, sửa lại cho tôi","expected_intent":"merge_tasks","expected_delta":{"tasks":-1}}
+      ],
+      "expected_final":{"active_task_titles":["Đi uống bia và Lấy áo vest"]}
+    },
+    {
+      "name":"query daily recurring schedule",
+      "setup":{"tasks":[{"title":"Tập gym","due_at":"2030-01-01T06:00:00+00:00","recurrence_rule":"daily","recurrence_series_id":"gym-eval","duration_minutes":90}]},
+      "steps":[
+        {"text":"lịch hàng ngày của tôi là gì","expected_intent":"query_task_recurrence","expected_reply_contains":"06:00–07:30","expected_no_durable_writes":true}
+      ]
+    },
+    {
+      "name":"future completion wording means scheduling",
+      "steps":[
+        {"text":"đặt lịch cho tôi, tối mai hoàn thành bộ giáo trình môn AI","expected_intent":"capture_task","expected_delta":{"tasks":1}}
+      ]
+    },
+    {
+      "name":"recurrence time explanation is not entity context",
+      "setup":{"tasks":[{"title":"Tạo kịch bản audio sảng văn","due_at":"2030-01-01T16:59:00+00:00","recurrence_rule":"daily","recurrence_series_id":"audio-eval"}]},
+      "steps":[
+        {"text":"tại sao lại là 16:59? tôi nhớ là định kỳ sẽ là 23h:59?","expected_intent":"query_task_recurrence","expected_reply_contains":"giờ UTC","expected_no_durable_writes":true}
+      ]
+    },
+    {
+      "name":"fuzzy recurring task completion",
+      "setup":{"tasks":[{"title":"Làm audio truyện sảng văn","due_at":"2030-01-01T16:59:00+00:00","recurrence_rule":"daily","recurrence_series_id":"audio-complete-eval"}]},
+      "steps":[
+        {"text":"tôi đã xong task truyện sảng văn ngày hôm nay","expected_intent":"mark_task_done","expected_reply_contains":"kỳ kế tiếp","expected_no_durable_writes":true}
+      ],
+      "expected_final":{"active_task_titles":["Làm audio truyện sảng văn"]}
+    }
+  ]
+}

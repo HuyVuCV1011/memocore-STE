@@ -32,15 +32,16 @@ capture instead of duplicating work.
 
 ## Conversation Flow
 
-Incoming Telegram text passes through a small `ConversationPlanner` before the legacy
-`ConversationService` router. The planner owns multi-turn, entity-scoped actions that cannot be
-represented safely as a single keyword intent.
+Incoming Telegram text first becomes a bounded `ConversationFrame`: recent user and assistant
+turns, current focus, pending clarification, visible task references, and the artifacts produced by
+the previous turn. `ConversationPlanner` resolves high-risk multi-turn goals before the legacy
+router, so corrections operate on exact artifacts instead of reparsing isolated words.
 
 ```mermaid
 flowchart LR
-    A["Telegram message"] --> B["Clarification check"]
+    A["Telegram message"] --> B["Conversation frame"]
     B --> C["Resolve conversation focus"]
-    C --> D["Conversation planner"]
+    C --> D["Semantic conversation planner"]
     D -->|entity-scoped plan| F["Conversation executor"]
     D -->|no plan| E["Conversation router"]
     E -->|known intent| F
@@ -56,11 +57,32 @@ flowchart LR
     I --> L
     J --> L
     K --> L
+    L --> N["Persist turn, plan, outcome ids"]
 ```
 
 `ConversationComposer` owns shared prompts and confirmations. `ConversationService` is the
 compatibility orchestrator while legacy branches move behind Router, Planner, Context Resolver,
 Executor, and Composer boundaries.
+
+Every handled chat turn records both sides of the exchange, the semantic plan when one exists, and
+the affected entity ids. Model-assisted intent classification receives this bounded frame rather
+than an isolated message or an unbounded transcript. Corrections such as “hai task vừa tạo là một
+việc” can therefore reference the artifacts produced by the previous turn.
+
+Schedule semantics live in `ScheduleSemantics`. A task may carry `duration_minutes`, so a range
+such as 06:00–07:30 survives persistence and recurring occurrence creation. Multi-operation
+corrections such as task merge execute in one database transaction with an audit event.
+
+`ActivityReconciliationService` owns identity across task and meeting projections of the same
+real-world activity. `activity_links` is persisted at capture time. A rename therefore updates the
+task, its linked meeting title, person/project links, audit snapshot, and undo path atomically.
+Legacy rename events are replayed through the same service at startup, so data repair does not use
+one-off record patches.
+
+Read-only routing is owned by `QueryExecutor`; durable task changes by `TaskMutationExecutor`;
+memory corrections, scoped writes and rollback by `MemoryLifecycleExecutor`; and clarification
+fallbacks by `ClarificationWorkflow`. The generic executor remains the allow-listed dispatch
+primitive.
 
 Deterministic routes are preferred for high-frequency queries and sensitive mutations. Model
 classification is a fallback for less obvious language, and low-confidence write intents should ask
@@ -95,8 +117,12 @@ SQLite is the verified runtime. It supports:
 - tasks, reminders, projects, people, meetings, follow-ups, and commitments;
 - person/project links for operational context and meeting preparation;
 - first-class organizations and source-linked decisions;
+- source-linked person–organization–project relationships;
+- decision lifecycle (`proposed`, `decided`, `superseded`) with replacement links;
 - memory items with lifecycle status;
+- conflict-marked memory candidates and an explicit canonical-memory link;
 - event logs for auditability;
+- explicit task-meeting activity links for mutation reconciliation and agenda de-duplication;
 - packaged schema bootstrap and migrations.
 
 PostgreSQL plus `pgvector` remains a blueprint for future retrieval, concurrency, backup, and
@@ -121,3 +147,10 @@ than calling external systems directly. See [Agent Harness Direction](agent-harn
 These capabilities remain held until the gates in
 [Conversation Stability Gates](conversation-stability-gates.md) pass in both automated transcript
 evaluation and real Telegram usage.
+
+## Canonical Knowledge
+
+Conflicting claims are preserved with their raw source and confidence. They are excluded from
+normal knowledge answers until review. The memory review inbox exposes both candidates and lets the
+user select the canonical claim; losing claims become `superseded` and point to that canonical
+memory. Explicit correction language may still supersede immediately because user intent is clear.

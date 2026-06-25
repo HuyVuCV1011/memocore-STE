@@ -78,7 +78,13 @@ The active V4 deepening track adds:
 
 - A compact six-command Telegram menu with inline hubs and hidden power-user shortcuts.
 - Ranked `/today`, `/work`, `/briefing`, and `/weekly` views for priorities and open loops.
-- Evidence-backed person, project, context, and meeting-preparation views.
+- Evidence-backed storage with clean person, project, context, and meeting-preparation views;
+  source/confidence metadata stays behind an explicit detail action.
+- Paginated Vietnamese people/context navigation with human relationship labels.
+- Persistent task-meeting activity identity, mutation reconciliation, agenda de-duplication, and
+  undo snapshots.
+- A unified "Cần xem lại" inbox for uncertain memory, aliases, pending clarification, undated
+  work, and recent conversation-quality signals.
 - Review-gated person/project alias hygiene; no silent entity merges.
 - Paginated memory overview, topic slices, review/stale queues, and audited memory actions.
 - Morning, end-of-day, and weekly rituals plus lightweight goal-aware prioritization.

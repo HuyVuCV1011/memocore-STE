@@ -168,15 +168,6 @@ class ReferenceResolver:
             expires_at=now + self.context_ttl if entity_id else None,
         )
         await self.context_repo.save(context)
-        await self.context_repo.append_turn(
-            source_chat_id=source_chat_id,
-            source_message_id=source_message_id,
-            raw_text=raw_text,
-            intent=intent,
-            focused_entity_type=entity_type,
-            focused_entity_id=entity_id,
-            result_entity_ids=result_entity_ids,
-        )
 
     async def _matching_task(self, raw_text: str):
         normalized = _normalize(raw_text)

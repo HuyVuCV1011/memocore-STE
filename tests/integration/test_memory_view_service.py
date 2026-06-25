@@ -45,6 +45,7 @@ async def test_memory_overview_is_compact_and_hides_correction_metadata(repos):
     assert "Imported correction metadata" not in rendered
     assert {action.action_id for action in response.actions} == {
         "mem:t:review:0",
+        "mem:t:conflicts:0",
         "mem:t:stale:0",
         "mem:t:self:0",
         "mem:t:goals:0",
@@ -55,6 +56,53 @@ async def test_memory_overview_is_compact_and_hides_correction_metadata(repos):
     }
     assert "Triage" in rendered
     assert "Map" in rendered
+
+
+async def test_conflict_review_shows_source_confidence_and_selects_canonical(repos):
+    from memocore.services.event_service import EventService
+
+    old_note = await repos["notes"].create(Note(raw_text="STE có 3 co-founder"))
+    new_note = await repos["notes"].create(Note(raw_text="STE có 4 co-founder"))
+    old = await repos["memory"].create(
+        MemoryItem(
+            bucket=MemoryBucket.PROJECT,
+            kind=MemoryKind.FACT,
+            content="STE có 3 co-founder",
+            source_note_id=old_note.id,
+            confidence=0.8,
+            conflict_state="conflict",
+        )
+    )
+    new = await repos["memory"].create(
+        MemoryItem(
+            bucket=MemoryBucket.PROJECT,
+            kind=MemoryKind.FACT,
+            content="STE có 4 co-founder",
+            source_note_id=new_note.id,
+            confidence=0.95,
+            revision_of_id=old.id,
+            conflict_state="conflict",
+        )
+    )
+    service = MemoryViewService(
+        repos["memory"],
+        repos["projects"],
+        repos["people"],
+        EventService(repos["events"]),
+        repos["notes"],
+    )
+
+    review = await service.topic("conflicts")
+    rendered = review.model_dump_json()
+    assert "STE có 4 co-founder" in rendered
+    assert "Tin cậy: 95%" in rendered
+    assert "Nguồn: STE có 4 co-founder" in rendered
+
+    await service.select_canonical(new.id)
+    assert str((await repos["memory"].get_by_id(new.id)).status) == "active"
+    old_after = await repos["memory"].get_by_id(old.id)
+    assert str(old_after.status) == "superseded"
+    assert old_after.canonical_memory_id == new.id
 
 
 async def test_memory_topic_deduplicates_and_paginates(repos):

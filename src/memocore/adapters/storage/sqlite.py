@@ -52,6 +52,7 @@ class Database:
         await self._ensure_column(conn, "tasks", "recurrence_rule", "TEXT")
         await self._ensure_column(conn, "tasks", "recurrence_series_id", "TEXT")
         await self._ensure_column(conn, "tasks", "recurrence_occurrence_at", "TEXT")
+        await self._ensure_column(conn, "tasks", "duration_minutes", "INTEGER")
         await self._ensure_column(conn, "projects", "aliases", "TEXT NOT NULL DEFAULT '[]'")
         await self._ensure_column(conn, "meetings", "person_id", "TEXT REFERENCES people(id)")
         await self._ensure_column(conn, "memory_items", "person_id", "TEXT REFERENCES people(id)")
@@ -175,6 +176,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     recurrence_rule TEXT,
     recurrence_series_id TEXT,
     recurrence_occurrence_at TEXT,
+    duration_minutes INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

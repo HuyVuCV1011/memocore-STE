@@ -59,6 +59,7 @@ class ExtractionService:
             current_datetime=now.isoformat(),
             current_date=now.date().isoformat(),
             tomorrow_date=(now.date() + timedelta(days=1)).isoformat(),
+            day_after_tomorrow_date=(now.date() + timedelta(days=2)).isoformat(),
             next_monday_date=next_monday.isoformat(),
             raw_text=raw_text,
         )

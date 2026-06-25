@@ -37,9 +37,11 @@ backend.
 | Raw-note capture | Immutable raw notes with Telegram source idempotency. |
 | Conversation routing | Deterministic and model-assisted routing for capture, query, correction, clarification, and casual messages. |
 | Conversation pipeline | Separate Router, Planner, Context Resolver, Executor, and Composer boundaries with transcript regression evaluation. |
+| Stability corpus | 41 isolated multi-turn conversations assert intent, entity focus, durable writes, schedule semantics, correction, and rollback integrity. |
+| Knowledge quality | Source-linked entity relations, decision supersession, conflict detection, canonical memory selection, and review evidence. |
 | Work and context state | Tasks, reminders, projects, people, meetings, follow-ups, commitments, memory candidates, and event logs. |
 | Knowledge model | Canonical projects, people, organizations, decisions, and source-linked memory claims. |
-| Secretary queries | Compact `/` menu for `/today`, `/work`, `/memory`, `/context`, `/briefing`, and `/capture`; power-user shortcuts remain available. |
+| Secretary queries | Compact `/` menu for `/today`, `/work`, `/memory`, `/context`, `/briefing`, `/capture`, and `/review`; power-user shortcuts remain available. |
 | Memory lifecycle | Candidate, active, rejected, superseded, and delete/forget flows. |
 | V4 context retrieval | Person/project context, linked commitments, meeting preparation summaries, and SQLite retrieval by linked entities. |
 | Reliability | Schema validation, provider fallback, transactional derived writes, and audit events. |
@@ -58,6 +60,7 @@ entry points:
 | `/work` | Open a work dashboard with tasks, reminders, waiting items, and commitments. |
 | `/memory` | Open the memory dashboard with review/stale/topic slices. |
 | `/context` | Open people, projects, meeting prep, and memory navigation. |
+| `/review` | Open uncertain memory, aliases, clarification, and work-quality triage. |
 | `/briefing` | Generate the current daily briefing. |
 | `/capture` | Show quick capture patterns for tasks, memory, and content notes. |
 
@@ -99,7 +102,7 @@ V4 adds linked operational context without importing private data automatically:
 | Linked retrieval | Tasks, meetings, follow-ups, commitments, and memory can be retrieved by person or project id. |
 | Personal context import | Still review-gated; large private context files should produce Markdown/import plans before any database write. |
 
-Current V4 deepening also includes a six-command Telegram menu, inline navigation hubs, ranked work
+Current V4 deepening also includes a seven-command Telegram menu, inline navigation hubs, ranked work
 priorities, evidence metadata in context/prep views, review-gated entity matching, paginated memory
 triage, end-of-day and weekly rituals, lightweight goals, and a runtime `doctor` preflight.
 
@@ -253,9 +256,10 @@ rather than treating Southern voice as a word-substitution gimmick. Background r
 ### Stateful conversation references
 
 MemoCore persists a short-lived canonical focus per Telegram chat in `chat_contexts` and records
-resolved turns in `conversation_turns`. Follow-ups such as `dự án đó`, `task này`, and `người đó`
-resolve to entity IDs before retrieval. Knowledge retrieval is then constrained to that project or
-person ID, preventing evidence from unrelated projects from leaking into the response.
+the user text, assistant outcome, semantic plan, and affected artifacts in `conversation_turns`.
+Each request receives a bounded `ConversationFrame` containing recent turns, pending clarification,
+visible task references, and the previous result ids. Follow-ups such as `dự án đó`, `task này`,
+`người đó`, or `hai task vừa tạo` therefore resolve to entity IDs before retrieval or mutation.
 
 Task mutations also pass through `TaskOperationService`, which is the shared boundary for completion,
 recurrence scheduling, cancellation, due dates, priority, and recurrence changes. New conversation
@@ -270,6 +274,10 @@ nhật”; explicit references like “dự án này” take precedence over inc
 Routing, planning, context resolution, execution dispatch, and response composition now have
 separate service boundaries. Fixture-driven transcript evaluations live under `tests/evaluation/`
 and preserve production misunderstandings as permanent regressions.
+
+Future and recurring schedule semantics are normalized in `ScheduleSemantics`. Time ranges persist
+as task duration, recurring occurrences retain that duration, and a single outing is not expanded
+into several unrelated tasks and durable memories.
 
 ## Project Structure
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from memocore.adapters.storage.repositories import ReminderRepository, TaskRepository
 from memocore.domain.models import EventType, ReminderStatus
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
+from memocore.services.task_operation_service import TaskOperationService
 
 
 class WorkActionService:
@@ -15,11 +16,13 @@ class WorkActionService:
         reminder_repo: ReminderRepository,
         event_service: EventService,
         display_timezone: tzinfo = UTC,
+        task_operation_service: TaskOperationService | None = None,
     ):
         self.task_repo = task_repo
         self.reminder_repo = reminder_repo
         self.event_service = event_service
         self.display_timezone = display_timezone
+        self.task_operation_service = task_operation_service
 
     async def tasks_view(self) -> AssistantResponse:
         tasks = await self.task_repo.list_active()
@@ -74,6 +77,50 @@ class WorkActionService:
             sections=[AssistantSection(lines=lines)],
             actions=actions,
         )
+
+    async def agenda_view(
+        self,
+        summary: str,
+        target_date: date,
+        *,
+        title: str,
+    ) -> AssistantResponse:
+        local_today = datetime.now(UTC).astimezone(self.display_timezone).date()
+        tasks = await self.task_repo.list_active()
+        visible = [
+            task
+            for task in tasks
+            if task.due_at is not None
+            and (
+                task.due_at.astimezone(self.display_timezone).date() == target_date
+                or (
+                    target_date == local_today
+                    and task.due_at.astimezone(self.display_timezone).date() < target_date
+                )
+            )
+        ][:5]
+        actions: list[AssistantAction] = []
+        for index, task in enumerate(visible):
+            actions.extend(
+                [
+                    AssistantAction(
+                        label="✅ Xong",
+                        action_id=f"work:q:t:done:{task.id}",
+                        row=index,
+                    ),
+                    AssistantAction(
+                        label="⏰ Đổi giờ",
+                        action_id=f"work:q:t:due:{task.id}",
+                        row=index,
+                    ),
+                    AssistantAction(
+                        label="🔥 Ưu tiên",
+                        action_id=f"work:q:t:pri:{task.id}",
+                        row=index,
+                    ),
+                ]
+            )
+        return AssistantResponse(title=title, summary=summary, actions=actions)
 
     async def handle(self, callback_data: str) -> AssistantResponse | None:
         if callback_data == "work:cancel":
@@ -229,6 +276,18 @@ class WorkActionService:
             return None
         if await self.event_service.was_undone(event_id):
             return AssistantResponse(title="Đã hoàn tác trước đó")
+        if (
+            event.entity_type == "task"
+            and event.payload.get("action") == "rename_task"
+            and self.task_operation_service is not None
+        ):
+            restored = await self.task_operation_service.undo_event(event_id)
+            if restored.task is None:
+                return None
+            return AssistantResponse(
+                title="Đã hoàn tác",
+                summary=f"Task trở lại thành “{restored.task.title}”.",
+            )
         before = event.payload.get("before", {})
         if event.entity_type == "task":
             next_task_id = event.payload.get("next_task_id")

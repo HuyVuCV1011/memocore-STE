@@ -44,6 +44,7 @@ src/memocore/
     conversation_service.py
     conversation_router.py
     conversation_planner.py
+    conversation_frame.py
     conversation_executor.py
     conversation_composer.py
     reference_resolver.py
@@ -53,6 +54,7 @@ src/memocore/
     reminder_service.py
     secretary_service.py
     task_extraction_service.py
+    schedule_semantics.py
 ```
 
 ## Ownership Boundaries
@@ -213,7 +215,7 @@ MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_b
 - Handle task completion, deadline updates, bulk cancellation, memory deletion, and correction
   feedback with guardrails.
 - Keep the visible Telegram slash menu compact: `/today`, `/work`, `/memory`, `/context`,
-  `/briefing`, and `/capture`.
+  `/briefing`, `/capture`, and `/review`.
 - Keep power-user shortcuts available but out of the visible menu: `/task`, `/t`, `/mem`, `/m`,
   `/li`, `/linkedin`, `/tasks`, `/reminders`, `/waiting`, `/projects`, `/people`, `/person`,
   `/project`, `/context <name>`, `/prep`, `/weekly`, `/endday`, `/goals`, `/people review`,

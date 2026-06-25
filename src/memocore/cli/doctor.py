@@ -16,7 +16,15 @@ from memocore.adapters.llm.provider_factory import PROVIDER_DEFAULTS, create_pro
 from memocore.config import Settings
 
 
-EXPECTED_COMMANDS = ("today", "work", "memory", "context", "briefing", "capture")
+EXPECTED_COMMANDS = (
+    "today",
+    "work",
+    "memory",
+    "context",
+    "briefing",
+    "capture",
+    "review",
+)
 
 
 @dataclass(frozen=True)

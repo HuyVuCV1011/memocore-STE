@@ -34,13 +34,17 @@ class IntentClassifierService:
             .read_text(encoding="utf-8")
         )
 
-    async def classify(self, raw_text: str) -> IntentClassification:
+    async def classify(
+        self, raw_text: str, *, context: str = ""
+    ) -> IntentClassification:
         errors: list[ExtractionError] = []
         providers = getattr(self.provider, "providers", (self.provider,))
         for provider in providers:
             for attempt in range(2):
                 try:
-                    response = await provider.chat(self._build_request(raw_text, provider))
+                    response = await provider.chat(
+                        self._build_request(raw_text, provider, context=context)
+                    )
                     return self._validate(response.content)
                 except ExtractionError as exc:
                     errors.append(exc)
@@ -52,11 +56,18 @@ class IntentClassifierService:
             clarification_question="I'm not sure what you mean. Could you please rephrase?",
         )
 
-    def _build_request(self, raw_text: str, provider: ModelProvider | None = None) -> ChatRequest:
+    def _build_request(
+        self,
+        raw_text: str,
+        provider: ModelProvider | None = None,
+        *,
+        context: str = "",
+    ) -> ChatRequest:
         now = datetime.now().astimezone()
         user_prompt = self.user_template.format(
             current_datetime=now.isoformat(),
             current_date=now.date().isoformat(),
+            conversation_context=context or "(none)",
             raw_text=raw_text,
         )
         active_provider = provider or self.provider

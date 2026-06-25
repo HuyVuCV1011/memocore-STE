@@ -74,6 +74,7 @@ Thumbs.db
 # Local reports and scratch files
 tmp/
 temp/
+scratch/
 *.log
 coverage.xml
 *.bak

@@ -2,9 +2,19 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TypeVar
+from dataclasses import dataclass
+from typing import Any
 
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class ExecutorResult:
+    intent: str
+    reply: str
+    captured: bool = False
+    reply_markup: Any = None
 
 
 class ConversationExecutor:

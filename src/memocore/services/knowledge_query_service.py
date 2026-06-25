@@ -27,10 +27,16 @@ from memocore.adapters.storage.repositories import (
 )
 from memocore.adapters.storage.knowledge_repositories import (
     DecisionRepository,
+    KnowledgeRelationRepository,
     OrganizationRepository,
 )
 from memocore.domain.models import MemoryKind
 from memocore.domain.schemas import KnowledgeQueryPlan
+from memocore.services.presentation_labels import (
+    person_note_lines as _shared_person_note_lines,
+    relationship_label as _shared_relationship_label,
+    translate_person_note as _shared_translate_person_note,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,7 @@ class KnowledgeQueryService:
         reminder_repo: ReminderRepository,
         organization_repo: OrganizationRepository | None = None,
         decision_repo: DecisionRepository | None = None,
+        knowledge_relation_repo: KnowledgeRelationRepository | None = None,
     ):
         self.provider = provider
         self.memory_repo = memory_repo
@@ -70,6 +77,7 @@ class KnowledgeQueryService:
         self.reminder_repo = reminder_repo
         self.organization_repo = organization_repo
         self.decision_repo = decision_repo
+        self.knowledge_relation_repo = knowledge_relation_repo
 
     async def answer(
         self,
@@ -106,6 +114,7 @@ class KnowledgeQueryService:
             "- follow/follow việc nên tra task, followup và commitment.\n"
             "- câu hỏi về lịch nên tra meeting, reminder và task.\n"
             "- câu hỏi kiến thức tổ chức/nhân sự nên tra memory, person và project.\n"
+            "- câu hỏi ai thuộc tổ chức hoặc project nào nên tra relationship, person, organization và project.\n"
             "- câu hỏi về dự án đang xây gì nên tra memory, project, task và followup.\n"
             "Trả về JSON đúng schema, không giải thích.\n\n"
             f"Câu hỏi: {raw_text}"
@@ -222,6 +231,39 @@ class KnowledgeQueryService:
                     )
                     if value
                 )
+
+        if self.knowledge_relation_repo is not None:
+            entity_names = {
+                **project_names,
+                **person_names,
+                **organization_names,
+            }
+            seen_relations: set[str] = set()
+            for entity_type, entity_ids in (
+                ("project", project_names),
+                ("person", person_names),
+                ("organization", organization_names),
+            ):
+                for entity_id in entity_ids:
+                    for relation in await self.knowledge_relation_repo.list_for_entity(
+                        entity_type, entity_id
+                    ):
+                        if relation.id in seen_relations or str(relation.status) == "rejected":
+                            continue
+                        seen_relations.add(relation.id)
+                        source_name = entity_names.get(relation.source_id, relation.source_id)
+                        target_name = entity_names.get(relation.target_id, relation.target_id)
+                        result.append(
+                            KnowledgeEvidence(
+                                "relationship",
+                                relation.id,
+                                f"{source_name} — {relation.relation_type} — {target_name}",
+                                (source_name, target_name),
+                                confidence=relation.confidence,
+                                occurred_at=relation.updated_at,
+                                related_entity_ids=(relation.source_id, relation.target_id),
+                            )
+                        )
                 result.append(
                     KnowledgeEvidence(
                         "decision",
@@ -266,6 +308,8 @@ class KnowledgeQueryService:
             )
         for item in await self.memory_repo.list_active():
             if str(item.kind) == MemoryKind.CORRECTION.value:
+                continue
+            if item.conflict_state == "conflict":
                 continue
             entities = tuple(
                 value
@@ -479,7 +523,7 @@ class KnowledgeQueryService:
 
 def _fallback_plan(raw_text: str) -> KnowledgeQueryPlan:
     normalized = _normalize(raw_text)
-    record_types: list[str] = ["memory", "project", "person"]
+    record_types: list[str] = ["memory", "project", "person", "organization", "relationship"]
     entities = _known_entities(raw_text)
     if any(token in normalized for token in ("follow", "theo doi", "dang cho", "cam ket")):
         record_types = ["task", "followup", "commitment", "memory"]
@@ -630,55 +674,15 @@ def _person_identity_query(value: str) -> str | None:
 
 
 def _relationship_summary(value: str) -> str:
-    labels = {
-        "mindx_tegl_plus_direct": "TEGL+ trực tiếp trong nhánh MindX của anh.",
-        "mindx_tegl_plus_direct_and_ste_collaborator": "TEGL+ trực tiếp tại MindX và cộng tác viên kỹ thuật/sản phẩm tin cậy trong bối cảnh STE.",
-        "mindx_tom_direct_and_ste_collaborator": "nhân sự trực tiếp trong nhánh TOM tại MindX và cộng tác viên thực thi quan trọng của STE.",
-        "mindx_tom_layer2_and_ste_support": "nhân sự lớp dưới TOM tại MindX; có tín hiệu hỗ trợ vận hành/project trong STE nhưng vai trò STE cần xác nhận.",
-        "mindx_success_ss_under_hieu": "thuộc nhóm Success/SS và báo cáo cho Nguyễn Trung Hiếu, không thuộc nhánh TEGL+/TOM của anh.",
-        "mindx_direct_manager": "quản lý trực tiếp của anh tại MindX.",
-        "mindx_cross_functional_counterpart": "đối tác phối hợp liên phòng ban tại MindX, không phải direct report của anh.",
-        "ste_collaborator_historical_mindx": "cộng tác viên STE; từng có bối cảnh MindX lịch sử.",
-        "ste_external_project_reference": "người liên quan đến project/tham chiếu bên ngoài của STE.",
-    }
-    if value in labels:
-        return labels[value]
-    return value.replace("_", " ") if value else ""
+    return _shared_relationship_label(value)
 
 
 def _person_note_lines(notes: str) -> list[str]:
-    if not notes:
-        return []
-    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", notes) if part.strip()]
-    lines: list[str] = []
-    for sentence in sentences:
-        line = _translate_person_note(sentence)
-        if line:
-            lines.append(f"- {line}")
-    return lines
+    return [f"- {line}" for line in _shared_person_note_lines(notes)]
 
 
 def _translate_person_note(note: str) -> str:
-    normalized = note.lower()
-    replacements = (
-        ("mindx: tegl hcm 2 & hcm 3 under vu's tegl+ role.", "MindX: phụ trách TEGL HCM 2 và HCM 3 trong nhánh TEGL+ của anh."),
-        ("mindx: tegl hcm 1 & hcm 4 under vu's tegl+ role.", "MindX: phụ trách TEGL HCM 1 và HCM 4 trong nhánh TEGL+ của anh."),
-        ("mindx: leader team ho / teaching development leader under vu's tom role.", "MindX: thuộc team HO/Teaching Development Leader trong nhánh TOM của anh."),
-        ("ste: major execution collaborator.", "STE: cộng tác viên thực thi quan trọng."),
-        ("ste: high-trust technical/product collaborator.", "STE: cộng tác viên kỹ thuật/sản phẩm có độ tin cậy cao."),
-        ("keep contexts separate.", "Cần tách rõ bối cảnh MindX và STE khi dùng thông tin này."),
-        ("mindx:", "MindX:"),
-        ("ste:", "STE:"),
-        ("under vu's", "trong nhánh của anh"),
-        ("not vu's direct report", "không phải direct report của anh"),
-        ("direct manager of vu at mindx", "quản lý trực tiếp của anh tại MindX"),
-    )
-    for source, target in replacements:
-        if normalized == source:
-            return target
-    cleaned = note.replace("Vu's", "của anh").replace("Vu", "anh")
-    cleaned = cleaned.replace("under", "thuộc").replace("Current", "Hiện là")
-    return cleaned.strip()
+    return _shared_translate_person_note(note)
 
 
 def _token_overlap(query_tokens: set[str], text_tokens: set[str]) -> float:

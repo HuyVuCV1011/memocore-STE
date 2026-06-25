@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatType
@@ -30,6 +30,7 @@ from memocore.services.memory_view_service import MemoryViewService
 from memocore.services.secretary_service import SecretaryService
 from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
+from memocore.services.review_service import ReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _safe_reply_text(
             update,
             "MemoCore đã sẵn sàng.\n\n"
-            "Gõ / để mở 6 cửa chính: /today, /work, /memory, /context, /briefing, /capture.\n"
+            "Gõ / để mở 7 cửa chính: /today, /work, /memory, /context, /briefing, /capture, /review.\n"
             "Anh vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /task, /prep <tên>, /person <tên>.",
             reply_markup=keyboard,
         )
@@ -108,6 +109,28 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         text, keyboard = present_response(_work_hub_response(await service.work_dashboard()))
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
+    if command in {"today", "todays", "tomorrow"} and work_action_service is not None:
+        local_today = datetime.now(UTC).astimezone(service.display_timezone).date()
+        target_date = (
+            local_today + timedelta(days=1)
+            if command == "tomorrow"
+            else local_today
+        )
+        summary = (
+            await service.tomorrow()
+            if command == "tomorrow"
+            else await service.today()
+        )
+        response = await work_action_service.agenda_view(
+            summary,
+            target_date,
+            title="Ngày mai" if command == "tomorrow" else "Hôm nay",
+        )
+        text, keyboard = present_response(response)
+        if conversation_service is not None:
+            await conversation_service.remember_task_list(source_chat_id, summary, command)
+        await _safe_reply_text(update, text, reply_markup=keyboard)
+        return
     if command == "capture":
         text, keyboard = present_response(_capture_hub_response())
         await _safe_reply_text(update, text, reply_markup=keyboard)
@@ -116,6 +139,14 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         text, keyboard = present_response(_help_response())
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
+    if command == "review":
+        review_service: ReviewService | None = context.application.bot_data.get(
+            "review_service"
+        )
+        if review_service is not None:
+            text, keyboard = present_response(await review_service.overview())
+            await _safe_reply_text(update, text, reply_markup=keyboard)
+            return
     if command == "memory":
         arg = update.message.text.partition(" ")[2].strip() if update.message.text else ""
         memory_view_service: MemoryViewService | None = context.application.bot_data.get(
@@ -277,6 +308,15 @@ async def memory_callback_handler(
         parts = query.data.split(":")
         if len(parts) == 3:
             response = await service.merge_prompt(parts[2])
+    elif query.data.startswith("mem:x:"):
+        parts = query.data.split(":")
+        if len(parts) == 5:
+            result = await service.select_canonical(parts[2])
+            if result is not None:
+                try:
+                    response = await service.topic(parts[3], int(parts[4]))
+                except ValueError:
+                    response = None
     elif query.data.startswith("mem:t:"):
         parts = query.data.split(":")
         if len(parts) == 4:
@@ -335,6 +375,23 @@ async def clarification_callback_handler(
         await query.answer("Câu hỏi này đã hết hiệu lực.", show_alert=False)
         return
     await query.answer()
+    conversation_service: ConversationService | None = context.application.bot_data.get(
+        "conversation_service"
+    )
+    record_outcome = getattr(conversation_service, "record_external_outcome", None)
+    if record_outcome is not None:
+        await record_outcome(
+            CaptureRequest(
+                source="telegram",
+                source_message_id=(
+                    str(query.message.message_id) if query.message else None
+                ),
+                source_chat_id=str(update.effective_chat.id),
+                raw_text=f"clarification option {parts[2]}",
+            ),
+            intent="clarification_answer",
+            reply=result.message,
+        )
     await query.edit_message_text(result.message)
 
 
@@ -402,6 +459,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 source_chat_id, update.message.text
             )
             if result.handled:
+                record_outcome = getattr(
+                    conversation_service, "record_external_outcome", None
+                )
+                if record_outcome is not None:
+                    await record_outcome(
+                        CaptureRequest(
+                            source="telegram",
+                            source_message_id=str(update.message.message_id),
+                            source_chat_id=source_chat_id,
+                            raw_text=update.message.text,
+                        ),
+                        intent="clarification_answer",
+                        reply=result.message,
+                    )
                 await _safe_reply_text(update, result.message)
                 return
     capture_service: CaptureService = context.application.bot_data["capture_service"]
@@ -553,6 +624,7 @@ def register_handlers(
     memory_view_service: MemoryViewService | None = None,
     work_action_service: WorkActionService | None = None,
     entity_confirmation_service: EntityConfirmationService | None = None,
+    review_service: ReviewService | None = None,
 ) -> None:
     app.bot_data["telegram_owner_id"] = owner_id
     app.bot_data["capture_service"] = capture_service
@@ -562,6 +634,7 @@ def register_handlers(
     app.bot_data["memory_view_service"] = memory_view_service
     app.bot_data["work_action_service"] = work_action_service
     app.bot_data["entity_confirmation_service"] = entity_confirmation_service
+    app.bot_data["review_service"] = review_service
     app.add_error_handler(error_handler)
     app.add_handler(TypeHandler(Update, owner_only_handler), group=-1)
     app.add_handler(CallbackQueryHandler(memory_callback_handler, pattern=r"^mem:"))
@@ -597,6 +670,7 @@ def register_handlers(
         "context",
         "prep",
         "capture",
+        "review",
     ):
         app.add_handler(CommandHandler(command, secretary_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
@@ -612,6 +686,31 @@ async def _navigation_response(
     memory_view_service: MemoryViewService | None = context.application.bot_data.get(
         "memory_view_service"
     )
+    review_service: ReviewService | None = context.application.bot_data.get(
+        "review_service"
+    )
+    entity_confirmation_service: EntityConfirmationService | None = context.application.bot_data.get(
+        "entity_confirmation_service"
+    )
+    if callback_data.startswith("nav:context:people:"):
+        try:
+            page = int(callback_data.rsplit(":", 1)[1])
+        except ValueError:
+            return None
+        return await service.people_view(page)
+    if callback_data.startswith("nav:context:person:"):
+        person_id = callback_data.rsplit(":", 1)[1]
+        return AssistantResponse(
+            title="Chi tiết nhân sự",
+            summary=await service.person_context_by_id(person_id),
+            actions=[
+                AssistantAction(
+                    label="Quay lại danh sách",
+                    action_id="nav:context:people",
+                    row=0,
+                )
+            ],
+        )
     actions = {
         "nav:work": lambda: _work_hub_response(),
         "nav:context": lambda: _context_hub_response(),
@@ -639,8 +738,16 @@ async def _navigation_response(
         return AssistantResponse(title="Cam kết", summary=await service.commitments())
     if callback_data == "nav:memory" and memory_view_service is not None:
         return await memory_view_service.overview()
+    if callback_data == "nav:review" and review_service is not None:
+        return await review_service.overview()
+    if callback_data == "nav:review:clarifications" and review_service is not None:
+        return await review_service.clarifications()
+    if callback_data == "nav:review:people" and entity_confirmation_service is not None:
+        return await entity_confirmation_service.review("person")
+    if callback_data == "nav:review:projects" and entity_confirmation_service is not None:
+        return await entity_confirmation_service.review("project")
     if callback_data == "nav:context:people":
-        return AssistantResponse(title="Nhân sự", summary=await service.people())
+        return await service.people_view(0)
     if callback_data == "nav:context:projects":
         return AssistantResponse(title="Dự án", summary=await service.projects())
     action = actions.get(callback_data)
@@ -649,28 +756,30 @@ async def _navigation_response(
 
 def _work_hub_response(summary: str | None = None) -> AssistantResponse:
     return AssistantResponse(
-        title="Work",
+        title="Công việc",
         summary=summary
         or "Chọn phần anh muốn xem. Các shortcut cũ như /tasks, /reminders, /waiting vẫn dùng được.",
         actions=[
             AssistantAction(label="Hôm nay", action_id="nav:work:today", row=0),
-            AssistantAction(label="Tasks", action_id="nav:work:tasks", row=1),
-            AssistantAction(label="Reminders", action_id="nav:work:reminders", row=1),
-            AssistantAction(label="Waiting", action_id="nav:work:waiting", row=2),
-            AssistantAction(label="Commitments", action_id="nav:work:commitments", row=2),
+            AssistantAction(label="Task", action_id="nav:work:tasks", row=1),
+            AssistantAction(label="Nhắc nhở", action_id="nav:work:reminders", row=1),
+            AssistantAction(label="Đang chờ", action_id="nav:work:waiting", row=2),
+            AssistantAction(label="Cam kết", action_id="nav:work:commitments", row=2),
+            AssistantAction(label="Cần xem lại", action_id="nav:review", row=3),
         ],
     )
 
 
 def _context_hub_response() -> AssistantResponse:
     return AssistantResponse(
-        title="Context",
-        summary="People, projects và meeting prep. Dùng /person <tên>, /project <tên>, hoặc /prep <tên> khi anh đã biết cần xem ai.",
+        title="Ngữ cảnh",
+        summary="Chọn nơi cần xem, hoặc gõ thẳng tên một người/dự án nếu anh đã biết mình đang tìm gì.",
         actions=[
-            AssistantAction(label="People", action_id="nav:context:people", row=0),
-            AssistantAction(label="Projects", action_id="nav:context:projects", row=0),
-            AssistantAction(label="Meeting prep", action_id="nav:context:prep", row=1),
-            AssistantAction(label="Memory", action_id="nav:memory", row=1),
+            AssistantAction(label="👤 Nhân sự", action_id="nav:context:people", row=0),
+            AssistantAction(label="📁 Dự án", action_id="nav:context:projects", row=0),
+            AssistantAction(label="🤝 Chuẩn bị gặp", action_id="nav:context:prep", row=1),
+            AssistantAction(label="🧠 Ghi nhớ", action_id="nav:memory", row=1),
+            AssistantAction(label="🧹 Cần xem lại", action_id="nav:review", row=2),
         ],
     )
 

@@ -59,8 +59,19 @@ class CommitmentDirection(StrEnum):
 
 class ProjectStatus(StrEnum):
     ACTIVE = "active"
+    INCUBATING = "incubating"
+    REVIEW = "review"
     PAUSED = "paused"
     ARCHIVED = "archived"
+
+
+class ProjectType(StrEnum):
+    PORTFOLIO = "portfolio"
+    CAPABILITY = "capability"
+    PRODUCT = "product"
+    INITIATIVE = "initiative"
+    CLIENT_PROJECT = "client_project"
+    INDEPENDENT_PROJECT = "independent_project"
 
 
 class MemoryBucket(StrEnum):
@@ -128,6 +139,13 @@ class EventType(StrEnum):
     MEMORY_DUPLICATE_SUGGESTED = "memory_duplicate_suggested"
     ENTITY_ALIAS_SUGGESTED = "entity_alias_suggested"
     ENTITY_ALIAS_CONFIRMED = "entity_alias_confirmed"
+    KNOWLEDGE_RELATION_CREATED = "knowledge_relation_created"
+    DECISION_SUPERSEDED = "decision_superseded"
+    MEMORY_CONFLICT_DETECTED = "memory_conflict_detected"
+    MEMORY_CANONICAL_SELECTED = "memory_canonical_selected"
+    PROJECT_TAXONOMY_UPDATED = "project_taxonomy_updated"
+    CONVERSATION_PLAN_EXECUTED = "conversation_plan_executed"
+
 
 
 class TimestampedModel(BaseModel):
@@ -160,6 +178,7 @@ class Task(TimestampedModel):
     recurrence_rule: str | None = None
     recurrence_series_id: str | None = None
     recurrence_occurrence_at: datetime | None = None
+    duration_minutes: int | None = Field(default=None, ge=1)
 
 
 class Reminder(TimestampedModel):
@@ -179,9 +198,11 @@ class Project(TimestampedModel):
     name: str
     aliases: list[str] = Field(default_factory=list)
     summary: str = ""
-    status: ProjectStatus = ProjectStatus.ACTIVE
+    status: ProjectStatus = ProjectStatus.REVIEW
     tags: list[str] = Field(default_factory=list)
     last_seen_at: datetime = Field(default_factory=utc_now)
+    project_type: ProjectType | None = None
+    parent_project_id: str | None = None
 
 
 class Person(TimestampedModel):
@@ -240,6 +261,8 @@ class MemoryItem(TimestampedModel):
     last_confirmed_at: datetime | None = None
     sensitivity: str = "normal"
     revision_of_id: str | None = None
+    canonical_memory_id: str | None = None
+    conflict_state: str = "none"
 
 
 class ClarificationRequest(TimestampedModel):

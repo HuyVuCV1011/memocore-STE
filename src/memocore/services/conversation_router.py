@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import inspect
 
 from memocore.services.intent_classifier_service import IntentClassifierService
 
@@ -56,6 +57,7 @@ class ConversationRouter:
         bare_entity_reference: bool,
         deterministic_route: Callable[[str], str | None],
         fallback_route: Callable[[str], str],
+        conversation_context: str = "",
     ) -> RoutingDecision:
         intent = planned_intent or deterministic_route(raw_text)
         if intent is None and bare_entity_reference:
@@ -65,7 +67,13 @@ class ConversationRouter:
         if self.classifier is None:
             return RoutingDecision(intent=fallback_route(raw_text))
         try:
-            classification = await self.classifier.classify(raw_text)
+            parameters = inspect.signature(self.classifier.classify).parameters
+            if "context" in parameters:
+                classification = await self.classifier.classify(
+                    raw_text, context=conversation_context
+                )
+            else:
+                classification = await self.classifier.classify(raw_text)
         except Exception:
             fallback = fallback_route(raw_text)
             return RoutingDecision(

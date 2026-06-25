@@ -78,6 +78,13 @@ async def test_initialize_adds_person_columns_before_creating_indexes(tmp_path):
         ).fetchall()
     }
     assert context_tables == {"chat_contexts", "conversation_turns"}
+    turn_columns = {
+        row["name"]
+        for row in await (
+            await conn.execute("PRAGMA table_info(conversation_turns)")
+        ).fetchall()
+    }
+    assert {"assistant_reply", "plan_json"} <= turn_columns
     assert {
         "source_type",
         "observed_at",
@@ -87,6 +94,13 @@ async def test_initialize_adds_person_columns_before_creating_indexes(tmp_path):
         "sensitivity",
         "revision_of_id",
     } <= memory_columns
+    assert {"canonical_memory_id", "conflict_state"} <= memory_columns
+    knowledge_table = await (
+        await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_relations'"
+        )
+    ).fetchone()
+    assert knowledge_table is not None
     await database.close()
 
 

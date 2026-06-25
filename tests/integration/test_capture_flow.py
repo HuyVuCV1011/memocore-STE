@@ -353,7 +353,7 @@ async def test_memory_correction_supersedes_related_old_memory(
     assert created_tasks == []
 
 
-async def test_new_conflicting_memory_supersedes_old_without_correction_phrase(
+async def test_new_conflicting_memory_waits_for_canonical_review_without_correction_phrase(
     capture_service, fake_provider, repos
 ):
     source_note = await repos["notes"].create(Note(raw_text="STE has 3 cofounders"))
@@ -382,10 +382,10 @@ async def test_new_conflicting_memory_supersedes_old_without_correction_phrase(
 
     await capture_service.capture(CaptureRequest(raw_text="ste có 4 co founder"))
     memories = await repos["memory"].list_all()
-    statuses = {item.content: item.status for item in memories}
+    states = {item.content: (str(item.status), item.conflict_state) for item in memories}
 
-    assert statuses["ste có 3 co founder"] == "superseded"
-    assert statuses["Ste có 4 co founder"] == "candidate"
+    assert states["ste có 3 co founder"] == ("candidate", "conflict")
+    assert states["Ste có 4 co founder"] == ("candidate", "conflict")
 
 
 async def test_relationship_name_correction_supersedes_old_memory(
