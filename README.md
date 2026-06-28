@@ -238,6 +238,26 @@ Tasks support `daily` and `weekly` recurrence as task data, independently from r
 Completing a recurring occurrence marks that occurrence done and creates exactly one next occurrence
 while preserving title, priority, project, and person links.
 
+`TaskReferenceResolver` resolves numbered references, recent visible lists, time scopes, and title
+matches through one mutation boundary. List context expires after six hours. Dynamic scopes such as
+“all tasks today”, vague batches, and batches larger than five tasks show a preview before writing.
+The preview stores a status/version snapshot, supports selecting tasks again, and revalidates every
+target before completion.
+
+If a recurring task's next occurrence is already overdue, MemoCore does not silently mark missed
+work done. It asks whether to keep each missed occurrence or move the active occurrence to the
+first future slot. Batch completion creates one audit event and offers a guarded undo; tasks changed
+after the batch are skipped rather than overwritten.
+
+Resolution metrics record source, mode, candidate count, context age, and confirmation state without
+storing the raw message or task title.
+
+## Security
+
+Local secrets, databases, logs, backups, exports, browser sessions, and private profile-review
+artifacts are ignored. Never commit `.env` or runtime data. Report vulnerabilities through GitHub's
+private security advisory flow; see [SECURITY.md](SECURITY.md).
+
 ### Vietnamese assistant voice
 
 The voice source of truth is

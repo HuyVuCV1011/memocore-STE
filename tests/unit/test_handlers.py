@@ -624,6 +624,29 @@ async def test_recurrence_scope_inline_callback_uses_pending_flow():
     query.edit_message_text.assert_awaited_once_with("Đã đặt lặp hằng ngày.")
 
 
+async def test_confirmation_callback_maps_yes_to_natural_answer():
+    query = SimpleNamespace(
+        data="clar:scope:yes",
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=9001),
+    )
+    clarification = SimpleNamespace(
+        answer_pending=AsyncMock(
+            return_value=SimpleNamespace(handled=True, message="Đã xác nhận.")
+        )
+    )
+    context = build_context({"clarification_service": clarification})
+
+    await clarification_callback_handler(update, context)
+
+    clarification.answer_pending.assert_awaited_once_with("9001", "xác nhận")
+    query.edit_message_text.assert_awaited_once_with("Đã xác nhận.")
+
+
 async def test_message_handler_ignores_empty_text(monkeypatch, capture_service, fake_provider):
     update_dict = deepcopy(MESSAGE_UPDATE)
     update_dict["message"]["text"] = None

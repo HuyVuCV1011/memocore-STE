@@ -88,6 +88,16 @@ Deterministic routes are preferred for high-frequency queries and sensitive muta
 classification is a fallback for less obvious language, and low-confidence write intents should ask
 for clarification instead of mutating durable state.
 
+Task mutations resolve through `TaskReferenceResolver` before reaching `TaskOperationService`.
+Recent list context has a six-hour TTL. Dynamic or vague batches are previewed with a task
+status/version snapshot; confirmation revalidates that snapshot, and batch undo restores only items
+that have not changed since completion. Reference-resolution audit events contain structural
+metadata only, not raw messages or task titles.
+
+Recurring completion preserves one occurrence at a time. When the immediate next occurrence is
+still overdue, a clarification offers either preserving each missed occurrence or moving the active
+occurrence to the first future slot. No missed occurrence is silently marked done.
+
 Entity-scoped knowledge updates preserve the raw source note, split explicit list payloads into
 separate memory claims, attach the canonical person/project id, and keep the entity as the current
 conversation focus. They do not depend on model extraction when the user's update instruction and

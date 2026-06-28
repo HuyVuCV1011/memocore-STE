@@ -46,13 +46,21 @@ dist/
 
 # Local databases and runtime state
 data/
+backups/
+exports/
+telegram_exports/
+browser-data/
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite3
+*.dump
+*.backup
 logs/
 *.jsonl
+cookies*.json
+session*.json
 
 # Private MemoCore profile/review artifacts
 personal_profile_review/

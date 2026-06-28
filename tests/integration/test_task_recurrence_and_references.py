@@ -3,13 +3,21 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from memocore.domain.models import ClarificationRequest, Note, Task, TaskStatus
+from memocore.domain.models import (
+    ClarificationRequest,
+    EventType,
+    Note,
+    Task,
+    TaskStatus,
+)
 from memocore.domain.schemas import CaptureRequest
 from memocore.services.conversation_service import ConversationService
 from memocore.services.secretary_service import SecretaryService
+from memocore.services.task_reference_resolver import TaskReferenceResolver
+from memocore.services.work_action_service import WorkActionService
 
 
-def _service(capture_service, repos) -> ConversationService:
+def _service(capture_service, repos, *, now=None) -> ConversationService:
     secretary = SecretaryService(
         repos["tasks"],
         repos["reminders"],
@@ -19,7 +27,7 @@ def _service(capture_service, repos) -> ConversationService:
         display_timezone=ZoneInfo("Asia/Ho_Chi_Minh"),
         person_repo=repos["people"],
     )
-    return ConversationService(
+    service = ConversationService(
         capture_service,
         secretary,
         repos["notes"],
@@ -27,6 +35,15 @@ def _service(capture_service, repos) -> ConversationService:
         capture_service.memory_service,
         capture_service.event_service,
     )
+    if now is not None:
+        service.now_provider = lambda: now
+        service.task_reference_resolver = TaskReferenceResolver(
+            repos["tasks"],
+            service.task_list_context_repo,
+            display_timezone=secretary.display_timezone,
+            now_provider=lambda: now,
+        )
+    return service
 
 
 async def _two_tasks(repos):
@@ -301,6 +318,555 @@ async def test_direct_completion_formats_next_occurrence_in_user_timezone(
     assert result.intent == "mark_task_done"
     assert "23:59 23/06/2026" in result.reply
     assert "16:59" not in result.reply
+
+
+async def test_completes_explicit_count_from_recent_task_list(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="three visible tasks"))
+    tasks = [
+        await repos["tasks"].create(Task(title=title, source_note_id=note.id))
+        for title in (
+            "Tạo kịch bản audio sảng văn",
+            "Tập gym",
+            "Làm giám khảo lớp APM10",
+        )
+    ]
+    untouched = await repos["tasks"].create(
+        Task(title="Task không nằm trong danh sách", source_note_id=note.id)
+    )
+    service = _service(capture_service, repos)
+    await service.task_list_context_repo.save(
+        "chat-1", [task.id for task in tasks], "today"
+    )
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="tôi đã xong 3 task đó",
+            source_chat_id="chat-1",
+            source_message_id="done-three",
+        )
+    )
+
+    assert result.intent == "mark_task_done"
+    assert "Đã đánh dấu xong 3 task" in result.reply
+    updated_tasks = [await repos["tasks"].get_by_id(task.id) for task in tasks]
+    assert all(str(task.status) == "done" for task in updated_tasks)
+    assert str((await repos["tasks"].get_by_id(untouched.id)).status) != "done"
+
+
+async def test_completes_today_scope_including_overdue_tasks(capture_service, repos):
+    now = datetime(2026, 6, 26, 18, 12, tzinfo=UTC)  # 01:12 on 27/06 locally
+    note = await repos["notes"].create(Note(raw_text="today scope"))
+    included = [
+        await repos["tasks"].create(
+            Task(
+                title="Overdue daily",
+                due_at=datetime(2026, 6, 25, 16, 59, tzinfo=UTC),
+                source_note_id=note.id,
+            )
+        ),
+        await repos["tasks"].create(
+            Task(
+                title="Due today",
+                due_at=datetime(2026, 6, 27, 10, 0, tzinfo=UTC),
+                source_note_id=note.id,
+            )
+        ),
+    ]
+    tomorrow = await repos["tasks"].create(
+        Task(
+            title="Due tomorrow",
+            due_at=datetime(2026, 6, 28, 3, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    service = _service(capture_service, repos, now=now)
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="đã xong hết task hôm nay",
+            source_chat_id="chat-1",
+            source_message_id="done-today",
+        )
+    )
+
+    assert result.intent == "mark_task_done"
+    assert "xác nhận đánh dấu xong 2 task" in result.reply
+    answer = await capture_service.clarification_service.answer_pending(
+        "chat-1", "xác nhận"
+    )
+    assert "Đã đánh dấu xong 2 task" in answer.message
+    updated_tasks = [await repos["tasks"].get_by_id(task.id) for task in included]
+    assert all(str(task.status) == "done" for task in updated_tasks)
+    assert str((await repos["tasks"].get_by_id(tomorrow.id)).status) != "done"
+
+
+async def test_vague_bulk_completion_requires_confirmation(capture_service, repos):
+    first, second = await _two_tasks(repos)
+    service = _service(capture_service, repos)
+    await service.task_list_context_repo.save(
+        "chat-1", [first.id, second.id], "tasks"
+    )
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="xong hết task",
+            source_chat_id="chat-1",
+            source_message_id="confirm-bulk",
+        )
+    )
+    pending = await repos["clarifications"].find_pending_for_chat("chat-1")
+
+    assert "xác nhận đánh dấu xong 2 task" in result.reply
+    assert pending is not None
+    assert pending.entity_type == "task_bulk_done"
+    assert str((await repos["tasks"].get_by_id(first.id)).status) != "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) != "done"
+
+
+async def test_bulk_completion_confirmation_completes_resolved_set(
+    capture_service, repos
+):
+    first, second = await _two_tasks(repos)
+    service = _service(capture_service, repos)
+    await service.task_list_context_repo.save(
+        "chat-1", [first.id, second.id], "tasks"
+    )
+    await service.handle_text(
+        CaptureRequest(raw_text="xong hết task", source_chat_id="chat-1")
+    )
+
+    answer = await capture_service.clarification_service.answer_pending(
+        "chat-1", "xác nhận"
+    )
+
+    assert answer.handled is True
+    assert "2 task" in answer.message
+    assert str((await repos["tasks"].get_by_id(first.id)).status) == "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) == "done"
+
+
+async def test_completion_warns_when_next_occurrence_is_already_overdue(
+    capture_service, repos
+):
+    now = datetime(2026, 6, 26, 18, 12, tzinfo=UTC)  # 01:12 on 27/06 locally
+    note = await repos["notes"].create(Note(raw_text="overdue recurrence"))
+    await repos["tasks"].create(
+        Task(
+            title="Tạo kịch bản audio sảng văn",
+            due_at=datetime(2026, 6, 25, 16, 59, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="daily",
+            recurrence_series_id="overdue-daily",
+            recurrence_occurrence_at=datetime(2026, 6, 25, 16, 59, tzinfo=UTC),
+        )
+    )
+    service = _service(capture_service, repos, now=now)
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text="đã xong kịch bản audio sảng văn")
+    )
+
+    assert "23:59 26/06/2026" in result.reply
+    assert "hiện cũng đã quá hạn" in result.reply
+
+
+async def test_today_scope_prefers_tasks_from_recent_today_view(
+    capture_service, repos
+):
+    now = datetime(2026, 6, 26, 18, 12, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="bounded today view"))
+    visible = await repos["tasks"].create(
+        Task(
+            title="Visible overdue",
+            due_at=datetime(2026, 6, 25, 10, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    hidden = await repos["tasks"].create(
+        Task(
+            title="Hidden overdue",
+            due_at=datetime(2026, 6, 25, 11, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    service = _service(capture_service, repos, now=now)
+    await service.task_list_context_repo.save("chat-1", [visible.id], "today")
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="đã xong hết task hôm nay",
+            source_chat_id="chat-1",
+        )
+    )
+
+    assert "Đã đánh dấu xong: Visible overdue" in result.reply
+    assert str((await repos["tasks"].get_by_id(visible.id)).status) == "done"
+    assert str((await repos["tasks"].get_by_id(hidden.id)).status) != "done"
+
+
+async def test_expired_task_list_context_is_not_used_for_deictic_count(
+    capture_service, repos
+):
+    now = datetime(2026, 6, 27, 2, 0, tzinfo=UTC)
+    first, second = await _two_tasks(repos)
+    service = _service(capture_service, repos, now=now)
+    await service.task_list_context_repo.save(
+        "chat-1",
+        [first.id, second.id],
+        "tasks",
+        now=now - timedelta(hours=7),
+    )
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="tôi đã xong 2 task đó",
+            source_chat_id="chat-1",
+        )
+    )
+
+    assert "chưa tìm thấy task khớp" in result.reply
+    assert str((await repos["tasks"].get_by_id(first.id)).status) != "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) != "done"
+
+
+async def test_large_today_scope_requires_confirmation(capture_service, repos):
+    now = datetime(2026, 6, 26, 18, 12, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="large today scope"))
+    tasks = [
+        await repos["tasks"].create(
+            Task(
+                title=f"Today task {index}",
+                due_at=datetime(2026, 6, 27, 8, index, tzinfo=UTC),
+                source_note_id=note.id,
+            )
+        )
+        for index in range(6)
+    ]
+    service = _service(capture_service, repos, now=now)
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="đã xong hết task hôm nay",
+            source_chat_id="chat-1",
+        )
+    )
+
+    assert "xác nhận đánh dấu xong 6 task" in result.reply
+    unchanged = [await repos["tasks"].get_by_id(task.id) for task in tasks]
+    assert all(str(task.status) != "done" for task in unchanged)
+
+
+async def test_expired_bulk_confirmation_does_not_mutate_tasks(
+    capture_service, repos
+):
+    now = datetime(2026, 6, 27, 2, 0, tzinfo=UTC)
+    first, second = await _two_tasks(repos)
+    await repos["clarifications"].create(
+        ClarificationRequest(
+            source_chat_id="chat-1",
+            entity_type="task_bulk_done",
+            entity_id=f"{first.id},{second.id}",
+            field_name="status|done",
+            question="Xác nhận?",
+            created_at=now - timedelta(minutes=16),
+            updated_at=now - timedelta(minutes=16),
+        )
+    )
+    capture_service.clarification_service.now_provider = lambda: now
+
+    answer = await capture_service.clarification_service.answer_pending(
+        "chat-1", "xác nhận"
+    )
+
+    assert "đã hết hạn" in answer.message
+    assert str((await repos["tasks"].get_by_id(first.id)).status) != "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) != "done"
+
+
+async def test_bulk_confirmation_skips_tasks_that_are_no_longer_open(
+    capture_service, repos
+):
+    first, second = await _two_tasks(repos)
+    service = _service(capture_service, repos)
+    await service.task_list_context_repo.save(
+        "chat-1", [first.id, second.id], "tasks"
+    )
+    await service.handle_text(
+        CaptureRequest(raw_text="xong hết task", source_chat_id="chat-1")
+    )
+    await repos["tasks"].update_status(second.id, TaskStatus.CANCELLED.value)
+
+    answer = await capture_service.clarification_service.answer_pending(
+        "chat-1", "xác nhận"
+    )
+
+    assert "Đã đánh dấu xong 1 task" in answer.message
+    assert "Bỏ qua 1 task" in answer.message
+    assert str((await repos["tasks"].get_by_id(first.id)).status) == "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) == "cancelled"
+
+
+async def test_turn_clock_is_shared_by_today_query_and_due_update(
+    capture_service, repos
+):
+    now = datetime(2026, 6, 26, 18, 12, tzinfo=UTC)  # 27/06 locally
+    note = await repos["notes"].create(Note(raw_text="turn clock"))
+    task = await repos["tasks"].create(
+        Task(
+            title="Clock task",
+            due_at=datetime(2026, 6, 27, 8, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    service = _service(capture_service, repos, now=now)
+    await service.task_list_context_repo.save("chat-1", [task.id], "today")
+
+    today = await service.handle_text(
+        CaptureRequest(raw_text="hôm nay tôi cần làm gì", source_chat_id="chat-1")
+    )
+    updated = await service.handle_text(
+        CaptureRequest(
+            raw_text="đổi task 1 thành hôm nay 19h",
+            source_chat_id="chat-1",
+        )
+    )
+    changed = await repos["tasks"].get_by_id(task.id)
+
+    assert "27/06/2026" in today.reply
+    assert updated.intent == "update_task_due"
+    assert changed is not None
+    assert changed.due_at.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime(
+        "%H:%M %d/%m/%Y"
+    ) == "19:00 27/06/2026"
+
+
+async def test_recurrence_update_resolves_task_by_title(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="recurrence by title"))
+    task = await repos["tasks"].create(
+        Task(title="Tạo kịch bản audio sảng văn", source_note_id=note.id)
+    )
+    service = _service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text="cho kịch bản audio sảng văn lặp hằng tuần")
+    )
+    updated = await repos["tasks"].get_by_id(task.id)
+
+    assert result.intent == "update_task_recurrence"
+    assert updated is not None and updated.recurrence_rule == "weekly"
+
+
+async def test_task_resolution_emits_privacy_safe_metric(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="resolution metric"))
+    task = await repos["tasks"].create(
+        Task(title="Secret client launch", source_note_id=note.id)
+    )
+    service = _service(capture_service, repos)
+
+    await service.handle_text(
+        CaptureRequest(raw_text="đã xong secret client launch")
+    )
+    events = await service.event_service.list_recent(
+        EventType.TASK_REFERENCE_RESOLVED
+    )
+
+    assert events
+    payload = events[0].payload
+    assert payload["source"] == "title_match"
+    assert payload["resolution_reason"] == "unique_title_match"
+    assert payload["candidate_count"] == 1
+    assert "raw_text" not in payload
+    assert "title" not in payload
+    assert task.title not in str(payload)
+
+
+async def test_recurring_backlog_can_skip_to_first_future_occurrence(
+    capture_service, repos
+):
+    now = datetime(2026, 6, 26, 18, 12, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="backlog policy"))
+    await repos["tasks"].create(
+        Task(
+            title="Tạo kịch bản audio sảng văn",
+            due_at=datetime(2026, 6, 25, 16, 59, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="daily",
+            recurrence_series_id="backlog-policy",
+            recurrence_occurrence_at=datetime(2026, 6, 25, 16, 59, tzinfo=UTC),
+        )
+    )
+    service = _service(capture_service, repos, now=now)
+    capture_service.clarification_service.now_provider = lambda: now
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="đã xong kịch bản audio sảng văn hôm nay",
+            source_chat_id="chat-1",
+        )
+    )
+    pending = await repos["clarifications"].find_pending_for_chat("chat-1")
+
+    assert "1 kỳ định kỳ đã lỡ" in result.reply
+    assert pending is not None
+    assert pending.entity_type == "recurrence_backlog_policy"
+
+    answer = await capture_service.clarification_service.answer_pending(
+        "chat-1", "2"
+    )
+    active = await repos["tasks"].list_active()
+
+    assert "Đã bỏ qua backlog cho 1 task" in answer.message
+    assert len(active) == 1
+    assert active[0].due_at == datetime(2026, 6, 27, 16, 59, tzinfo=UTC)
+    assert active[0].recurrence_occurrence_at == active[0].due_at
+
+
+async def test_recurring_backlog_can_keep_each_missed_occurrence(
+    capture_service, repos
+):
+    now = datetime(2026, 6, 26, 18, 12, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="keep backlog"))
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            due_at=datetime(2026, 6, 25, 0, 0, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="daily",
+            recurrence_series_id="keep-backlog",
+            recurrence_occurrence_at=datetime(2026, 6, 25, 0, 0, tzinfo=UTC),
+        )
+    )
+    service = _service(capture_service, repos, now=now)
+    capture_service.clarification_service.now_provider = lambda: now
+    await service.handle_text(
+        CaptureRequest(raw_text="đã xong tập gym", source_chat_id="chat-1")
+    )
+
+    answer = await capture_service.clarification_service.answer_pending(
+        "chat-1", "1"
+    )
+    active = await repos["tasks"].list_active()
+
+    assert "giữ nguyên từng kỳ" in answer.message
+    assert len(active) == 1
+    assert active[0].due_at == datetime(2026, 6, 26, 0, 0, tzinfo=UTC)
+
+
+async def test_batch_preview_allows_reselecting_tasks(capture_service, repos):
+    first, second = await _two_tasks(repos)
+    service = _service(capture_service, repos)
+    await service.task_list_context_repo.save(
+        "chat-1", [first.id, second.id], "tasks"
+    )
+
+    preview = await service.handle_text(
+        CaptureRequest(raw_text="xong hết task", source_chat_id="chat-1")
+    )
+    edit = await capture_service.clarification_service.answer_pending(
+        "chat-1", "chọn lại"
+    )
+    toggled = await capture_service.clarification_service.answer_pending(
+        "chat-1", "2"
+    )
+    completed = await capture_service.clarification_service.answer_pending(
+        "chat-1", "xác nhận"
+    )
+
+    assert "Sẽ hoàn thành 2 task" in preview.reply
+    assert "☑ 1." in edit.message
+    assert "☐ 2." in toggled.message
+    assert "Đã đánh dấu xong 1 task" in completed.message
+    assert str((await repos["tasks"].get_by_id(first.id)).status) == "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) != "done"
+
+
+async def test_batch_completion_can_be_undone_safely(capture_service, repos):
+    first, second = await _two_tasks(repos)
+    service = _service(capture_service, repos)
+    await service.task_list_context_repo.save(
+        "chat-1", [first.id, second.id], "tasks"
+    )
+    await service.handle_text(
+        CaptureRequest(raw_text="xong hết task", source_chat_id="chat-1")
+    )
+    completed = await capture_service.clarification_service.answer_pending(
+        "chat-1", "xác nhận"
+    )
+    undo_button = completed.reply_markup.inline_keyboard[-1][0]
+    work_actions = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        service.event_service,
+        task_operation_service=service.task_operation_service,
+    )
+
+    undone = await work_actions.handle(undo_button.callback_data)
+
+    assert undone is not None
+    assert undone.title == "Đã hoàn tác batch"
+    assert str((await repos["tasks"].get_by_id(first.id)).status) != "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) != "done"
+
+
+async def test_batch_undo_skips_task_changed_after_completion(
+    capture_service, repos
+):
+    first, second = await _two_tasks(repos)
+    service = _service(capture_service, repos)
+    batch = await service.task_operation_service.complete_many(
+        [first.id, second.id],
+        transition="test_batch",
+    )
+    await repos["tasks"].update_priority(second.id, "high")
+    work_actions = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        service.event_service,
+        task_operation_service=service.task_operation_service,
+    )
+
+    undone = await work_actions.handle(f"work:u:e:{batch.batch_event_id}")
+
+    assert undone is not None
+    assert "khôi phục 1 task" in undone.summary
+    assert "Bỏ qua 1 task" in undone.summary
+    assert str((await repos["tasks"].get_by_id(first.id)).status) != "done"
+    assert str((await repos["tasks"].get_by_id(second.id)).status) == "done"
+
+
+async def test_batch_undo_removes_created_recurrence_occurrence(
+    capture_service, repos
+):
+    note = await repos["notes"].create(Note(raw_text="undo recurring batch"))
+    recurring = await repos["tasks"].create(
+        Task(
+            title="Daily batch task",
+            due_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="daily",
+            recurrence_series_id="undo-recurring-batch",
+            recurrence_occurrence_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+        )
+    )
+    plain = await repos["tasks"].create(
+        Task(title="Plain batch task", source_note_id=note.id)
+    )
+    service = _service(capture_service, repos)
+    batch = await service.task_operation_service.complete_many(
+        [recurring.id, plain.id],
+        transition="test_recurring_batch",
+        now=datetime(2026, 6, 28, 0, 0, tzinfo=UTC),
+    )
+
+    undone = await service.task_operation_service.undo_batch(batch.batch_event_id)
+    active = await repos["tasks"].list_active()
+
+    assert set(undone.restored_task_ids) == {recurring.id, plain.id}
+    assert {task.id for task in active} == {recurring.id, plain.id}
+    assert not any(
+        task.recurrence_occurrence_at == datetime(2026, 7, 2, 10, 0, tzinfo=UTC)
+        for task in active
+    )
 
 
 @pytest.mark.parametrize(

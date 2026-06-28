@@ -53,18 +53,28 @@ class SecretaryService:
         self.event_service = event_service
         self.activity_link_repo = activity_link_repo
 
-    async def today(self) -> str:
-        now = datetime.now(UTC)
+    async def today(self, now: datetime | None = None) -> str:
+        now = now or datetime.now(UTC)
         local_now = now.astimezone(self.display_timezone)
-        return await self.agenda_for_date(local_now.date(), "Hôm nay")
+        return await self.agenda_for_date(local_now.date(), "Hôm nay", now=now)
 
-    async def tomorrow(self) -> str:
-        now = datetime.now(UTC)
+    async def tomorrow(self, now: datetime | None = None) -> str:
+        now = now or datetime.now(UTC)
         local_now = now.astimezone(self.display_timezone)
-        return await self.agenda_for_date(local_now.date() + timedelta(days=1), "Ngày mai")
+        return await self.agenda_for_date(
+            local_now.date() + timedelta(days=1),
+            "Ngày mai",
+            now=now,
+        )
 
-    async def agenda_for_date(self, target_date: date, title: str | None = None) -> str:
-        now = datetime.now(UTC)
+    async def agenda_for_date(
+        self,
+        target_date: date,
+        title: str | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> str:
+        now = now or datetime.now(UTC)
         day_start = datetime.combine(
             target_date, time.min, tzinfo=self.display_timezone
         ).astimezone(UTC)
@@ -304,21 +314,25 @@ class SecretaryService:
 
         return "\n".join(lines)
 
-    async def ordered_task_ids_for_view(self, source_view: str) -> list[str]:
+    async def ordered_task_ids_for_view(
+        self,
+        source_view: str,
+        now: datetime | None = None,
+    ) -> list[str]:
+        now = now or datetime.now(UTC)
         normalized = source_view.removeprefix("query_")
         tasks = await self.task_repo.list_active()
         if normalized == "briefing":
-            top = await self._top_priority_tasks(tasks, datetime.now(UTC), limit=3)
+            top = await self._top_priority_tasks(tasks, now, limit=3)
             return [task.id for task, _score, _reasons in top]
         if normalized in {"today", "todays"}:
-            local_today = datetime.now(UTC).astimezone(self.display_timezone).date()
+            local_today = now.astimezone(self.display_timezone).date()
             day_start = datetime.combine(
                 local_today, time.min, tzinfo=self.display_timezone
             ).astimezone(UTC)
             day_end = datetime.combine(
                 local_today, time.max, tzinfo=self.display_timezone
             ).astimezone(UTC)
-            now = datetime.now(UTC)
             due = [
                 task
                 for task in tasks
