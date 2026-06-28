@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 
 from memocore.services.conversation_executor import ExecutorResult
 from memocore.services.secretary_service import SecretaryService
@@ -31,6 +32,7 @@ class QueryExecutor:
         project_scope: str | None = None,
         memory_bucket: str | None = None,
         context_query: str | None = None,
+        now_utc: datetime | None = None,
         callbacks: dict[str, AsyncText] | None = None,
         static_replies: dict[str, str] | None = None,
     ) -> ExecutorResult | None:
@@ -43,9 +45,9 @@ class QueryExecutor:
         if intent in callbacks:
             return ExecutorResult(intent, await callbacks[intent]())
         if intent == "query_today":
-            reply = await self.secretary_service.today()
+            reply = await self.secretary_service.today(now_utc)
         elif intent == "query_tomorrow":
-            reply = await self.secretary_service.tomorrow()
+            reply = await self.secretary_service.tomorrow(now_utc)
         elif intent in {"query_tasks", "query_tasks_due"}:
             if project_name:
                 return ExecutorResult(

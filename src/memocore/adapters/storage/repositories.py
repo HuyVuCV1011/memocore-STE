@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 from uuid import uuid4
@@ -34,9 +35,18 @@ from memocore.domain.models import (
     TaskStatus,
     utc_now,
 )
+from memocore.domain.recurrence import next_recurrence_occurrence
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class TaskListContext:
+    source_chat_id: str
+    task_ids: tuple[str, ...]
+    source_view: str
+    updated_at: datetime
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -396,6 +406,28 @@ class TaskRepository(BaseRepository):
         ).fetchone()
         return _task_from_row(row) if row else None
 
+    async def reschedule_recurrence_occurrence(
+        self,
+        task_id: str,
+        due_at: datetime,
+    ) -> bool:
+        task = await self.get_by_id(task_id)
+        if task is None or not task.recurrence_rule:
+            return False
+        series_id = task.recurrence_series_id or task.id
+        existing = await self.find_recurrence_occurrence(series_id, due_at)
+        if existing is not None and existing.id != task_id:
+            return False
+        await self._execute(
+            """
+            UPDATE tasks
+            SET due_at = ?, recurrence_occurrence_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (_dt(due_at), _dt(due_at), _dt(utc_now()), task_id),
+        )
+        return True
+
     async def complete_and_schedule_next(
         self, task_id: str
     ) -> tuple[Task | None, Task | None, bool]:
@@ -405,7 +437,7 @@ class TaskRepository(BaseRepository):
         if str(task.status) == TaskStatus.DONE.value:
             if task.recurrence_rule and task.due_at:
                 occurrence_at = task.recurrence_occurrence_at or task.due_at
-                next_due = _next_task_occurrence(
+                next_due = next_recurrence_occurrence(
                     occurrence_at, task.recurrence_rule
                 )
                 series_id = task.recurrence_series_id or task.id
@@ -438,7 +470,10 @@ class TaskRepository(BaseRepository):
             if not task.recurrence_rule or task.due_at is None:
                 return await self.get_by_id(task.id), None, False
             occurrence_at = task.recurrence_occurrence_at or task.due_at
-            next_due = _next_task_occurrence(occurrence_at, task.recurrence_rule)
+            next_due = next_recurrence_occurrence(
+                occurrence_at,
+                task.recurrence_rule,
+            )
             series_id = task.recurrence_series_id or task.id
             existing = await self.find_recurrence_occurrence(series_id, next_due)
             if existing is not None:
@@ -464,9 +499,14 @@ class TaskRepository(BaseRepository):
 
 class TaskListContextRepository(BaseRepository):
     async def save(
-        self, source_chat_id: str, task_ids: list[str], source_view: str
+        self,
+        source_chat_id: str,
+        task_ids: list[str],
+        source_view: str,
+        *,
+        now: datetime | None = None,
     ) -> None:
-        now = _dt(utc_now())
+        saved_at = _dt(now or utc_now())
         await self._execute(
             """
             INSERT INTO task_list_contexts (
@@ -477,18 +517,45 @@ class TaskListContextRepository(BaseRepository):
                 source_view = excluded.source_view,
                 updated_at = excluded.updated_at
             """,
-            (source_chat_id, _json(task_ids), source_view, now, now),
+            (source_chat_id, _json(task_ids), source_view, saved_at, saved_at),
         )
 
     async def get(self, source_chat_id: str) -> list[str]:
+        context = await self.get_context(source_chat_id)
+        return list(context.task_ids) if context else []
+
+    async def get_context(
+        self,
+        source_chat_id: str,
+        *,
+        max_age: timedelta | None = None,
+        now: datetime | None = None,
+    ) -> TaskListContext | None:
         conn = await self.database.connection()
         row = await (
             await conn.execute(
-                "SELECT task_ids FROM task_list_contexts WHERE source_chat_id = ?",
+                """
+                SELECT source_chat_id, task_ids, source_view, updated_at
+                FROM task_list_contexts
+                WHERE source_chat_id = ?
+                """,
                 (source_chat_id,),
             )
         ).fetchone()
-        return _loads(row["task_ids"]) if row else []
+        if row is None:
+            return None
+        updated_at = _parse_dt(row["updated_at"])
+        if updated_at is None:
+            return None
+        current = now or utc_now()
+        if max_age is not None and updated_at < current - max_age:
+            return None
+        return TaskListContext(
+            source_chat_id=row["source_chat_id"],
+            task_ids=tuple(_loads(row["task_ids"])),
+            source_view=row["source_view"],
+            updated_at=updated_at,
+        )
 
 
 class ChatContextRepository(BaseRepository):
@@ -1552,6 +1619,28 @@ class ClarificationRequestRepository(BaseRepository):
             ),
         )
 
+    async def update_prompt(
+        self,
+        request_id: str,
+        *,
+        field_name: str,
+        question: str,
+    ) -> None:
+        await self._execute(
+            """
+            UPDATE clarification_requests
+            SET field_name = ?, question = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                field_name,
+                question,
+                _dt(utc_now()),
+                request_id,
+                ClarificationStatus.PENDING.value,
+            ),
+        )
+
     async def cancel(self, request_id: str, answer_text: str | None = None) -> None:
         await self._execute(
             """
@@ -1711,14 +1800,6 @@ def _task_from_row(row: Any) -> Task:
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )
-
-
-def _next_task_occurrence(due_at: datetime, recurrence_rule: str) -> datetime:
-    if recurrence_rule == "daily":
-        return due_at + timedelta(days=1)
-    if recurrence_rule == "weekly":
-        return due_at + timedelta(weeks=1)
-    raise ValueError(f"Unsupported task recurrence rule: {recurrence_rule}")
 
 
 def _reminder_from_row(row: Any) -> Reminder:

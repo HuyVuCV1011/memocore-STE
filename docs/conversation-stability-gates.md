@@ -63,7 +63,12 @@ Every production failure must be added to this corpus before its fix is merged.
 10. Default Telegram views must not expose internal relationship codes, source ids, confidence,
     or evidence metadata.
 11. Mutating one projection of an activity must reconcile linked task/meeting/entity state and be
-    undoable from one event snapshot.
+   undoable from one event snapshot.
+12. Dynamic or vague batch task scopes must preview their exact targets and revalidate status/version
+    snapshots before writing.
+13. Recurrence backlog must never be silently completed; preserving or skipping missed occurrences
+    requires an explicit user choice.
+14. Task-reference metrics must omit raw messages, titles, and other user-authored content.
 
 ## Orchestration Hold
 

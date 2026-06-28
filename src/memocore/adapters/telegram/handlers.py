@@ -367,10 +367,22 @@ async def clarification_callback_handler(
     if query is None or not query.data or service is None or update.effective_chat is None:
         return
     parts = query.data.split(":")
-    if len(parts) != 3 or parts[:2] != ["clar", "scope"] or not parts[2].isdigit():
+    if (
+        len(parts) != 3
+        or parts[:2] != ["clar", "scope"]
+        or (
+            not parts[2].isdigit()
+            and parts[2] not in {"yes", "no", "edit"}
+        )
+    ):
         await query.answer("Lựa chọn không hợp lệ.", show_alert=False)
         return
-    result = await service.answer_pending(str(update.effective_chat.id), parts[2])
+    answer = {
+        "yes": "xác nhận",
+        "no": "không",
+        "edit": "chọn lại",
+    }.get(parts[2], parts[2])
+    result = await service.answer_pending(str(update.effective_chat.id), answer)
     if not result.handled:
         await query.answer("Câu hỏi này đã hết hiệu lực.", show_alert=False)
         return
@@ -392,7 +404,14 @@ async def clarification_callback_handler(
             intent="clarification_answer",
             reply=result.message,
         )
-    await query.edit_message_text(result.message)
+    reply_markup = getattr(result, "reply_markup", None)
+    if reply_markup is None:
+        await query.edit_message_text(result.message)
+    else:
+        await query.edit_message_text(
+            result.message,
+            reply_markup=reply_markup,
+        )
 
 
 async def entity_callback_handler(
@@ -473,7 +492,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         intent="clarification_answer",
                         reply=result.message,
                     )
-                await _safe_reply_text(update, result.message)
+                await _safe_reply_text(
+                    update,
+                    result.message,
+                    reply_markup=getattr(result, "reply_markup", None),
+                )
                 return
     capture_service: CaptureService = context.application.bot_data["capture_service"]
     request = CaptureRequest(

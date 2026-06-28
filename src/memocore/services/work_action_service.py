@@ -272,7 +272,21 @@ class WorkActionService:
 
     async def _undo(self, event_id: str) -> AssistantResponse | None:
         event = await self.event_service.get_event(event_id)
-        if event is None or event.event_type != EventType.WORK_ITEM_CHANGED:
+        if event is None:
+            return None
+        if event.event_type == EventType.TASK_BATCH_COMPLETED:
+            if self.task_operation_service is None:
+                return None
+            result = await self.task_operation_service.undo_batch(event_id)
+            if not result.restored_task_ids and not result.skipped_task_ids:
+                return AssistantResponse(title="Batch đã được hoàn tác trước đó")
+            summary = f"Đã khôi phục {len(result.restored_task_ids)} task."
+            if result.skipped_task_ids:
+                summary += (
+                    f" Bỏ qua {len(result.skipped_task_ids)} task đã thay đổi sau batch."
+                )
+            return AssistantResponse(title="Đã hoàn tác batch", summary=summary)
+        if event.event_type != EventType.WORK_ITEM_CHANGED:
             return None
         if await self.event_service.was_undone(event_id):
             return AssistantResponse(title="Đã hoàn tác trước đó")

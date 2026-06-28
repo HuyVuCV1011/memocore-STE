@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta, tzinfo
+from typing import Any
 
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
@@ -15,13 +18,22 @@ from memocore.domain.models import ClarificationRequest, EventType
 from memocore.services.event_service import EventService
 from memocore.services.feedback_log import write_feedback_signal
 from memocore.services.reminder_service import ReminderService
-from memocore.services.task_operation_service import TaskOperationService
+from memocore.services.task_operation_service import (
+    RecurrenceBacklog,
+    TaskOperationService,
+)
+from memocore.services.task_batch import (
+    TaskBatchSnapshot,
+    decode_batch_field,
+    encode_batch_field,
+)
 
 
 @dataclass(frozen=True)
 class ClarificationResult:
     handled: bool
     message: str
+    reply_markup: Any = None
 
 
 class ClarificationService:
@@ -34,6 +46,8 @@ class ClarificationService:
         default_timezone: tzinfo = UTC,
         task_repo: TaskRepository | None = None,
         task_operation_service: TaskOperationService | None = None,
+        confirmation_ttl: timedelta = timedelta(minutes=15),
+        now_provider: Callable[[], datetime] | None = None,
     ):
         self.clarification_repo = clarification_repo
         self.reminder_repo = reminder_repo
@@ -41,6 +55,8 @@ class ClarificationService:
         self.event_service = event_service
         self.default_timezone = default_timezone
         self.task_repo = task_repo
+        self.confirmation_ttl = confirmation_ttl
+        self.now_provider = now_provider or (lambda: datetime.now(UTC))
         self.task_operation_service = (
             task_operation_service
             or (
@@ -79,6 +95,51 @@ class ClarificationService:
     async def find_pending_for_chat(self, source_chat_id: str) -> ClarificationRequest | None:
         return await self.clarification_repo.find_pending_for_chat(source_chat_id)
 
+    async def request_recurrence_backlog(
+        self,
+        source_chat_id: str,
+        backlogs: list[RecurrenceBacklog],
+        *,
+        source_message_id: str | None = None,
+    ) -> ClarificationRequest | None:
+        if not backlogs:
+            return None
+        payload = [
+            {
+                "task_id": backlog.next_task_id,
+                "missed_count": backlog.missed_count,
+                "next_future_due": backlog.next_future_due.isoformat(),
+                "expected_updated_at": backlog.expected_updated_at.isoformat(),
+            }
+            for backlog in backlogs
+        ]
+        total_missed = sum(item.missed_count for item in backlogs)
+        question = (
+            f"Có {total_missed} kỳ định kỳ đã lỡ trên {len(backlogs)} task. "
+            "Anh muốn giữ từng kỳ hay bỏ qua tới kỳ tiếp theo trong tương lai?"
+        )
+        request = await self.clarification_repo.create(
+            ClarificationRequest(
+                source_chat_id=source_chat_id,
+                source_message_id=source_message_id,
+                entity_type="recurrence_backlog_policy",
+                entity_id=",".join(item.next_task_id for item in backlogs),
+                field_name="backlog|" + json.dumps(payload, separators=(",", ":")),
+                question=question,
+            )
+        )
+        await self.event_service.append_event(
+            EventType.CLARIFICATION_REQUESTED,
+            "clarification_request",
+            request.id,
+            {
+                "entity_type": request.entity_type,
+                "task_count": len(backlogs),
+                "missed_count": total_missed,
+            },
+        )
+        return request
+
     def is_answer_for_pending(
         self, pending: ClarificationRequest, answer_text: str
     ) -> bool:
@@ -94,6 +155,15 @@ class ClarificationService:
             return bool(normalized) and normalized in _normalize_text(pending.question)
         if pending.entity_type == "task_recurrence_scope":
             return _recurrence_scope_choice(answer_text, recurring=True) is not None
+        if pending.entity_type == "recurrence_backlog_policy":
+            return _recurrence_backlog_choice(answer_text) is not None
+        if pending.entity_type == "task_bulk_done":
+            return (
+                _is_yes(answer_text)
+                or _is_no(answer_text)
+                or _is_edit(answer_text)
+                or bool(re.search(r"\b\d+\b", answer_text))
+            )
         return False
 
     async def cancel_pending_for_chat(self, source_chat_id: str, reason: str) -> bool:
@@ -113,7 +183,17 @@ class ClarificationService:
         pending = await self.find_pending_for_chat(source_chat_id)
         if pending is None:
             return ClarificationResult(handled=False, message="")
-        if answer_text.strip().lower() in {"cancel", "skip", "never mind", "nevermind"}:
+        generic_cancel = answer_text.strip().lower() in {
+            "cancel",
+            "skip",
+            "never mind",
+            "nevermind",
+        }
+        backlog_skip = (
+            pending.entity_type == "recurrence_backlog_policy"
+            and _recurrence_backlog_choice(answer_text) == "skip"
+        )
+        if generic_cancel and not backlog_skip:
             await self.clarification_repo.cancel(pending.id, answer_text)
             await self.event_service.append_event(
                 EventType.CLARIFICATION_FAILED,
@@ -129,6 +209,67 @@ class ClarificationService:
                     "Cancelled this request.",
                 ),
             )
+
+        if pending.entity_type == "recurrence_backlog_policy" and self.task_repo:
+            if pending.created_at < self.now_provider().astimezone(UTC) - self.confirmation_ttl:
+                await self.clarification_repo.cancel(pending.id, answer_text)
+                return ClarificationResult(
+                    True,
+                    "Lựa chọn backlog này đã hết hạn. Các kỳ hiện tại vẫn được giữ nguyên.",
+                )
+            choice = _recurrence_backlog_choice(answer_text)
+            if choice is None:
+                return ClarificationResult(
+                    True,
+                    "Anh chọn “Giữ từng kỳ” hoặc “Bỏ qua kỳ đã lỡ” nhé.",
+                    _recurrence_backlog_keyboard(),
+                )
+            if choice == "keep":
+                await self.clarification_repo.resolve(pending.id, answer_text)
+                return ClarificationResult(
+                    True,
+                    "Dạ, em giữ nguyên từng kỳ đã lỡ để anh xử lý lần lượt.",
+                )
+
+            payload = _backlog_payload(pending.field_name)
+            moved = 0
+            skipped = 0
+            async with self.task_repo.database.transaction():
+                for item in payload:
+                    task = await self.task_repo.get_by_id(item["task_id"])
+                    expected_updated_at = datetime.fromisoformat(
+                        item["expected_updated_at"]
+                    )
+                    if (
+                        task is None
+                        or str(task.status)
+                        not in {"candidate", "open", "waiting", "blocked"}
+                        or task.updated_at != expected_updated_at
+                    ):
+                        skipped += 1
+                        continue
+                    future_due = datetime.fromisoformat(item["next_future_due"])
+                    if not await self.task_repo.reschedule_recurrence_occurrence(
+                        task.id,
+                        future_due,
+                    ):
+                        skipped += 1
+                        continue
+                    moved += 1
+                    await self.event_service.append_event(
+                        EventType.TASK_RECURRENCE_BACKLOG_SKIPPED,
+                        "task",
+                        task.id,
+                        {
+                            "missed_count": item["missed_count"],
+                            "next_future_due": future_due.isoformat(),
+                        },
+                    )
+                await self.clarification_repo.resolve(pending.id, answer_text)
+            message = f"Đã bỏ qua backlog cho {moved} task định kỳ."
+            if skipped:
+                message += f" Bỏ qua {skipped} task đã thay đổi."
+            return ClarificationResult(True, message)
 
         if pending.entity_type == "task_recurrence_scope" and self.task_repo:
             task = await self.task_repo.get_by_id(pending.entity_id)
@@ -194,6 +335,157 @@ class ClarificationService:
             )
 
         # Check for task / status confirmations
+        if pending.entity_type == "task_bulk_done" and self.task_repo:
+            now = self.now_provider().astimezone(UTC)
+            if pending.created_at < now - self.confirmation_ttl:
+                await self.clarification_repo.cancel(pending.id, answer_text)
+                return ClarificationResult(
+                    handled=True,
+                    message=(
+                        "Xác nhận này đã hết hạn vì danh sách task có thể đã thay đổi. "
+                        "Anh mở lại danh sách rồi yêu cầu hoàn thành lần nữa nhé."
+                    ),
+                )
+            task_ids = [
+                task_id.strip()
+                for task_id in pending.entity_id.split(",")
+                if task_id.strip()
+            ]
+            snapshots, selected_ids = decode_batch_field(pending.field_name)
+            tasks = [
+                task
+                for task_id in task_ids
+                if (task := await self.task_repo.get_by_id(task_id)) is not None
+            ]
+            if not snapshots:
+                snapshots = [TaskBatchSnapshot.from_task(task) for task in tasks]
+            if _is_edit(answer_text):
+                selected_ids = [task.id for task in tasks]
+                question = _batch_selection_question(tasks, set(selected_ids))
+                await self.clarification_repo.update_prompt(
+                    pending.id,
+                    field_name=encode_batch_field(
+                        snapshots,
+                        selected_ids=selected_ids,
+                    ),
+                    question=question,
+                )
+                return ClarificationResult(
+                    True,
+                    question,
+                    _batch_selection_keyboard(tasks, set(selected_ids)),
+                )
+            if selected_ids is not None and not _is_yes(answer_text) and not _is_no(
+                answer_text
+            ):
+                indexes = {
+                    int(value)
+                    for value in re.findall(r"\b\d+\b", answer_text)
+                    if 1 <= int(value) <= len(tasks)
+                }
+                if not indexes:
+                    return ClarificationResult(
+                        True,
+                        "Anh chọn ít nhất một số task trong danh sách nhé.",
+                        _batch_selection_keyboard(tasks, set(selected_ids)),
+                    )
+                if len(indexes) == 1:
+                    index = next(iter(indexes))
+                    task_id = tasks[index - 1].id
+                    selected = set(selected_ids)
+                    if task_id in selected:
+                        selected.remove(task_id)
+                    else:
+                        selected.add(task_id)
+                else:
+                    selected = {tasks[index - 1].id for index in indexes}
+                selected_ids = [
+                    task.id for task in tasks if task.id in selected
+                ]
+                question = _batch_selection_question(tasks, set(selected_ids))
+                await self.clarification_repo.update_prompt(
+                    pending.id,
+                    field_name=encode_batch_field(
+                        snapshots,
+                        selected_ids=selected_ids,
+                    ),
+                    question=question,
+                )
+                return ClarificationResult(
+                    True,
+                    question,
+                    _batch_selection_keyboard(tasks, set(selected_ids)),
+                )
+            if _is_yes(answer_text):
+                requested_ids = selected_ids if selected_ids is not None else task_ids
+                snapshot_by_id = {
+                    snapshot.task_id: snapshot for snapshot in snapshots
+                }
+                eligible_ids: list[str] = []
+                stale_count = 0
+                for task_id in requested_ids:
+                    task = await self.task_repo.get_by_id(task_id)
+                    snapshot = snapshot_by_id.get(task_id)
+                    if snapshot is not None and not snapshot.matches(task):
+                        stale_count += 1
+                        continue
+                    if task is None:
+                        stale_count += 1
+                        continue
+                    eligible_ids.append(task_id)
+                if not eligible_ids:
+                    await self.clarification_repo.cancel(pending.id, answer_text)
+                    return ClarificationResult(
+                        True,
+                        "Không còn task nào giữ nguyên từ lúc preview nên em chưa thay đổi gì.",
+                    )
+                result = await self.task_operation_service.complete_many(
+                    eligible_ids,
+                    transition="completed_from_bulk_confirmation",
+                    now=now,
+                )
+                await self.clarification_repo.resolve(pending.id, answer_text)
+                skipped = stale_count + len(result.skipped_task_ids)
+                backlog_request = await self.request_recurrence_backlog(
+                    pending.source_chat_id,
+                    [
+                        operation.recurrence_backlog
+                        for operation in result.results
+                        if operation.recurrence_backlog is not None
+                    ],
+                    source_message_id=pending.source_message_id,
+                )
+                backlog_text = (
+                    f"\n{backlog_request.question}" if backlog_request else ""
+                )
+                return ClarificationResult(
+                    handled=True,
+                    message=(
+                        f"Đã rõ. Đã đánh dấu xong "
+                        f"{len(result.completed_tasks)} task."
+                        + (
+                            f" Bỏ qua {skipped} task không còn ở trạng thái đang mở."
+                            if skipped
+                            else ""
+                        )
+                        + backlog_text
+                    ),
+                    reply_markup=_batch_result_keyboard(
+                        result.batch_event_id,
+                        include_backlog=backlog_request is not None,
+                    ),
+                )
+            if _is_no(answer_text):
+                await self.clarification_repo.cancel(pending.id, answer_text)
+                return ClarificationResult(
+                    handled=True,
+                    message="Dạ, em đã hủy đánh dấu xong các task này.",
+                )
+            return ClarificationResult(
+                handled=True,
+                message="Anh trả lời 'có' để xác nhận hoặc 'không' để hủy nhé.",
+            )
+
         if pending.entity_type == "task_due_missing" and self.task_repo:
             due_at = parse_clarification_datetime(answer_text, default_timezone=self.default_timezone)
             if due_at is None:
@@ -270,6 +562,7 @@ class ClarificationService:
                         operation = await self.task_operation_service.complete(
                             pending.entity_id,
                             transition="completed_from_confirmation",
+                            now=self.now_provider().astimezone(UTC),
                         )
                         completed = operation.task
                         next_task = operation.next_task
@@ -284,15 +577,33 @@ class ClarificationService:
                     await self.clarification_repo.resolve(pending.id, answer_text)
                     task = await self.task_repo.get_by_id(pending.entity_id)
                     title = task.title if task else ""
+                    backlog_request = (
+                        await self.request_recurrence_backlog(
+                            pending.source_chat_id,
+                            [operation.recurrence_backlog],
+                            source_message_id=pending.source_message_id,
+                        )
+                        if status_val == "done"
+                        and operation.recurrence_backlog is not None
+                        else None
+                    )
                     if next_task is not None:
                         next_due = next_task.due_at.astimezone(
                             self.default_timezone
                         ).strftime("%H:%M %d/%m/%Y")
+                        message = (
+                            f"Dạ, em đã đánh dấu xong kỳ hiện tại của “{title}” "
+                            f"và tạo kỳ kế tiếp lúc {next_due}."
+                        )
+                        if backlog_request is not None:
+                            message += f"\n{backlog_request.question}"
                         return ClarificationResult(
                             handled=True,
-                            message=(
-                                f"Dạ, em đã đánh dấu xong kỳ hiện tại của “{title}” "
-                                f"và tạo kỳ kế tiếp lúc {next_due}."
+                            message=message,
+                            reply_markup=(
+                                _recurrence_backlog_keyboard()
+                                if backlog_request is not None
+                                else None
                             ),
                         )
                     return ClarificationResult(
@@ -357,35 +668,31 @@ class ClarificationService:
                         )
                     
                     if pending.entity_type == "task_selection_done":
-                        completed, next_task, created = (
-                            await self.task_repo.complete_and_schedule_next(target_task_id)
-                        )
-                        await self.event_service.append_event(
-                            EventType.TASK_DONE,
-                            "task",
+                        operation = await self.task_operation_service.complete(
                             target_task_id,
-                            {
-                                "transition": "completed_from_selection_confirmation",
-                                "next_task_id": next_task.id if next_task else None,
-                            },
+                            transition="completed_from_selection_confirmation",
+                            now=self.now_provider().astimezone(UTC),
                         )
-                        if next_task is not None and created:
-                            await self.event_service.append_event(
-                                EventType.TASK_RECURRENCE_SCHEDULED,
-                                "task",
-                                next_task.id,
-                                {
-                                    "previous_task_id": target_task_id,
-                                    "recurrence_rule": completed.recurrence_rule if completed else None,
-                                },
-                            )
                         await self.clarification_repo.resolve(pending.id, answer_text)
+                        backlog_request = (
+                            await self.request_recurrence_backlog(
+                                pending.source_chat_id,
+                                [operation.recurrence_backlog],
+                                source_message_id=pending.source_message_id,
+                            )
+                            if operation.recurrence_backlog is not None
+                            else None
+                        )
+                        message = f"Đã rõ. Đã đánh dấu xong task: {task.title}."
+                        if backlog_request is not None:
+                            message += f"\n{backlog_request.question}"
                         return ClarificationResult(
                             handled=True,
-                            message=_localized(
-                                answer_text,
-                                f"Đã rõ. Đã đánh dấu xong task: {task.title}.",
-                                f"Got it. Marked task as completed: {task.title}.",
+                            message=message,
+                            reply_markup=(
+                                _recurrence_backlog_keyboard()
+                                if backlog_request is not None
+                                else None
                             ),
                         )
                     elif pending.entity_type == "task_selection_due_update":
@@ -697,6 +1004,14 @@ def _is_no(text: str) -> bool:
     return normalized in {"khong", "no", "n", "k", "huy", "cancel", "skip", "never mind", "nevermind"}
 
 
+def _is_edit(text: str) -> bool:
+    return _normalize_text(text) in {
+        "chon lai",
+        "edit",
+        "sua lua chon",
+    }
+
+
 def _recurrence_scope_choice(text: str, *, recurring: bool) -> str | None:
     normalized = _normalize_text(text)
     if normalized in {"huy", "cancel", "3", "so 3", "lua chon 3"}:
@@ -723,6 +1038,107 @@ def _recurrence_scope_choice(text: str, *, recurring: bool) -> str | None:
         }:
             return "recurring"
     return None
+
+
+def _recurrence_backlog_choice(text: str) -> str | None:
+    normalized = _normalize_text(text)
+    if normalized in {"1", "giu", "giu tung ky", "keep", "keep missed"}:
+        return "keep"
+    if normalized in {
+        "2",
+        "bo qua",
+        "bo qua ky da lo",
+        "skip",
+        "skip missed",
+    }:
+        return "skip"
+    return None
+
+
+def _backlog_payload(field_name: str) -> list[dict[str, Any]]:
+    if not field_name.startswith("backlog|"):
+        return []
+    try:
+        payload = json.loads(field_name.split("|", 1)[1])
+    except (TypeError, ValueError):
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _recurrence_backlog_keyboard():
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Giữ từng kỳ", callback_data="clar:scope:1"),
+                InlineKeyboardButton(
+                    "Bỏ qua kỳ đã lỡ",
+                    callback_data="clar:scope:2",
+                ),
+            ]
+        ]
+    )
+
+
+def _batch_selection_question(tasks, selected_ids: set[str]) -> str:
+    lines = ["Chọn các task cần hoàn thành:"]
+    for index, task in enumerate(tasks, 1):
+        marker = "☑" if task.id in selected_ids else "☐"
+        lines.append(f"{marker} {index}. {task.title}")
+    lines.append("Nhấn task để chọn/bỏ chọn, sau đó xác nhận.")
+    return "\n".join(lines)
+
+
+def _batch_selection_keyboard(tasks, selected_ids: set[str]):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{'☑' if task.id in selected_ids else '☐'} {task.title[:32]}",
+                callback_data=f"clar:scope:{index}",
+            )
+        ]
+        for index, task in enumerate(tasks, 1)
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton("Xác nhận", callback_data="clar:scope:yes"),
+            InlineKeyboardButton("Hủy", callback_data="clar:scope:no"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def _batch_result_keyboard(
+    event_id: str | None,
+    *,
+    include_backlog: bool,
+):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = []
+    if include_backlog:
+        rows.append(
+            [
+                InlineKeyboardButton("Giữ từng kỳ", callback_data="clar:scope:1"),
+                InlineKeyboardButton(
+                    "Bỏ qua kỳ đã lỡ",
+                    callback_data="clar:scope:2",
+                ),
+            ]
+        )
+    if event_id is not None:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "↩ Hoàn tác batch",
+                    callback_data=f"work:u:e:{event_id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 def _duration_from_field_parts(parts: list[str]) -> int | None:

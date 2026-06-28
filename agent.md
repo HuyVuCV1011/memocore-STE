@@ -54,6 +54,9 @@ src/memocore/
     reminder_service.py
     secretary_service.py
     task_extraction_service.py
+    task_reference_resolver.py
+    task_operation_service.py
+    task_batch.py
     schedule_semantics.py
 ```
 
@@ -158,6 +161,10 @@ cp .env.example .env
 
 Never copy `.env`, `data/`, API keys, Telegram tokens, cookies, browser sessions, or local
 databases into Git.
+
+Public changes must also keep backups, exports, Telegram archives, personal profile-review
+artifacts, and JSONL runtime logs out of Git. Resolution telemetry may contain structural metadata
+such as mode and candidate count, but never raw messages or task titles.
 
 ## Verification
 

@@ -128,6 +128,10 @@ boundaries; first-class organization and decision records; reversible knowledge-
 and fixture-driven transcript evaluation. Calendar, email, tools, and multi-agent work remain held
 until `docs/conversation-stability-gates.md` passes.
 
+The task-mutation stabilization layer now includes one resolver for numbered, listed, temporal, and
+title references; privacy-safe resolution metrics; previewed and snapshot-validated batch
+completion; recurrence-backlog choices; and guarded partial batch undo.
+
 ## Held Versions
 
 ### V5: Orchestration And Specialist Agents
