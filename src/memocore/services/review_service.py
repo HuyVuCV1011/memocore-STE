@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
     CommitmentRepository,
+    FollowUpRepository,
     MemoryItemRepository,
     ProjectRepository,
     TaskRepository,
@@ -40,9 +41,15 @@ QUALITY_ATTENTION_EVENT_TYPES = {
 
 
 @dataclass(frozen=True)
+class ProjectHealthItem:
+    project: object
+    reasons: list[str]
+
+
+@dataclass(frozen=True)
 class ProjectHealthReview:
-    priority: list
-    backlog: list
+    priority: list[ProjectHealthItem]
+    backlog: list[ProjectHealthItem]
 
     @property
     def total(self) -> int:
@@ -60,6 +67,7 @@ class ReviewService:
         event_service: EventService,
         project_repo: ProjectRepository | None = None,
         commitment_repo: CommitmentRepository | None = None,
+        followup_repo: FollowUpRepository | None = None,
     ):
         self.memory_repo = memory_repo
         self.task_repo = task_repo
@@ -67,6 +75,7 @@ class ReviewService:
         self.event_service = event_service
         self.project_repo = project_repo
         self.commitment_repo = commitment_repo
+        self.followup_repo = followup_repo
 
     async def overview(self) -> AssistantResponse:
         memories = await self.memory_repo.list_all()
@@ -297,8 +306,8 @@ class ReviewService:
         if visible_priority:
             lines.append("Cần quyết định trước")
             lines.extend(
-                f"{index}. {project.name} · {_project_age_label(project)}"
-                for index, project in enumerate(visible_priority, 1)
+                f"{index}. {item.project.name} · {_project_health_reason_label(item)}"
+                for index, item in enumerate(visible_priority, 1)
             )
             remaining_priority = len(review.priority) - len(visible_priority)
             if remaining_priority > 0:
@@ -306,8 +315,8 @@ class ReviewService:
         if visible_backlog:
             lines.append("Backlog hygiene")
             lines.extend(
-                f"{index}. {project.name} · {_project_age_label(project)}"
-                for index, project in enumerate(visible_backlog, 1)
+                f"{index}. {item.project.name} · {_project_health_reason_label(item)}"
+                for index, item in enumerate(visible_backlog, 1)
             )
             remaining_backlog = len(review.backlog) - len(visible_backlog)
             if remaining_backlog > 0:
@@ -502,23 +511,81 @@ class ReviewService:
         ]
 
     async def _project_health_review(self, tasks) -> ProjectHealthReview:
-        projects = await self._projects_without_next_action(tasks)
+        projects = await self._project_health_candidates(tasks)
         recent_cutoff = datetime.now(UTC) - timedelta(days=30)
         priority = [
-            project
-            for project in projects
-            if max(_sort_datetime(project.updated_at), _sort_datetime(project.last_seen_at))
+            item
+            for item in projects
+            if _has_immediate_project_risk(item)
+            or max(
+                _sort_datetime(item.project.updated_at),
+                _sort_datetime(item.project.last_seen_at),
+            )
             >= recent_cutoff
         ]
-        backlog = [project for project in projects if project not in priority]
+        backlog = [item for item in projects if item not in priority]
         return ProjectHealthReview(priority=priority, backlog=backlog)
 
-    async def _projects_without_next_action(self, tasks) -> list:
+    async def _project_health_candidates(self, tasks) -> list[ProjectHealthItem]:
         if self.project_repo is None:
             return []
-        projects = await self.project_repo.list_all()
-        children_by_parent: dict[str, list] = {}
+        projects, children_by_parent = await self._actionable_leaf_projects()
+        project_by_id = {project.id: project for project in projects}
+        task_project_ids = {task.project_id for task in tasks if task.project_id}
+        now = datetime.now(UTC)
+
+        def has_task_in_tree(project_id: str) -> bool:
+            if project_id in task_project_ids:
+                return True
+            return any(has_task_in_tree(child.id) for child in children_by_parent.get(project_id, []))
+
+        reasons_by_project: dict[str, list[str]] = {}
         for project in projects:
+            if not has_task_in_tree(project.id):
+                reasons_by_project.setdefault(project.id, []).append("thiếu next action")
+        for task in tasks:
+            if task.project_id not in project_by_id:
+                continue
+            status = str(task.status)
+            if task.due_at is not None and task.due_at < now and status not in {"done", "cancelled"}:
+                reasons_by_project.setdefault(task.project_id, []).append("task quá hạn")
+            if status in {"waiting", "blocked"}:
+                reasons_by_project.setdefault(task.project_id, []).append("việc chờ/bị chặn")
+        commitments = await self.commitment_repo.list_open() if self.commitment_repo else []
+        for commitment in commitments:
+            if (
+                commitment.project_id in project_by_id
+                and commitment.due_at is not None
+                and commitment.due_at < now
+            ):
+                reasons_by_project.setdefault(commitment.project_id, []).append(
+                    "commitment quá hạn"
+                )
+        followups = await self.followup_repo.list_open() if self.followup_repo else []
+        for followup in followups:
+            if (
+                followup.project_id in project_by_id
+                and followup.due_at is not None
+                and followup.due_at < now
+            ):
+                reasons_by_project.setdefault(followup.project_id, []).append("follow-up quá hạn")
+        candidates = [
+            ProjectHealthItem(project=project, reasons=_dedupe_reasons(reasons))
+            for project_id, reasons in reasons_by_project.items()
+            if (project := project_by_id.get(project_id)) is not None
+        ]
+        return sorted(
+            candidates,
+            key=lambda item: _sort_datetime(item.project.updated_at),
+            reverse=True,
+        )
+
+    async def _actionable_leaf_projects(self) -> tuple[list, dict[str, list]]:
+        if self.project_repo is None:
+            return [], {}
+        all_projects = await self.project_repo.list_all()
+        children_by_parent: dict[str, list] = {}
+        for project in all_projects:
             if project.parent_project_id:
                 children_by_parent.setdefault(project.parent_project_id, []).append(project)
         active_container_ids = {
@@ -526,22 +593,14 @@ class ReviewService:
             for parent_id, children in children_by_parent.items()
             if any(str(child.status) == "active" for child in children)
         }
-        task_project_ids = {task.project_id for task in tasks if task.project_id}
-
-        def has_task_in_tree(project_id: str) -> bool:
-            if project_id in task_project_ids:
-                return True
-            return any(has_task_in_tree(child.id) for child in children_by_parent.get(project_id, []))
-
         projects = [
             project
-            for project in projects
+            for project in all_projects
             if str(project.status) == "active"
             and str(project.project_type) in ACTIONABLE_PROJECT_TYPES
             and project.id not in active_container_ids
-            and not has_task_in_tree(project.id)
         ]
-        return sorted(projects, key=lambda project: _sort_datetime(project.updated_at), reverse=True)
+        return projects, children_by_parent
 
     async def _recent_undoable_events(self, limit: int) -> list:
         candidates = [
@@ -585,6 +644,28 @@ def _commitment_hygiene_reasons(item) -> list[str]:
     if item.person_id is None and item.project_id is None:
         reasons.append("chưa gắn người/project")
     return reasons or ["đủ metadata"]
+
+
+def _project_health_reason_label(item: ProjectHealthItem) -> str:
+    reasons = "; ".join(item.reasons[:4])
+    if len(item.reasons) > 4:
+        reasons = f"{reasons}; +{len(item.reasons) - 4} tín hiệu"
+    return f"{_project_age_label(item.project)} · {reasons}"
+
+
+def _has_immediate_project_risk(item: ProjectHealthItem) -> bool:
+    return any("quá hạn" in reason or "chờ" in reason or "bị chặn" in reason for reason in item.reasons)
+
+
+def _dedupe_reasons(reasons: list[str]) -> list[str]:
+    order = [
+        "task quá hạn",
+        "việc chờ/bị chặn",
+        "commitment quá hạn",
+        "follow-up quá hạn",
+        "thiếu next action",
+    ]
+    return [reason for reason in order if reason in set(reasons)]
 
 
 def _attention_signal_count(events) -> int:

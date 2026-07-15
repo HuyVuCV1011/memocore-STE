@@ -409,7 +409,10 @@ item or a low-frequency prompt rather than silently remaining inactive.
 Current V4 implementation: `/review` Project Health treats missing-next-action prompts as leaf-level
 work hygiene. Portfolio and capability containers, active parents with active child projects, and
 unclassified context records are kept out of the immediate decision inbox so Telegram does not turn
-structural project hierarchy into a noisy work queue.
+structural project hierarchy into a noisy work queue. Active leaf projects with overdue tasks,
+blocked or waiting work, overdue commitments, or overdue follow-ups are also promoted into Project
+Health even when they already have a next action, so risk is not hidden by the mere presence of a
+task.
 
 ### Telegram experience
 

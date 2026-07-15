@@ -78,6 +78,9 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 - `/review` Project Health now focuses missing-next-action prompts on actionable leaf projects,
   avoiding portfolio/capability containers, active parents with child projects, and unclassified
   context records.
+- `/review` Project Health now also prioritizes active leaf projects with overdue tasks, blocked or
+  waiting work, overdue commitments, or overdue follow-ups even when the project already has a next
+  action.
 - Hidden `/weekly` project hygiene now uses the same actionable leaf-project rule as `/review`.
 - `/endday` no longer automatically rolls undated tasks or waiting/blocked items into tomorrow.
 - `/endday` closeout previews now support grouped confirmation, so the user can move all items or

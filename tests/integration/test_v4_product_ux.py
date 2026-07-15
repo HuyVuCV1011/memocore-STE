@@ -6,6 +6,7 @@ from memocore.domain.models import (
     EventType,
     FeedbackSignal,
     FeedbackStatus,
+    FollowUp,
     Meeting,
     MemoryBucket,
     MemoryItem,
@@ -424,6 +425,87 @@ async def test_review_project_health_focuses_actionable_leaf_projects(repos):
     assert "MemoCore ·" not in text
     assert "Unclassified context" not in text
     assert "1 project cần quyết định trước" in health.summary
+
+
+async def test_review_project_health_flags_project_risks_even_with_existing_tasks(repos):
+    now = datetime.now(UTC)
+    note = await repos["notes"].create(Note(raw_text="project risk health"))
+    project = await repos["projects"].find_or_create("Risky Launch")
+    await repos["projects"].update_taxonomy(
+        project.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    healthy = await repos["projects"].find_or_create("Healthy Launch")
+    await repos["projects"].update_taxonomy(
+        healthy.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Fix launch blocker",
+            source_note_id=note.id,
+            project_id=project.id,
+            due_at=now - timedelta(days=1),
+            priority="high",
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Wait vendor answer",
+            source_note_id=note.id,
+            project_id=project.id,
+            status=TaskStatus.WAITING,
+            due_at=now + timedelta(days=1),
+        )
+    )
+    await repos["commitments"].create(
+        Commitment(
+            title="Client owes signoff",
+            source_note_id=note.id,
+            project_id=project.id,
+            due_at=now - timedelta(hours=2),
+        )
+    )
+    await repos["followups"].create(
+        FollowUp(
+            title="Ask vendor again",
+            source_note_id=note.id,
+            project_id=project.id,
+            due_at=now - timedelta(hours=1),
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Healthy next action",
+            source_note_id=note.id,
+            project_id=healthy.id,
+            due_at=now + timedelta(days=2),
+        )
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+        repos["commitments"],
+        repos["followups"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "Risky Launch" in text
+    assert "task quá hạn" in text
+    assert "việc chờ/bị chặn" in text
+    assert "commitment quá hạn" in text
+    assert "follow-up quá hạn" in text
+    assert "Healthy Launch" not in text
+    assert "thiếu next action" not in text
 
 
 async def test_weekly_review_project_health_uses_actionable_leaf_projects(repos):
