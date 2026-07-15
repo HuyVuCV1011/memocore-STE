@@ -16,6 +16,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   human-readable trace instead of a long mixed result list.
 - `/review` now includes a compact commitment hygiene tab for open commitments missing a due date
   or person/project context, while completion and rescheduling stay in `/work`.
+- `/review` now includes a privacy-safe weekly quality report with 7-day counts, trend comparison,
+  and currently open review items.
 - Telegram `/endday` closeout preview and confirmation for active tasks, open follow-ups, and open
   commitments with snapshot validation before writing.
 - Verified SQLite backup, restore dry-run, maintenance-aware atomic restore, restore outcome and

@@ -96,6 +96,7 @@ async def test_review_navigation_lists_and_resolves_feedback():
     review_service = SimpleNamespace(
         feedback=AsyncMock(return_value=AssistantResponse(title="Phản hồi")),
         commitments=AsyncMock(return_value=AssistantResponse(title="Commitment cần rà")),
+        quality_report=AsyncMock(return_value=AssistantResponse(title="Báo cáo chất lượng")),
         resolve_feedback=AsyncMock(
             return_value=AssistantResponse(title="Đã đánh dấu xử lý")
         ),
@@ -109,13 +110,16 @@ async def test_review_navigation_lists_and_resolves_feedback():
 
     listed = await _navigation_response("nav:review:feedback", context)
     commitments = await _navigation_response("nav:review:commitments", context)
+    quality = await _navigation_response("nav:review:quality", context)
     resolved = await _navigation_response(f"nav:rf:{event_id}", context)
 
     assert listed is not None and listed.title == "Phản hồi"
     assert commitments is not None and commitments.title == "Commitment cần rà"
+    assert quality is not None and quality.title == "Báo cáo chất lượng"
     assert resolved is not None and resolved.title == "Đã đánh dấu xử lý"
     review_service.feedback.assert_awaited_once()
     review_service.commitments.assert_awaited_once()
+    review_service.quality_report.assert_awaited_once()
     review_service.resolve_feedback.assert_awaited_once_with(event_id)
 
 

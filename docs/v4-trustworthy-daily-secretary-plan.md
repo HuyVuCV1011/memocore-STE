@@ -241,7 +241,9 @@ confirmation, pending clarifications, feedback, system warnings, Project Health,
 reversible work operations. The `Gần đây` tab lists only a small number of still-undoable
 operations and exposes inline undo actions through the same guarded work undo flow. The
 `Cam kết` tab surfaces open commitments that are missing a due date or person/project context,
-while lifecycle actions such as complete, reschedule, and cancel remain in `/work`.
+while lifecycle actions such as complete, reschedule, and cancel remain in `/work`. The
+`Chất lượng` tab provides a weekly privacy-safe quality report with 7-day counts, trend comparison
+against the previous week, and unresolved review items.
 
 ### Acceptance gates
 

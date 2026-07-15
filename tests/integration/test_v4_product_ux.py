@@ -5,6 +5,7 @@ from memocore.domain.models import (
     Commitment,
     EventType,
     FeedbackSignal,
+    FeedbackStatus,
     Meeting,
     MemoryBucket,
     MemoryItem,
@@ -245,6 +246,99 @@ async def test_review_surfaces_commitment_hygiene_without_backend_noise(repos):
     assert note.id not in text
     assert person.id not in text
     assert commitments.actions[0].action_id == "nav:work:commitments"
+
+
+async def test_review_quality_report_shows_weekly_trends_and_open_items(repos):
+    now = datetime.now(UTC)
+    note = await repos["notes"].create(Note(raw_text="quality report source"))
+    await repos["clarifications"].create(
+        ClarificationRequest(
+            source_chat_id="quality-chat",
+            entity_type="memory_item",
+            entity_id="memory-1",
+            field_name="bucket",
+            question="Thông tin này thuộc nhóm nào?",
+        )
+    )
+    events = EventService(repos["events"])
+    open_feedback = await events.append_event(
+        EventType.USER_FEEDBACK_RECORDED,
+        "memory_item",
+        note.id,
+        {
+            "schema_version": 1,
+            "signal": FeedbackSignal.CORRECTION.value,
+            "status": FeedbackStatus.OPEN.value,
+        },
+        created_at=now - timedelta(days=1),
+    )
+    await events.append_event(
+        EventType.CLARIFICATION_FAILED,
+        "clarification_request",
+        "clar-1",
+        created_at=now - timedelta(days=2),
+    )
+    await events.append_event(
+        EventType.MODEL_OUTPUT_INVALID,
+        "llm_output",
+        "output-1",
+        created_at=now - timedelta(days=3),
+    )
+    await events.append_event(
+        EventType.BACKUP_FAILED,
+        "database",
+        "backup-1",
+        created_at=now - timedelta(days=4),
+    )
+    await events.append_event(
+        EventType.CLARIFICATION_FAILED,
+        "clarification_request",
+        "older-clar-1",
+        created_at=now - timedelta(days=10),
+    )
+    await events.append_event(
+        EventType.ENTITY_ALIAS_SUGGESTED,
+        "person",
+        "person-1",
+        {"candidate": "Alex"},
+        created_at=now - timedelta(days=1),
+    )
+    changed = await events.append_event(
+        EventType.WORK_ITEM_CHANGED,
+        "task",
+        "task-1",
+        {"action": "reschedule"},
+        created_at=now - timedelta(hours=6),
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        events,
+        repos["projects"],
+        repos["commitments"],
+    )
+
+    overview = await service.overview()
+    report = await service.quality_report()
+    text = "\n".join(
+        line for section in report.sections for line in section.lines
+    )
+
+    assert any(action.action_id == "nav:review:quality" for action in overview.actions)
+    assert "4 tín hiệu cần chú ý" in report.summary
+    assert "tăng 3" in report.summary
+    assert "Phản hồi đã ghi nhận: 1" in text
+    assert "1 sửa sai" in text
+    assert "Clarification fail: 1" in text
+    assert "Lỗi backup/runtime: 1" in text
+    assert "Model/extraction cần soi: 1" in text
+    assert "1 phản hồi cần xử lý" in text
+    assert "1 clarification đang chờ" in text
+    assert "1 liên kết tên chưa chốt" in text
+    assert "1 thao tác còn có thể undo" in text
+    assert open_feedback.id not in text
+    assert changed.id not in text
 
 
 async def test_review_project_health_uses_descendant_tasks_and_skips_portfolio_noise(repos):

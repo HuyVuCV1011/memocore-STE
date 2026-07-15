@@ -29,6 +29,14 @@ ACTIONABLE_PROJECT_TYPES = {
     "client_project",
     "independent_project",
 }
+QUALITY_ATTENTION_EVENT_TYPES = {
+    EventType.CLARIFICATION_FAILED,
+    EventType.BACKUP_FAILED,
+    EventType.MODEL_OUTPUT_INVALID,
+    EventType.EXTRACTION_LIKELY_INCOMPLETE,
+    EventType.NOTE_FAILED,
+    EventType.REMINDER_FAILED,
+}
 
 
 @dataclass(frozen=True)
@@ -164,6 +172,7 @@ class ReviewService:
                 AssistantAction(label="📍 Project health", action_id="nav:review:project-health", row=3),
                 AssistantAction(label="🤝 Cam kết", action_id="nav:review:commitments", row=4),
                 AssistantAction(label="📋 Task", action_id="nav:work:tasks", row=4),
+                AssistantAction(label="📈 Chất lượng", action_id="nav:review:quality", row=5),
             ],
         )
 
@@ -343,6 +352,82 @@ class ReviewService:
             ],
         )
 
+    async def quality_report(self) -> AssistantResponse:
+        now = datetime.now(UTC)
+        current_since = now - timedelta(days=7)
+        previous_since = now - timedelta(days=14)
+        events = await self.event_service.list_recent(since=previous_since, limit=500)
+        current_events = [event for event in events if event.created_at >= current_since]
+        previous_events = [event for event in events if event.created_at < current_since]
+        current_attention = _attention_signal_count(current_events)
+        previous_attention = _attention_signal_count(previous_events)
+        current_feedback = [
+            event
+            for event in current_events
+            if event.event_type == EventType.USER_FEEDBACK_RECORDED
+            and event.payload.get("schema_version") == 1
+        ]
+        feedback_counts = Counter(
+            event.payload.get("signal")
+            for event in current_feedback
+            if event.payload.get("signal") in {signal.value for signal in FeedbackSignal}
+        )
+        pending = await self.clarification_repo.list_pending()
+        open_feedback = await self._open_feedback_events(now - timedelta(days=30))
+        unresolved_aliases = await self._unresolved_alias_events(now - timedelta(days=30))
+        system_failures = await self.event_service.list_recent(
+            EventType.BACKUP_FAILED,
+            since=now - timedelta(days=30),
+            limit=100,
+        )
+        recent_undo = await self._recent_undoable_events(limit=5)
+        return AssistantResponse(
+            title="Báo cáo chất lượng",
+            summary=(
+                f"7 ngày qua có {current_attention} tín hiệu cần chú ý "
+                f"({_trend_label(current_attention, previous_attention)} so với 7 ngày trước)."
+            ),
+            sections=[
+                AssistantSection(
+                    heading="7 ngày gần nhất",
+                    lines=[
+                        f"Phản hồi đã ghi nhận: {len(current_feedback)}",
+                        (
+                            "Sửa/chê/sai: "
+                            f"{feedback_counts[FeedbackSignal.EDITED.value]} chỉnh · "
+                            f"{feedback_counts[FeedbackSignal.REJECTED.value]} từ chối · "
+                            f"{feedback_counts[FeedbackSignal.CORRECTION.value]} sửa sai"
+                        ),
+                        f"Clarification fail: {_event_count(current_events, EventType.CLARIFICATION_FAILED)}",
+                        f"Lỗi backup/runtime: {_event_count(current_events, EventType.BACKUP_FAILED)}",
+                        (
+                            "Model/extraction cần soi: "
+                            f"{_event_count(current_events, EventType.MODEL_OUTPUT_INVALID) + _event_count(current_events, EventType.EXTRACTION_LIKELY_INCOMPLETE)}"
+                        ),
+                    ],
+                ),
+                AssistantSection(
+                    heading="Đang mở",
+                    lines=[
+                        f"{len(open_feedback)} phản hồi cần xử lý",
+                        f"{len(pending)} clarification đang chờ",
+                        f"{len(unresolved_aliases)} liên kết tên chưa chốt",
+                        f"{len(system_failures)} cảnh báo hệ thống trong 30 ngày",
+                        f"{len(recent_undo)} thao tác còn có thể undo",
+                    ],
+                ),
+            ],
+            footer=(
+                "Báo cáo này chỉ dùng số đếm và loại tín hiệu; nội dung riêng tư nằm ở các màn xử lý tương ứng."
+            ),
+            actions=[
+                AssistantAction(label="Phản hồi", action_id="nav:review:feedback", row=0),
+                AssistantAction(label="Đang chờ", action_id="nav:review:clarifications", row=0),
+                AssistantAction(label="Hệ thống", action_id="nav:review:system", row=1),
+                AssistantAction(label="Quay lại", action_id="nav:review", row=2),
+            ],
+        )
+
     async def resolve_feedback(self, event_id: str) -> AssistantResponse | None:
         resolved = await self.event_service.resolve_feedback(event_id)
         if resolved is None:
@@ -383,6 +468,28 @@ class ReviewService:
             )
             if event.payload.get("feedback_event_id")
         }
+
+    async def _open_feedback_events(self, since: datetime) -> list:
+        events = await self.event_service.list_recent(
+            EventType.USER_FEEDBACK_RECORDED,
+            since=since,
+            limit=100,
+        )
+        resolved_ids = await self._resolved_feedback_ids(since)
+        return [
+            event
+            for event in events
+            if event.payload.get("schema_version") == 1
+            and event.payload.get("status") == FeedbackStatus.OPEN.value
+            and event.id not in resolved_ids
+        ]
+
+    async def _unresolved_alias_events(self, since: datetime) -> list:
+        alias_suggestions = await self.event_service.list_recent(
+            EventType.ENTITY_ALIAS_SUGGESTED, since=since, limit=100
+        )
+        alias_resolved = await self._resolved_alias_suggestion_ids(since)
+        return [event for event in alias_suggestions if event.id not in alias_resolved]
 
     async def _commitment_hygiene_items(self) -> list:
         if self.commitment_repo is None:
@@ -478,6 +585,35 @@ def _commitment_hygiene_reasons(item) -> list[str]:
     if item.person_id is None and item.project_id is None:
         reasons.append("chưa gắn người/project")
     return reasons or ["đủ metadata"]
+
+
+def _attention_signal_count(events) -> int:
+    return sum(
+        1
+        for event in events
+        if event.event_type in QUALITY_ATTENTION_EVENT_TYPES
+        or (
+            event.event_type == EventType.USER_FEEDBACK_RECORDED
+            and event.payload.get("signal")
+            in {
+                FeedbackSignal.EDITED.value,
+                FeedbackSignal.REJECTED.value,
+                FeedbackSignal.CORRECTION.value,
+            }
+        )
+    )
+
+
+def _event_count(events, event_type: EventType) -> int:
+    return sum(1 for event in events if event.event_type == event_type)
+
+
+def _trend_label(current: int, previous: int) -> str:
+    if current == previous:
+        return "không đổi"
+    if current > previous:
+        return f"tăng {current - previous}"
+    return f"giảm {previous - current}"
 
 
 def _undoable_event_label(event_type: EventType) -> str:
