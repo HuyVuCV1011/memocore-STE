@@ -14,6 +14,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   timeline projection.
 - `/search` now recognizes "latest / lần gần nhất" style questions and returns the most recent
   human-readable trace instead of a long mixed result list.
+- `/review` now includes a compact commitment hygiene tab for open commitments missing a due date
+  or person/project context, while completion and rescheduling stay in `/work`.
 - Telegram `/endday` closeout preview and confirmation for active tasks, open follow-ups, and open
   commitments with snapshot validation before writing.
 - Verified SQLite backup, restore dry-run, maintenance-aware atomic restore, restore outcome and

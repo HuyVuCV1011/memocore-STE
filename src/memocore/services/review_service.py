@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
+    CommitmentRepository,
     MemoryItemRepository,
     ProjectRepository,
     TaskRepository,
@@ -50,17 +51,20 @@ class ReviewService:
         clarification_repo: ClarificationRequestRepository,
         event_service: EventService,
         project_repo: ProjectRepository | None = None,
+        commitment_repo: CommitmentRepository | None = None,
     ):
         self.memory_repo = memory_repo
         self.task_repo = task_repo
         self.clarification_repo = clarification_repo
         self.event_service = event_service
         self.project_repo = project_repo
+        self.commitment_repo = commitment_repo
 
     async def overview(self) -> AssistantResponse:
         memories = await self.memory_repo.list_all()
         tasks = await self.task_repo.list_active()
         project_review = await self._project_health_review(tasks)
+        commitment_review = await self._commitment_hygiene_items()
         pending = await self.clarification_repo.list_pending()
         since = datetime.now(UTC) - timedelta(days=30)
         duplicates = await self.event_service.list_recent(
@@ -124,6 +128,7 @@ class ReviewService:
                     heading="Công việc nên rà sau",
                     lines=[
                         f"{len(undated_tasks)} task chưa có hạn",
+                        f"{len(commitment_review)} commitment thiếu hạn/ngữ cảnh",
                         f"{len(project_review.priority)} project cần chọn next action trước",
                         f"{len(project_review.backlog)} project khác trong backlog hygiene",
                     ],
@@ -157,6 +162,7 @@ class ReviewService:
                 AssistantAction(label="⚙️ Hệ thống", action_id="nav:review:system", row=2),
                 AssistantAction(label="↩ Gần đây", action_id="nav:review:recent", row=3),
                 AssistantAction(label="📍 Project health", action_id="nav:review:project-health", row=3),
+                AssistantAction(label="🤝 Cam kết", action_id="nav:review:commitments", row=4),
                 AssistantAction(label="📋 Task", action_id="nav:work:tasks", row=4),
             ],
         )
@@ -254,7 +260,7 @@ class ReviewService:
             since=since,
             limit=20,
         )
-        lines = []
+        lines: list[str] = []
         if backup_failures:
             lines.extend(
                 f"{index}. Backup lỗi · {event.created_at.date().isoformat()}"
@@ -314,6 +320,29 @@ class ReviewService:
             actions=[AssistantAction(label="Quay lại", action_id="nav:review", row=0)],
         )
 
+    async def commitments(self) -> AssistantResponse:
+        items = await self._commitment_hygiene_items()
+        visible = items[:8]
+        lines = [
+            f"{index}. {item.title} · {', '.join(_commitment_hygiene_reasons(item))}"
+            for index, item in enumerate(visible, 1)
+        ] or ["Không có commitment mở nào thiếu hạn hoặc ngữ cảnh."]
+        remaining = len(items) - len(visible)
+        if remaining > 0:
+            lines.append(f"- Còn {remaining} commitment khác nên rà sau.")
+        return AssistantResponse(
+            title="Commitment cần rà",
+            summary=f"{len(items)} commitment cần bổ sung metadata.",
+            sections=[AssistantSection(lines=lines)],
+            footer=(
+                "Màn này chỉ phát hiện commitment thiếu thông tin; vào /work để hoàn thành, dời hạn hoặc hủy."
+            ),
+            actions=[
+                AssistantAction(label="Mở cam kết", action_id="nav:work:commitments", row=0),
+                AssistantAction(label="Quay lại", action_id="nav:review", row=1),
+            ],
+        )
+
     async def resolve_feedback(self, event_id: str) -> AssistantResponse | None:
         resolved = await self.event_service.resolve_feedback(event_id)
         if resolved is None:
@@ -354,6 +383,16 @@ class ReviewService:
             )
             if event.payload.get("feedback_event_id")
         }
+
+    async def _commitment_hygiene_items(self) -> list:
+        if self.commitment_repo is None:
+            return []
+        commitments = await self.commitment_repo.list_open()
+        return [
+            item
+            for item in commitments
+            if item.due_at is None or (item.person_id is None and item.project_id is None)
+        ]
 
     async def _project_health_review(self, tasks) -> ProjectHealthReview:
         projects = await self._projects_without_next_action(tasks)
@@ -430,6 +469,15 @@ def _artifact_label(value: str) -> str:
         "person": "người",
         "project": "dự án",
     }.get(value, "dữ liệu")
+
+
+def _commitment_hygiene_reasons(item) -> list[str]:
+    reasons = []
+    if item.due_at is None:
+        reasons.append("chưa có hạn")
+    if item.person_id is None and item.project_id is None:
+        reasons.append("chưa gắn người/project")
+    return reasons or ["đủ metadata"]
 
 
 def _undoable_event_label(event_type: EventType) -> str:

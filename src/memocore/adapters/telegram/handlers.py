@@ -844,6 +844,8 @@ async def _navigation_response(
         return await review_service.recent_operations()
     if callback_data == "nav:review:project-health" and review_service is not None:
         return await review_service.project_health()
+    if callback_data == "nav:review:commitments" and review_service is not None:
+        return await review_service.commitments()
     if callback_data.startswith("nav:rf:") and review_service is not None:
         return await review_service.resolve_feedback(callback_data.removeprefix("nav:rf:"))
     if callback_data == "nav:review:clarifications" and review_service is not None:

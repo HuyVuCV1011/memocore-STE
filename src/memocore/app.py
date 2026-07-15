@@ -192,6 +192,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         clarification_repo,
         event_service,
         project_repo,
+        commitment_repo,
     )
     daily_closeout_service = DailyCloseoutService(
         task_repo,

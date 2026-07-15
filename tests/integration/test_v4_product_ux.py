@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from memocore.domain.models import (
     ClarificationRequest,
+    Commitment,
     EventType,
     FeedbackSignal,
     Meeting,
@@ -166,6 +167,7 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
         repos["clarifications"],
         events,
         repos["projects"],
+        repos["commitments"],
     )
 
     overview = await service.overview()
@@ -178,6 +180,7 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
     assert "1 phản hồi" in overview.summary
     assert "1 cảnh báo hệ thống" in overview.summary
     assert "1 task chưa có hạn" in overview.sections[0].lines
+    assert "0 commitment thiếu hạn/ngữ cảnh" in overview.sections[0].lines
     assert "1 project cần chọn next action trước" in overview.sections[0].lines
     assert "0 project khác trong backlog hygiene" in overview.sections[0].lines
     assert "Gợi ý trùng: 1" in overview.sections[1].lines
@@ -200,6 +203,48 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
     resolved = await service.resolve_feedback(feedback.id)
     assert resolved is not None
     assert "0 mục đang mở" in resolved.summary
+
+
+async def test_review_surfaces_commitment_hygiene_without_backend_noise(repos):
+    note = await repos["notes"].create(Note(raw_text="commitment hygiene"))
+    person = await repos["people"].create(Person(display_name="Alex"))
+    await repos["commitments"].create(
+        Commitment(
+            title="Gửi outline sảng văn",
+            source_note_id=note.id,
+        )
+    )
+    await repos["commitments"].create(
+        Commitment(
+            title="Gửi lịch gym",
+            source_note_id=note.id,
+            person_id=person.id,
+            due_at=datetime(2026, 7, 20, 10, 0, tzinfo=UTC),
+        )
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+        repos["commitments"],
+    )
+
+    overview = await service.overview()
+    commitments = await service.commitments()
+    text = "\n".join(commitments.sections[0].lines)
+
+    assert "1 commitment thiếu hạn/ngữ cảnh" in overview.sections[0].lines
+    assert any(action.action_id == "nav:review:commitments" for action in overview.actions)
+    assert commitments.summary == "1 commitment cần bổ sung metadata."
+    assert "Gửi outline sảng văn" in text
+    assert "chưa có hạn" in text
+    assert "chưa gắn người/project" in text
+    assert "Gửi lịch gym" not in text
+    assert note.id not in text
+    assert person.id not in text
+    assert commitments.actions[0].action_id == "nav:work:commitments"
 
 
 async def test_review_project_health_uses_descendant_tasks_and_skips_portfolio_noise(repos):
