@@ -277,13 +277,46 @@ async def test_work_views_share_priority_logic_and_keep_waiting_out_of_next_acti
     dashboard = await service.work_dashboard(now)
     briefing = await service.daily_briefing(now)
     next_action_block = briefing.split("Nên làm tiếp", 1)[1]
+    routine_block = briefing.split("Routine hôm nay", 1)[1].split("Nên làm tiếp", 1)[0]
 
     assert "Score:" not in dashboard
     assert "Top priorities" not in dashboard
     assert "Finish BI report" in next_action_block
-    assert "Tập gym" in next_action_block
+    assert "Tập gym" not in next_action_block
+    assert "Tập gym" in routine_block
     assert "Follow up Alex" not in next_action_block
     assert "Việc đang chờ" in briefing
+
+
+async def test_briefing_does_not_repeat_attention_tasks_as_next_actions(repos):
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="briefing dedupe"))
+    await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo BI",
+            source_note_id=note.id,
+            due_at=now - timedelta(hours=2),
+            priority="high",
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            source_note_id=note.id,
+            due_at=now - timedelta(hours=1),
+            recurrence_rule="daily",
+        )
+    )
+    service = _secretary(repos)
+
+    briefing = await service.daily_briefing(now)
+    attention_block = briefing.split("Điểm cần chú ý", 1)[1].split("Routine hôm nay", 1)[0]
+    next_action_block = briefing.split("Nên làm tiếp", 1)[1]
+
+    assert "Gửi báo cáo BI" not in attention_block
+    assert "Gửi báo cáo BI" in next_action_block
+    assert "Tập gym" in briefing.split("Routine hôm nay", 1)[1].split("Nên làm tiếp", 1)[0]
+    assert "Tập gym" not in next_action_block
 
 
 async def test_weekly_review_hides_raw_priority_scores(repos):

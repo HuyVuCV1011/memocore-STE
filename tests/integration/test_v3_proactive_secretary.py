@@ -121,10 +121,13 @@ async def test_briefing_names_today_and_upcoming_tasks_in_analysis(repos):
     )
 
     briefing = await service.daily_briefing(now)
+    attention_block = briefing.split("Điểm cần chú ý", 1)[1].split("Nên làm tiếp", 1)[0]
+    next_action_block = briefing.split("Nên làm tiếp", 1)[1]
 
     assert "Việc cần chốt hôm nay là “Hoàn thiện ver 4.0 của memocore”" in briefing
-    assert "Hôm nay: “Hoàn thiện ver 4.0 của memocore” hạn 23:59 hôm nay." in briefing
+    assert "Hôm nay: “Hoàn thiện ver 4.0 của memocore” hạn 23:59 hôm nay." not in attention_block
     assert "Sắp tới: “Tạo kịch bản audio sảng văn” hạn 00:00 ngày mai." in briefing
+    assert "Hoàn thiện ver 4.0 của memocore" in next_action_block
 
 
 async def test_task_views_show_recurrence_badge(repos):

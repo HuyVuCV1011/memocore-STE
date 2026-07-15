@@ -184,14 +184,21 @@ class SecretaryService:
             f"{state.open_loop_count} task mở · {len(state.overdue)} quá hạn · "
             f"{len(state.waiting) + len(state.blocked)} đang chờ/bị chặn · {len(commitments)} commitment mở."
         )
+        next_actions = state.next_actions[:5]
+        next_action_ids = _ranked_task_ids(next_actions)
         lines.extend(["", "Nên xử lý tiếp"])
         lines.extend(
-            _ranked_task_lines(state.next_actions[:5], self.display_timezone, state.local_today)
-            if state.next_actions
+            _ranked_task_lines(next_actions, self.display_timezone, state.local_today)
+            if next_actions
             else ["Không có việc nào cần ưu tiên ngay."]
         )
+        overdue_other = _tasks_excluding(state.overdue, next_action_ids)
         lines.extend(["", "Quá hạn"])
-        lines.extend(_task_lines(state.overdue[:5], self.display_timezone) if state.overdue else ["Không có task quá hạn."])
+        lines.extend(
+            _task_lines(overdue_other[:5], self.display_timezone)
+            if overdue_other
+            else ["Không có task quá hạn khác."]
+        )
         lines.extend(["", "Đang chờ/bị chặn"])
         waiting = [*state.waiting, *state.blocked]
         lines.extend(_task_lines(waiting[:5], self.display_timezone) if waiting else ["Không có task đang chờ hoặc bị chặn."])
@@ -406,8 +413,16 @@ class SecretaryService:
         state = self.work_state_service.classify(tasks, now)
         overdue = state.overdue
         due_today = state.due_today
+        action_items = state.next_actions[:3]
+        action_item_ids = _ranked_task_ids(action_items)
+        signal_overdue = _tasks_excluding(overdue, action_item_ids)
+        signal_due_today = _tasks_excluding(due_today, action_item_ids)
         upcoming_top = [
-            task for task in state.upcoming if task.due_at and task.due_at <= now + timedelta(days=1)
+            task
+            for task in state.upcoming
+            if task.due_at
+            and task.due_at <= now + timedelta(days=1)
+            and task.id not in action_item_ids
         ][:3]
         undated_priority = state.unscheduled[:5]
         waiting = [*state.waiting, *state.blocked]
@@ -450,8 +465,8 @@ class SecretaryService:
         )
         lines.extend(["", "Điểm cần chú ý"])
         signals = _briefing_signals(
-            overdue=overdue,
-            due_today=due_today,
+            overdue=signal_overdue,
+            due_today=signal_due_today,
             reminders=reminders,
             meetings=meetings,
             waiting=waiting,
@@ -468,9 +483,16 @@ class SecretaryService:
                 f"- {task.title}{_task_recurrence_badge(task)} - {_waiting_action_label(task)}"
                 for task in waiting[:3]
             )
+        routines = _tasks_excluding(state.routine_today, action_item_ids)
+        if routines:
+            lines.extend(["", "Routine hôm nay"])
+            lines.extend(
+                f"- {task.title}{_task_recurrence_badge(task)} - giữ nhịp nếu còn năng lượng."
+                for task in routines[:3]
+            )
         lines.extend(["", "Nên làm tiếp"])
-        if state.next_actions:
-            lines.extend(_ranked_task_lines(state.next_actions[:3], self.display_timezone, local_now.date()))
+        if action_items:
+            lines.extend(_ranked_task_lines(action_items, self.display_timezone, local_now.date()))
         elif meetings:
             lines.append(f"1. Chuẩn bị trước cho meeting “{meetings[0].title}”.")
         elif followups:
@@ -1117,6 +1139,18 @@ def _ranked_task_lines(
             f"{index}. {task.title}{_task_recurrence_badge(task)} - {item.reason}; hạn {due}."
         )
     return lines
+
+
+def _ranked_task_ids(ranked_tasks) -> set[str]:
+    return {
+        item.task.id
+        for item in ranked_tasks
+        if getattr(getattr(item, "task", None), "id", None)
+    }
+
+
+def _tasks_excluding(tasks, excluded_ids: set[str]) -> list:
+    return [task for task in tasks if getattr(task, "id", None) not in excluded_ids]
 
 
 def _waiting_action_label(task) -> str:

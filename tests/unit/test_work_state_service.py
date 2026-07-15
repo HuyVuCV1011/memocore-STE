@@ -50,9 +50,9 @@ def test_work_state_keeps_routines_actionable_but_lower_than_hard_deadlines():
 
     state = service.classify([routine, hard_deadline], now)
 
-    assert [item.task.title for item in state.next_actions] == ["Submit proposal", "Tập gym"]
+    assert [item.task.title for item in state.next_actions] == ["Submit proposal"]
+    assert [task.title for task in state.routine_today] == ["Tập gym"]
     assert state.next_actions[0].tier == "P1"
-    assert state.next_actions[1].tier == "P3"
 
 
 def test_work_state_uses_upcoming_only_when_today_has_no_actionable_work():

@@ -46,6 +46,10 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   consistently across views.
 - `/briefing` now presents evidence-backed judgment distinct from `/today`, including analysis,
   signals, and recommended next actions without exposing raw scores.
+- `/briefing` now keeps attention signals distinct from recommended next actions, and separates
+  recurring routines into their own lane when harder deadlines or commitments need focus.
+- `/work` no longer repeats the same overdue task in both the recommended next-action list and the
+  overdue detail section.
 - User-facing task rankings no longer expose raw priority scores, including hidden shortcut views
   such as `/weekly`.
 - `/review` is now decision-first, with work hygiene and 30-day quality signals below the primary

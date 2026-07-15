@@ -102,9 +102,9 @@ Delivered foundations:
 - Ambiguous or low-confidence V4 operational candidates are skipped with audit warnings instead
   of silently mutating durable state.
 - Failed transactional derived writes can be retried using the same source message id.
-- Compact visible Telegram menu: `/today`, `/work`, `/memory`, `/context`, `/briefing`,
-  `/search`, `/capture`, and `/review`; existing specialist commands remain available as hidden
-  shortcuts.
+- Compact visible Telegram menu: `/today`, `/work`, `/context`, `/search`, and `/review`;
+  existing specialist commands such as `/briefing`, `/memory`, and `/capture` remain available
+  as hidden shortcuts.
 - Inline hubs for work, context, capture, and high-volume memory navigation.
 - Ranked open-loop views, including top priorities, overdue work, waiting items, commitments, and
   goal-aware daily selection.

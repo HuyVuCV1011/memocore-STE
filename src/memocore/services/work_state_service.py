@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from collections.abc import Sequence
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ class WorkStateService:
     def __init__(self, display_timezone: tzinfo = UTC):
         self.display_timezone = display_timezone
 
-    def classify(self, tasks: list[object], now: datetime | None = None) -> WorkState:
+    def classify(self, tasks: Sequence[object], now: datetime | None = None) -> WorkState:
         now = now or datetime.now(UTC)
         local_today = now.astimezone(self.display_timezone).date()
         day_start = datetime.combine(
@@ -103,12 +104,19 @@ class WorkStateService:
         now: datetime,
     ) -> list[RankedTask]:
         ranked: list[RankedTask] = []
+        hard_due_work = [
+            task for task in [*overdue, *due_today] if not _is_routine(task)
+        ]
         for task in overdue:
+            if _is_routine(task) and hard_due_work:
+                continue
             reason = "quá hạn"
             if _is_routine(task):
                 reason = "việc định kỳ đã lỡ hạn"
             ranked.append(RankedTask(task=task, tier="P0", reason=reason))
         for task in due_today:
+            if _is_routine(task) and hard_due_work:
+                continue
             reason = "đến hạn hôm nay"
             tier = "P3" if _is_routine(task) else "P1"
             if _priority(task) == "high" and not _is_routine(task):
