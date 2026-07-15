@@ -3,8 +3,18 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 import re
 
-from memocore.adapters.storage.repositories import ReminderRepository, TaskRepository
-from memocore.domain.models import EventType, ReminderStatus
+from memocore.adapters.storage.repositories import (
+    CommitmentRepository,
+    FollowUpRepository,
+    ReminderRepository,
+    TaskRepository,
+)
+from memocore.domain.models import (
+    CommitmentStatus,
+    EventType,
+    FollowUpStatus,
+    ReminderStatus,
+)
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
 from memocore.services.task_operation_service import TaskOperationService
@@ -19,12 +29,16 @@ class WorkActionService:
         event_service: EventService,
         display_timezone: tzinfo = UTC,
         task_operation_service: TaskOperationService | None = None,
+        followup_repo: FollowUpRepository | None = None,
+        commitment_repo: CommitmentRepository | None = None,
     ):
         self.task_repo = task_repo
         self.reminder_repo = reminder_repo
         self.event_service = event_service
         self.display_timezone = display_timezone
         self.task_operation_service = task_operation_service
+        self.followup_repo = followup_repo
+        self.commitment_repo = commitment_repo
         self.work_state_service = WorkStateService(display_timezone)
 
     async def tasks_view(self) -> AssistantResponse:
@@ -298,6 +312,12 @@ class WorkActionService:
                     f" Bỏ qua {len(result.skipped_task_ids)} task đã thay đổi sau batch."
                 )
             return AssistantResponse(title="Đã hoàn tác batch", summary=summary)
+        if event.event_type in {
+            EventType.TASK_DONE,
+            EventType.FOLLOWUP_DONE,
+            EventType.COMMITMENT_DONE,
+        }:
+            return await self._undo_lifecycle_event(event_id)
         if event.event_type != EventType.WORK_ITEM_CHANGED:
             return None
         if await self.event_service.was_undone(event_id):
@@ -343,6 +363,49 @@ class WorkActionService:
             {"restored": before},
         )
         return AssistantResponse(title="Đã hoàn tác", summary="Trạng thái cũ đã được khôi phục.")
+
+    async def _undo_lifecycle_event(self, event_id: str) -> AssistantResponse | None:
+        event = await self.event_service.get_event(event_id)
+        if event is None:
+            return None
+        if await self.event_service.was_undone(event_id):
+            return AssistantResponse(title="Đã hoàn tác trước đó")
+        before = event.payload.get("before")
+        if not isinstance(before, dict) or not before:
+            return None
+        due_at = _parse_dt(before.get("due_at"))
+        if event.entity_type == "task":
+            next_task_id = event.payload.get("next_task_id")
+            if next_task_id:
+                await self.task_repo.delete(next_task_id)
+            await self.task_repo.update_status(event.entity_id, before["status"])
+            await self.task_repo.update_due_at(event.entity_id, due_at)
+            await self.task_repo.update_priority(event.entity_id, before["priority"])
+        elif event.entity_type == "followup":
+            if self.followup_repo is None:
+                return None
+            await self.followup_repo.update_status(
+                event.entity_id,
+                FollowUpStatus(before["status"]),
+            )
+            await self.followup_repo.update_due_at(event.entity_id, due_at)
+        elif event.entity_type == "commitment":
+            if self.commitment_repo is None:
+                return None
+            await self.commitment_repo.update_status(
+                event.entity_id,
+                CommitmentStatus(before["status"]),
+            )
+            await self.commitment_repo.update_due_at(event.entity_id, due_at)
+        else:
+            return None
+        await self.event_service.append_event(
+            EventType.WORK_ITEM_UNDONE,
+            "work_event",
+            event_id,
+            {"restored": before},
+        )
+        return AssistantResponse(title="Đã hoàn tác", summary="Open loop đã được khôi phục.")
 
     async def _get(self, kind: str, entity_id: str):
         if kind == "t":

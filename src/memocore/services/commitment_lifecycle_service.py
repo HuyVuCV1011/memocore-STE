@@ -80,9 +80,10 @@ class CommitmentLifecycleService:
                     "Anh nói rõ mục nào đã xong giúp em nha:\n" + "\n".join(lines)
                 ),
                 tuple(candidate.id for candidate in candidates[:5]),
-            )
+        )
         candidate = candidates[0]
-        await self._apply(candidate, mode)
+        before = await self._snapshot(candidate)
+        next_task_id = await self._apply(candidate, mode)
         await self.event_service.append_event(
             _event_type(candidate.kind),
             candidate.kind,
@@ -92,6 +93,8 @@ class CommitmentLifecycleService:
                 "source_chat_id": source_chat_id,
                 "source_message_id": source_message_id,
                 "mode": mode,
+                "before": before,
+                "next_task_id": next_task_id,
             },
             created_at=now,
         )
@@ -127,23 +130,56 @@ class CommitmentLifecycleService:
         ]
         return [*tasks, *followups, *commitments]
 
-    async def _apply(self, candidate: _LifecycleCandidate, mode: str) -> None:
+    async def _apply(self, candidate: _LifecycleCandidate, mode: str) -> str | None:
         if candidate.kind == "task":
             if mode == "done":
-                await self.task_repo.complete_and_schedule_next(candidate.id)
+                _, next_task, created = await self.task_repo.complete_and_schedule_next(
+                    candidate.id
+                )
+                return next_task.id if next_task is not None and created else None
             else:
                 await self.task_repo.update_status(candidate.id, "cancelled")
-            return
+            return None
         if candidate.kind == "followup":
             await self.followup_repo.update_status(
                 candidate.id,
                 FollowUpStatus.DONE if mode == "done" else FollowUpStatus.CANCELLED,
             )
-            return
+            return None
         await self.commitment_repo.update_status(
             candidate.id,
             CommitmentStatus.DONE if mode == "done" else CommitmentStatus.CANCELLED,
         )
+        return None
+
+    async def _snapshot(self, candidate: _LifecycleCandidate) -> dict:
+        if candidate.kind == "task":
+            task = await self.task_repo.get_by_id(candidate.id)
+            if task is None:
+                return {}
+            return {
+                "title": task.title,
+                "status": str(task.status),
+                "priority": task.priority,
+                "due_at": task.due_at.isoformat() if task.due_at else None,
+            }
+        if candidate.kind == "followup":
+            followup = await self.followup_repo.get_by_id(candidate.id)
+            if followup is None:
+                return {}
+            return {
+                "title": followup.title,
+                "status": str(followup.status),
+                "due_at": followup.due_at.isoformat() if followup.due_at else None,
+            }
+        commitment = await self.commitment_repo.get_by_id(candidate.id)
+        if commitment is None:
+            return {}
+        return {
+            "title": commitment.title,
+            "status": str(commitment.status),
+            "due_at": commitment.due_at.isoformat() if commitment.due_at else None,
+        }
 
 
 def _closure_mode(text: str) -> str | None:

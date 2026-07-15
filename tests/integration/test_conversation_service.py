@@ -30,6 +30,7 @@ from memocore.services.conversation_service import (
     classify_intent,
 )
 from memocore.services.secretary_service import SecretaryService
+from memocore.services.work_action_service import WorkActionService
 
 
 class FakeIntentClassifierService:
@@ -1244,6 +1245,47 @@ async def test_natural_fulfillment_closes_single_person_followup(capture_service
     assert "đã đóng follow-up" in result.reply
     assert str(updated.status) == "done"
     assert events[0].entity_id == followup.id
+    assert events[0].payload["before"]["status"] == "open"
+
+
+async def test_natural_fulfillment_followup_can_be_undone(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="Alex follow-up undo"))
+    person = await repos["people"].create(Person(display_name="Alex Nguyen", aliases=["Alex"]))
+    followup = await repos["followups"].create(
+        FollowUp(
+            title="Ask Alex for the BI file",
+            person_id=person.id,
+            source_note_id=note.id,
+            due_at=datetime(2026, 7, 15, 9, 0, tzinfo=UTC),
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+
+    await service.handle_text(
+        CaptureRequest(
+            raw_text="Alex đã gửi rồi",
+            source_chat_id="chat-followup-undo",
+            source_message_id="msg-followup-undo",
+        )
+    )
+    event = (await repos["events"].list_recent(EventType.FOLLOWUP_DONE, limit=1))[0]
+    work_actions = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        capture_service.event_service,
+        followup_repo=repos["followups"],
+        commitment_repo=repos["commitments"],
+    )
+
+    undone = await work_actions.handle(f"work:u:e:{event.id}")
+    restored = await repos["followups"].get_by_id(followup.id)
+    second = await work_actions.handle(f"work:u:e:{event.id}")
+
+    assert undone is not None and undone.title == "Đã hoàn tác"
+    assert restored is not None
+    assert str(restored.status) == "open"
+    assert restored.due_at == followup.due_at
+    assert second is not None and second.title == "Đã hoàn tác trước đó"
 
 
 async def test_natural_fulfillment_asks_when_person_has_multiple_open_loops(

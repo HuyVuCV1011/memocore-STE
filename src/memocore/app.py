@@ -177,6 +177,8 @@ async def create_app(settings: Settings | None = None) -> Application:
         event_service,
         display_timezone=ZoneInfo(settings.user_timezone),
         task_operation_service=task_operation_service,
+        followup_repo=followup_repo,
+        commitment_repo=commitment_repo,
     )
     entity_confirmation_service = EntityConfirmationService(
         person_repo,

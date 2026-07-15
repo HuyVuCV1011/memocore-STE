@@ -60,6 +60,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 - Natural fulfillment messages such as “Alex đã gửi rồi” can now close the single matching
   waiting task, follow-up, or commitment for that person; if multiple open loops match, MemoCore
   asks the user to choose instead of guessing.
+- Natural open-loop closure events now record restore snapshots so accidental task, follow-up, or
+  commitment closure can be undone through the work undo flow.
 - `/review` and project/person context surfaces include more trust and Project Health signals.
 - Recurring task completion and missed-backlog handling use guarded policies so MemoCore does not
   silently skip or duplicate recurrence work.
