@@ -54,6 +54,9 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   such as `/weekly`.
 - `/review` is now decision-first, with work hygiene and 30-day quality signals below the primary
   review count.
+- `/review` Project Health now separates projects that need a near-term next-action decision from
+  lower-pressure hygiene backlog, and groups large project lists instead of filling the Telegram
+  screen with every project name.
 - `/endday` no longer automatically rolls undated tasks or waiting/blocked items into tomorrow.
 - `/endday` closeout previews now support grouped confirmation, so the user can move all items or
   only tasks, follow-ups, or commitments.

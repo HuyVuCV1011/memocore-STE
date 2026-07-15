@@ -177,18 +177,16 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
     assert "1 phản hồi" in overview.summary
     assert "1 cảnh báo hệ thống" in overview.summary
     assert "1 task chưa có hạn" in overview.sections[0].lines
-    assert "1 project active thiếu next action" in overview.sections[0].lines
+    assert "1 project cần chọn next action trước" in overview.sections[0].lines
+    assert "0 project khác trong backlog hygiene" in overview.sections[0].lines
     assert "Gợi ý trùng: 1" in overview.sections[1].lines
-    assert any(
-        line.startswith("Project thiếu next action: ")
-        for line in overview.sections[1].lines
-    )
+    assert "Project health backlog: 1" in overview.sections[1].lines
     assert "Cảnh báo hệ thống: 1" in overview.sections[1].lines
     assert any("1 sửa sai" in line for line in overview.sections[1].lines)
     assert "Anh muốn hoàn thành task nào?" in pending.sections[0].lines
     assert "1 lỗi backup" in system.summary
     assert "disk full" not in "\n".join(system.sections[0].lines)
-    assert "project active cần rà lại" in project_health.summary
+    assert "1 project cần quyết định trước" in project_health.summary
     assert any(
         "Project chưa có next action" in line
         for line in project_health.sections[0].lines
@@ -243,6 +241,31 @@ async def test_review_project_health_uses_descendant_tasks_and_skips_portfolio_n
     assert "STE" not in text
     assert "STEDATA" not in text
     assert "Quiet Client" in text
+
+
+async def test_review_project_health_groups_large_backlog(repos):
+    for index in range(7):
+        project = await repos["projects"].find_or_create(f"Backlog project {index + 1}")
+        await repos["projects"].update_taxonomy(
+            project.id,
+            ProjectType.INDEPENDENT_PROJECT,
+            ProjectStatus.ACTIVE,
+            None,
+        )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "7 project cần quyết định trước" in health.summary
+    assert text.count("Backlog project") == 5
+    assert "Còn 2 project cần quyết định khác" in text
 
 
 async def test_work_views_share_priority_logic_and_keep_waiting_out_of_next_actions(repos):

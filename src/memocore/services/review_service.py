@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from memocore.adapters.storage.repositories import (
@@ -12,6 +13,16 @@ from memocore.adapters.storage.repositories import (
 from memocore.domain.models import EventType, FeedbackSignal, FeedbackStatus, MemoryStatus
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
+
+
+@dataclass(frozen=True)
+class ProjectHealthReview:
+    priority: list
+    backlog: list
+
+    @property
+    def total(self) -> int:
+        return len(self.priority) + len(self.backlog)
 
 
 class ReviewService:
@@ -34,7 +45,7 @@ class ReviewService:
     async def overview(self) -> AssistantResponse:
         memories = await self.memory_repo.list_all()
         tasks = await self.task_repo.list_active()
-        projects_without_next_action = await self._projects_without_next_action(tasks)
+        project_review = await self._project_health_review(tasks)
         pending = await self.clarification_repo.list_pending()
         since = datetime.now(UTC) - timedelta(days=30)
         duplicates = await self.event_service.list_recent(
@@ -97,7 +108,8 @@ class ReviewService:
                     heading="Công việc nên rà sau",
                     lines=[
                         f"{len(undated_tasks)} task chưa có hạn",
-                        f"{len(projects_without_next_action)} project active thiếu next action",
+                        f"{len(project_review.priority)} project cần chọn next action trước",
+                        f"{len(project_review.backlog)} project khác trong backlog hygiene",
                     ],
                 ),
                 AssistantSection(
@@ -105,7 +117,7 @@ class ReviewService:
                     lines=[
                         f"Gợi ý trùng: {len(duplicates)}",
                         f"Clarification chưa giải quyết được: {len(failed_clarifications)}",
-                        f"Project thiếu next action: {len(projects_without_next_action)}",
+                        f"Project health backlog: {project_review.total}",
                         f"Cảnh báo hệ thống: {len(system_failures)}",
                         (
                             "Phản hồi: "
@@ -222,16 +234,41 @@ class ReviewService:
 
     async def project_health(self) -> AssistantResponse:
         tasks = await self.task_repo.list_active()
-        projects = await self._projects_without_next_action(tasks)
-        lines = [f"{index}. {project.name}" for index, project in enumerate(projects[:10], 1)]
+        review = await self._project_health_review(tasks)
+        visible_priority = review.priority[:5]
+        visible_backlog = review.backlog[:5] if not visible_priority else []
+        lines: list[str] = []
+        if visible_priority:
+            lines.append("Cần quyết định trước")
+            lines.extend(
+                f"{index}. {project.name} · {_project_age_label(project)}"
+                for index, project in enumerate(visible_priority, 1)
+            )
+            remaining_priority = len(review.priority) - len(visible_priority)
+            if remaining_priority > 0:
+                lines.append(f"- Còn {remaining_priority} project cần quyết định khác.")
+        if visible_backlog:
+            lines.append("Backlog hygiene")
+            lines.extend(
+                f"{index}. {project.name} · {_project_age_label(project)}"
+                for index, project in enumerate(visible_backlog, 1)
+            )
+            remaining_backlog = len(review.backlog) - len(visible_backlog)
+            if remaining_backlog > 0:
+                lines.append(f"- Còn {remaining_backlog} project backlog khác.")
+        elif review.backlog and visible_priority:
+            lines.append(f"Backlog hygiene: còn {len(review.backlog)} project khác.")
         if not lines:
             lines = ["Không có project active nào thiếu next action."]
         return AssistantResponse(
-            title="Project thiếu next action",
-            summary=f"{len(projects)} project active cần rà lại.",
+            title="Project health",
+            summary=(
+                f"{len(review.priority)} project cần quyết định trước · "
+                f"{len(review.backlog)} project khác trong backlog hygiene."
+            ),
             sections=[AssistantSection(lines=lines)],
             footer=(
-                "Mở /project <tên> để xem Project health và thêm task tiếp theo nếu project còn hoạt động."
+                "Mở /project <tên> để xem chi tiết; backlog hygiene không phải inbox quyết định ngay."
             ),
             actions=[AssistantAction(label="Quay lại", action_id="nav:review", row=0)],
         )
@@ -276,6 +313,18 @@ class ReviewService:
             )
             if event.payload.get("feedback_event_id")
         }
+
+    async def _project_health_review(self, tasks) -> ProjectHealthReview:
+        projects = await self._projects_without_next_action(tasks)
+        recent_cutoff = datetime.now(UTC) - timedelta(days=30)
+        priority = [
+            project
+            for project in projects
+            if max(_sort_datetime(project.updated_at), _sort_datetime(project.last_seen_at))
+            >= recent_cutoff
+        ]
+        backlog = [project for project in projects if project not in priority]
+        return ProjectHealthReview(priority=priority, backlog=backlog)
 
     async def _projects_without_next_action(self, tasks) -> list:
         if self.project_repo is None:
@@ -326,3 +375,13 @@ def _sort_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _project_age_label(project) -> str:
+    touched_at = max(_sort_datetime(project.updated_at), _sort_datetime(project.last_seen_at))
+    age_days = (datetime.now(UTC) - touched_at).days
+    if age_days <= 0:
+        return "mới chạm hôm nay"
+    if age_days < 30:
+        return f"{age_days} ngày chưa có next action"
+    return f"{age_days} ngày trong backlog"
