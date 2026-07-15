@@ -7,6 +7,7 @@ from memocore.services.clarification_service import ClarificationService
 from memocore.services.daily_closeout_service import DailyCloseoutService
 from memocore.services.event_service import EventService
 from memocore.services.reminder_service import ReminderService
+from memocore.services.work_action_service import WorkActionService
 
 
 def _services(repos):
@@ -175,3 +176,61 @@ async def test_daily_closeout_cancel_keeps_tasks_unchanged(repos):
 
     assert result.message == "Dạ, em giữ nguyên các task, follow-up và commitment."
     assert updated.due_at == task.due_at
+
+
+async def test_daily_closeout_apply_can_be_undone(repos):
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="undo closeout"))
+    task = await repos["tasks"].create(
+        Task(title="Restore task", source_note_id=note.id, due_at=now - timedelta(hours=2))
+    )
+    followup = await repos["followups"].create(
+        FollowUp(title="Restore follow-up", source_note_id=note.id, due_at=now)
+    )
+    commitment = await repos["commitments"].create(
+        Commitment(title="Restore commitment", source_note_id=note.id, due_at=now)
+    )
+    closeout, clarification, events = _services(repos)
+    work_actions = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        events,
+        followup_repo=repos["followups"],
+        commitment_repo=repos["commitments"],
+    )
+
+    await closeout.preview(source_chat_id="chat-1", now=now)
+    await clarification.answer_pending("chat-1", "xác nhận")
+    applied = (await events.list_recent(EventType.DAILY_CLOSEOUT_APPLIED, limit=1))[0]
+    undone = await work_actions.handle(f"work:u:e:{applied.id}")
+    restored_task = await repos["tasks"].get_by_id(task.id)
+    restored_followup = await repos["followups"].get_by_id(followup.id)
+    restored_commitment = await repos["commitments"].get_by_id(commitment.id)
+
+    assert undone is not None and undone.title == "Đã hoàn tác closeout"
+    assert "Đã khôi phục 3 mục" in undone.summary
+    assert restored_task.due_at == task.due_at
+    assert restored_followup.due_at == followup.due_at
+    assert restored_commitment.due_at == commitment.due_at
+
+
+async def test_daily_closeout_undo_skips_items_changed_after_apply(repos):
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="skip changed closeout undo"))
+    task = await repos["tasks"].create(
+        Task(title="Changed after closeout", source_note_id=note.id, due_at=now)
+    )
+    closeout, clarification, events = _services(repos)
+    work_actions = WorkActionService(repos["tasks"], repos["reminders"], events)
+
+    await closeout.preview(source_chat_id="chat-1", now=now)
+    await clarification.answer_pending("chat-1", "xác nhận")
+    applied = (await events.list_recent(EventType.DAILY_CLOSEOUT_APPLIED, limit=1))[0]
+    manual_due = datetime(2026, 7, 17, 10, 0, tzinfo=UTC)
+    await repos["tasks"].update_due_at(task.id, manual_due)
+    undone = await work_actions.handle(f"work:u:e:{applied.id}")
+    unchanged = await repos["tasks"].get_by_id(task.id)
+
+    assert undone is not None and undone.title == "Đã hoàn tác closeout"
+    assert "Bỏ qua 1 mục" in undone.summary
+    assert unchanged.due_at == manual_due

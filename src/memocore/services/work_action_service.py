@@ -441,6 +441,8 @@ class WorkActionService:
             EventType.COMMITMENT_DONE,
         }:
             return await self._undo_lifecycle_event(event_id)
+        if event.event_type == EventType.DAILY_CLOSEOUT_APPLIED:
+            return await self._undo_closeout_event(event_id)
         if event.event_type != EventType.WORK_ITEM_CHANGED:
             return None
         if await self.event_service.was_undone(event_id):
@@ -549,6 +551,56 @@ class WorkActionService:
             {"restored": before},
         )
         return AssistantResponse(title="Đã hoàn tác", summary="Open loop đã được khôi phục.")
+
+    async def _undo_closeout_event(self, event_id: str) -> AssistantResponse | None:
+        event = await self.event_service.get_event(event_id)
+        if event is None:
+            return None
+        if await self.event_service.was_undone(event_id):
+            return AssistantResponse(title="Đã hoàn tác trước đó")
+        due_at = _parse_dt(event.payload.get("due_at"))
+        items = event.payload.get("items", {})
+        if due_at is None or not isinstance(items, dict):
+            return None
+        restored = 0
+        skipped = 0
+        for item in items.get("tasks", []):
+            entity = await self.task_repo.get_by_id(item["id"])
+            if entity is None or entity.due_at != due_at or str(entity.status) != item["status"]:
+                skipped += 1
+                continue
+            await self.task_repo.update_due_at(entity.id, _parse_dt(item.get("due_at")))
+            restored += 1
+        for item in items.get("followups", []):
+            if self.followup_repo is None:
+                skipped += 1
+                continue
+            entity = await self.followup_repo.get_by_id(item["id"])
+            if entity is None or entity.due_at != due_at or str(entity.status) != item["status"]:
+                skipped += 1
+                continue
+            await self.followup_repo.update_due_at(entity.id, _parse_dt(item.get("due_at")))
+            restored += 1
+        for item in items.get("commitments", []):
+            if self.commitment_repo is None:
+                skipped += 1
+                continue
+            entity = await self.commitment_repo.get_by_id(item["id"])
+            if entity is None or entity.due_at != due_at or str(entity.status) != item["status"]:
+                skipped += 1
+                continue
+            await self.commitment_repo.update_due_at(entity.id, _parse_dt(item.get("due_at")))
+            restored += 1
+        await self.event_service.append_event(
+            EventType.WORK_ITEM_UNDONE,
+            "daily_closeout",
+            event_id,
+            {"restored_count": restored, "skipped_count": skipped},
+        )
+        summary = f"Đã khôi phục {restored} mục từ closeout."
+        if skipped:
+            summary += f" Bỏ qua {skipped} mục đã thay đổi sau closeout."
+        return AssistantResponse(title="Đã hoàn tác closeout", summary=summary)
 
     async def _get(self, kind: str, entity_id: str):
         if kind == "t":

@@ -67,6 +67,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 - `/endday` now includes a compact closeout checklist and quick links to open tasks and waiting
   loops, so the ritual prompts completion, waiting, and tomorrow-priority decisions instead of
   only bulk-rescheduling due items.
+- `/endday` closeout apply events now carry restore snapshots and can be undone through the work
+  undo flow, skipping items changed after the closeout instead of overwriting newer edits.
 - Natural fulfillment messages such as “Alex đã gửi rồi” can now close the single matching
   waiting task, follow-up, or commitment for that person; if multiple open loops match, MemoCore
   asks the user to choose instead of guessing.

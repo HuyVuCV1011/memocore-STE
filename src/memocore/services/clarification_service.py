@@ -428,6 +428,10 @@ class ClarificationService:
                         "skipped_commitment_count": commitments_skipped,
                         "due_at": due_at.isoformat(),
                         "selected_groups": sorted(selected_groups),
+                        "items": {
+                            group: payload.get(group, [])
+                            for group in sorted(selected_groups)
+                        },
                     },
                 )
             local_due = due_at.astimezone(self.default_timezone).strftime("%H:%M %d/%m/%Y")

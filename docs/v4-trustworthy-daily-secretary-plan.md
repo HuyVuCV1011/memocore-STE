@@ -493,7 +493,9 @@ dated active tasks, dated open follow-ups, and dated open commitments in one gua
 tasks and waiting/blocked items are not moved automatically. Each item is snapshot-validated before
 writing, so MemoCore skips anything changed after preview instead of overwriting newer state.
 The preview supports grouped confirmation: move every eligible item, or move only tasks,
-follow-ups, or commitments.
+follow-ups, or commitments. Confirmed closeout events store restore snapshots for the selected
+groups, and closeout undo restores only items that still match the closeout state; items changed
+after the closeout are skipped.
 
 ### Acceptance gates
 

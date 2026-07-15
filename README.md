@@ -277,6 +277,10 @@ work done. It asks whether to keep each missed occurrence or move the active occ
 first future slot. Batch completion creates one audit event and offers a guarded undo; tasks changed
 after the batch are skipped rather than overwritten.
 
+Daily closeout uses the same recovery rule: confirmed `/endday` rollover stores restore snapshots
+for tasks, follow-ups, and commitments, and closeout undo restores only items that have not changed
+again after the rollover.
+
 Resolution metrics record source, mode, candidate count, context age, and confirmation state without
 storing the raw message or task title.
 
