@@ -53,6 +53,9 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 - `/endday` no longer automatically rolls undated tasks or waiting/blocked items into tomorrow.
 - `/endday` closeout previews now support grouped confirmation, so the user can move all items or
   only tasks, follow-ups, or commitments.
+- Natural fulfillment messages such as “Alex đã gửi rồi” can now close the single matching
+  waiting task, follow-up, or commitment for that person; if multiple open loops match, MemoCore
+  asks the user to choose instead of guessing.
 - `/review` and project/person context surfaces include more trust and Project Health signals.
 - Recurring task completion and missed-backlog handling use guarded policies so MemoCore does not
   silently skip or duplicate recurrence work.

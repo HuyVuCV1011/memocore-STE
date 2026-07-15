@@ -2,6 +2,7 @@ from datetime import UTC, datetime, time, timedelta
 
 from memocore.domain.models import (
     EventType,
+    FollowUp,
     Meeting,
     MemoryBucket,
     MemoryKind,
@@ -21,6 +22,7 @@ from memocore.domain.schemas import (
     TaskCandidate,
 )
 from memocore.services.capture_service import _normalize_scheduled_work
+from memocore.services.commitment_lifecycle_service import CommitmentLifecycleService
 from memocore.services.conversation_service import (
     ConversationService,
     _extract_duration_minutes,
@@ -56,6 +58,13 @@ def _conversation_service(capture_service, repos, classifier=None, knowledge=Non
         repos["memory"],
         person_repo=repos["people"],
     )
+    commitment_lifecycle_service = CommitmentLifecycleService(
+        task_repo=repos["tasks"],
+        followup_repo=repos["followups"],
+        commitment_repo=repos["commitments"],
+        person_repo=repos["people"],
+        event_service=capture_service.event_service,
+    )
     return ConversationService(
         capture_service,
         secretary_service,
@@ -65,6 +74,7 @@ def _conversation_service(capture_service, repos, classifier=None, knowledge=Non
         capture_service.event_service,
         classifier,
         knowledge,
+        commitment_lifecycle_service=commitment_lifecycle_service,
     )
 
 
@@ -1206,6 +1216,70 @@ async def test_followup_con_gi_nua_keeps_previous_project_context(
     )
     assert "bổ sung phần còn lại" in result.reply
     assert fake_provider.calls == []
+
+
+async def test_natural_fulfillment_closes_single_person_followup(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="Alex follow-up"))
+    person = await repos["people"].create(Person(display_name="Alex Nguyen", aliases=["Alex"]))
+    followup = await repos["followups"].create(
+        FollowUp(
+            title="Ask Alex for the BI file",
+            person_id=person.id,
+            source_note_id=note.id,
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="Alex đã gửi rồi",
+            source_chat_id="chat-followup-done",
+            source_message_id="msg-followup-done",
+        )
+    )
+    updated = await repos["followups"].get_by_id(followup.id)
+    events = await repos["events"].list_recent(EventType.FOLLOWUP_DONE, limit=10)
+
+    assert result.intent == "close_open_loop"
+    assert "đã đóng follow-up" in result.reply
+    assert str(updated.status) == "done"
+    assert events[0].entity_id == followup.id
+
+
+async def test_natural_fulfillment_asks_when_person_has_multiple_open_loops(
+    capture_service, repos
+):
+    note = await repos["notes"].create(Note(raw_text="Alex multiple loops"))
+    person = await repos["people"].create(Person(display_name="Alex Nguyen", aliases=["Alex"]))
+    await repos["followups"].create(
+        FollowUp(
+            title="Ask Alex for the BI file",
+            person_id=person.id,
+            source_note_id=note.id,
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Wait for Alex to confirm slides",
+            source_note_id=note.id,
+            person_id=person.id,
+            status=TaskStatus.WAITING,
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+
+    result = await service.handle_text(
+        CaptureRequest(
+            raw_text="Alex đã gửi rồi",
+            source_chat_id="chat-followup-ambiguous",
+            source_message_id="msg-followup-ambiguous",
+        )
+    )
+
+    assert result.intent == "close_open_loop"
+    assert "nhiều open loop" in result.reply
+    assert "Ask Alex for the BI file" in result.reply
+    assert "Wait for Alex to confirm slides" in result.reply
 
 
 async def test_profession_question_answers_from_profile_memory_not_tasks(

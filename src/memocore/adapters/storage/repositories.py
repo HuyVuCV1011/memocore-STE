@@ -1296,6 +1296,12 @@ class FollowUpRepository(BaseRepository):
             (_dt(due_at), _dt(utc_now()), followup_id),
         )
 
+    async def update_status(self, followup_id: str, status: FollowUpStatus) -> None:
+        await self._execute(
+            "UPDATE followups SET status = ?, updated_at = ? WHERE id = ?",
+            (status.value, _dt(utc_now()), followup_id),
+        )
+
     async def list_by_note(self, note_id: str) -> list[FollowUp]:
         conn = await self.database.connection()
         rows = await (

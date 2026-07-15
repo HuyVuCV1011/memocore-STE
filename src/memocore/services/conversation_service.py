@@ -72,6 +72,7 @@ from memocore.services.timeline_query_service import TimelineQueryService
 from memocore.services.task_mutation_executor import TaskMutationExecutor
 from memocore.services.memory_lifecycle_executor import MemoryLifecycleExecutor
 from memocore.services.clarification_workflow import ClarificationWorkflow
+from memocore.services.commitment_lifecycle_service import CommitmentLifecycleService
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class ConversationService:
         conversation_frame_builder: ConversationFrameBuilder | None = None,
         task_reference_resolver: TaskReferenceResolver | None = None,
         timeline_query_service: TimelineQueryService | None = None,
+        commitment_lifecycle_service: CommitmentLifecycleService | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ):
         self.capture_service = capture_service
@@ -164,6 +166,7 @@ class ConversationService:
         self.query_executor = query_executor or QueryExecutor(
             secretary_service, timeline_query_service
         )
+        self.commitment_lifecycle_service = commitment_lifecycle_service
         self.task_mutation_executor = task_mutation_executor or TaskMutationExecutor()
         self.memory_lifecycle_executor = (
             memory_lifecycle_executor or MemoryLifecycleExecutor()
@@ -453,6 +456,19 @@ class ConversationService:
             if self.reference_resolver is not None
             else ResolvedReference()
         )
+        if self.commitment_lifecycle_service is not None:
+            lifecycle = await self.commitment_lifecycle_service.handle_text(
+                request.raw_text,
+                source_chat_id=request.source_chat_id,
+                source_message_id=request.source_message_id,
+                now=turn.now_utc,
+            )
+            if lifecycle.handled:
+                return ConversationResult(
+                    intent="close_open_loop",
+                    reply=lifecycle.reply,
+                    result_entity_ids=lifecycle.entity_ids,
+                )
         # Check for task rename request before any other routing/classification
         rename_info = _parse_task_rename(request.raw_text)
         if rename_info:

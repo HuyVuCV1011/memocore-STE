@@ -362,6 +362,12 @@ If more than one item matches, show candidates and ask instead of choosing the f
 Completion must reconcile linked task, follow-up, commitment, and project activity state through one
 audited operation.
 
+Current V4 implementation: MemoCore handles conservative person-scoped fulfillment/cancellation
+messages for waiting tasks, follow-ups, and commitments. A message such as “Alex đã gửi rồi” closes
+the single matching open loop for Alex and records a `TASK_DONE`, `FOLLOWUP_DONE`, or
+`COMMITMENT_DONE` event. If more than one open loop matches the person, MemoCore lists candidates
+and asks the user to specify which one instead of guessing.
+
 ### Project Health
 
 Add a project-health projection containing:

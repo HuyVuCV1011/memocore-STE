@@ -36,6 +36,7 @@ from memocore.config import Settings, get_settings
 from memocore.domain.models import EventType
 from memocore.services.capture_service import CaptureService
 from memocore.services.clarification_service import ClarificationService
+from memocore.services.commitment_lifecycle_service import CommitmentLifecycleService
 from memocore.services.conversation_service import ConversationService
 from memocore.services.daily_closeout_service import DailyCloseoutService
 from memocore.services.event_service import EventService
@@ -212,6 +213,14 @@ async def create_app(settings: Settings | None = None) -> Application:
         decision_repo,
         display_timezone=ZoneInfo(settings.user_timezone),
     )
+    commitment_lifecycle_service = CommitmentLifecycleService(
+        task_repo=task_repo,
+        followup_repo=followup_repo,
+        commitment_repo=commitment_repo,
+        person_repo=person_repo,
+        event_service=event_service,
+        display_timezone=ZoneInfo(settings.user_timezone),
+    )
     reference_resolver = ReferenceResolver(
         chat_context_repo,
         project_repo,
@@ -232,6 +241,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         reference_resolver=reference_resolver,
         task_operation_service=task_operation_service,
         timeline_query_service=timeline_query_service,
+        commitment_lifecycle_service=commitment_lifecycle_service,
     )
 
     app = create_bot(

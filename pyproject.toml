@@ -74,6 +74,7 @@ files = [
     "src/memocore/domain",
     "src/memocore/services/timeline_query_service.py",
     "src/memocore/services/backup_service.py",
+    "src/memocore/services/commitment_lifecycle_service.py",
     "src/memocore/services/daily_closeout_service.py",
     "src/memocore/services/project_health_service.py",
     "src/memocore/services/work_state_service.py",
