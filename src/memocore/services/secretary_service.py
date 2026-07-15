@@ -477,6 +477,7 @@ class SecretaryService:
             overdue_followups=overdue_followups,
             due_commitments=due_commitments,
             upcoming_top=upcoming_top,
+            collision_tasks=due_today,
             display_timezone=self.display_timezone,
             reference_date=local_now.date(),
         )

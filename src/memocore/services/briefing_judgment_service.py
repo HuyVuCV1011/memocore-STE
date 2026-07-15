@@ -107,6 +107,7 @@ def briefing_signals(
     overdue_followups,
     due_commitments,
     upcoming_top,
+    collision_tasks=None,
     display_timezone: tzinfo,
     reference_date=None,
 ) -> list[str]:
@@ -121,6 +122,9 @@ def briefing_signals(
         signals.append(
             f"- Hôm nay: {_task_due_list(due_today, display_timezone, reference_date)}."
         )
+    collision = _time_collision_signal(collision_tasks or due_today, meetings, display_timezone)
+    if collision:
+        signals.append(collision)
     if upcoming_top:
         signals.append(
             f"- Sắp tới: {_task_due_list(upcoming_top, display_timezone, reference_date)}."
@@ -139,6 +143,38 @@ def briefing_signals(
     if waiting:
         signals.append(f"- {len(waiting)} task đang chờ hoặc bị chặn; cần quyết định có thúc đẩy không.")
     return signals
+
+
+def _time_collision_signal(tasks, meetings, display_timezone: tzinfo) -> str | None:
+    events = [
+        (task.due_at, f"“{task.title}”")
+        for task in tasks
+        if getattr(task, "due_at", None) is not None
+    ]
+    events.extend(
+        (meeting.starts_at, f"meeting “{meeting.title}”")
+        for meeting in meetings
+        if getattr(meeting, "starts_at", None) is not None
+    )
+    events = sorted(
+        ((moment.astimezone(UTC), label) for moment, label in events),
+        key=lambda item: item[0],
+    )
+    for (first_time, first_label), (second_time, second_label) in zip(
+        events, events[1:], strict=False
+    ):
+        if (second_time - first_time).total_seconds() <= 2 * 60 * 60:
+            window = (
+                f"{_format_time(first_time, display_timezone)}-"
+                f"{_format_time(second_time, display_timezone)}"
+            )
+            return (
+                f"- Cụm lịch/deadline dày trong khung {window}: "
+                f"{first_label} gần {second_label}; nên chừa buffer."
+            )
+    if len(events) >= 4:
+        return "- Có nhiều mốc trong cùng ngày; nên chọn 1-2 việc chính và gom việc nhỏ sau."
+    return None
 
 
 def _task_title_list(tasks) -> str:

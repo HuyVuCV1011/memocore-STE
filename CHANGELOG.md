@@ -52,6 +52,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   recurring routines into their own lane when harder deadlines or commitments need focus.
 - `/briefing` now treats routine-only days as rhythm maintenance rather than a main strategic
   priority, and treats waiting-only days as open-loop decisions instead of do-now work.
+- `/briefing` now flags tight deadline/meeting clusters so the user can leave buffer instead of
+  treating nearby time commitments as isolated items.
 - Briefing judgment logic now lives in a focused service module, keeping the Telegram secretary
   orchestrator small enough for future UX changes without weakening module-size gates.
 - `/work` no longer repeats the same overdue task in both the recommended next-action list and the

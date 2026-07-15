@@ -501,6 +501,33 @@ async def test_briefing_waiting_only_day_recommends_closing_loop_not_doing_work(
     assert "Chờ Alex gửi brief" not in next_action_block
 
 
+async def test_briefing_warns_when_deadline_and_meeting_are_too_close(repos):
+    now = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="briefing collision"))
+    await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo BI",
+            source_note_id=note.id,
+            due_at=datetime(2026, 7, 15, 10, 0, tzinfo=UTC),
+        )
+    )
+    await repos["meetings"].create(
+        Meeting(
+            title="Review dashboard",
+            source_note_id=note.id,
+            starts_at=datetime(2026, 7, 15, 11, 30, tzinfo=UTC),
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    attention_block = briefing.split("Điểm cần chú ý", 1)[1].split("Nên làm tiếp", 1)[0]
+
+    assert "Cụm lịch/deadline dày" in attention_block
+    assert "Gửi báo cáo BI" in attention_block
+    assert "Review dashboard" in attention_block
+    assert "chừa buffer" in attention_block
+
+
 async def test_weekly_review_hides_raw_priority_scores(repos):
     note = await repos["notes"].create(Note(raw_text="weekly no score"))
     await repos["tasks"].create(
