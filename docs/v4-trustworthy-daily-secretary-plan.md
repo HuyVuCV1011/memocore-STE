@@ -236,6 +236,11 @@ exact targets and revalidate their versions before writing.
 - Preserve pagination and avoid loading unbounded event history.
 - Add idempotency to every resolution action.
 
+Current V4 implementation: `/review` is a decision-first hub for memory review, alias/entity
+confirmation, pending clarifications, feedback, system warnings, Project Health, and recent
+reversible work operations. The `Gần đây` tab lists only a small number of still-undoable
+operations and exposes inline undo actions through the same guarded work undo flow.
+
 ### Acceptance gates
 
 - Every queue listed above is reachable from `/review` without a new top-level Telegram command.

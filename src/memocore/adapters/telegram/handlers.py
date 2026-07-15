@@ -840,6 +840,8 @@ async def _navigation_response(
         return await review_service.feedback()
     if callback_data == "nav:review:system" and review_service is not None:
         return await review_service.system()
+    if callback_data == "nav:review:recent" and review_service is not None:
+        return await review_service.recent_operations()
     if callback_data == "nav:review:project-health" and review_service is not None:
         return await review_service.project_health()
     if callback_data.startswith("nav:rf:") and review_service is not None:

@@ -268,6 +268,46 @@ async def test_review_project_health_groups_large_backlog(repos):
     assert "Còn 2 project cần quyết định khác" in text
 
 
+async def test_review_surfaces_recent_undoable_operations(repos):
+    events = EventService(repos["events"])
+    changed = await events.append_event(
+        EventType.WORK_ITEM_CHANGED,
+        "task",
+        "task-1",
+        {"action": "reschedule"},
+        created_at=datetime(2026, 7, 15, 20, 0, tzinfo=UTC),
+    )
+    undone = await events.append_event(
+        EventType.DAILY_CLOSEOUT_APPLIED,
+        "clarification_request",
+        "closeout-1",
+        {"due_at": datetime(2026, 7, 16, 9, 0, tzinfo=UTC).isoformat(), "items": {}},
+        created_at=datetime(2026, 7, 15, 19, 0, tzinfo=UTC),
+    )
+    await events.append_event(
+        EventType.WORK_ITEM_UNDONE,
+        "work_event",
+        undone.id,
+        {"restored_count": 0},
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        events,
+        repos["projects"],
+    )
+
+    overview = await service.overview()
+    recent = await service.recent_operations()
+
+    assert "Gần đây có thể hoàn tác: 1" in overview.sections[1].lines
+    assert any(action.action_id == "nav:review:recent" for action in overview.actions)
+    assert recent.summary == "1 thao tác còn trong vùng an toàn để undo."
+    assert "Cập nhật công việc" in recent.sections[0].lines[0]
+    assert recent.actions[0].action_id == f"work:u:e:{changed.id}"
+
+
 async def test_work_views_share_priority_logic_and_keep_waiting_out_of_next_actions(repos):
     now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
     note = await repos["notes"].create(Note(raw_text="work state"))

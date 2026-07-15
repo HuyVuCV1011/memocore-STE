@@ -593,7 +593,7 @@ class WorkActionService:
             restored += 1
         await self.event_service.append_event(
             EventType.WORK_ITEM_UNDONE,
-            "daily_closeout",
+            "work_event",
             event_id,
             {"restored_count": restored, "skipped_count": skipped},
         )

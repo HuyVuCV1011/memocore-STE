@@ -58,6 +58,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   such as `/weekly`.
 - `/review` is now decision-first, with work hygiene and 30-day quality signals below the primary
   review count.
+- `/review` now includes a compact "Gần đây" undo surface for recent reversible work operations,
+  with inline undo buttons and no backend IDs in the displayed text.
 - `/review` Project Health now separates projects that need a near-term next-action decision from
   lower-pressure hygiene backlog, and groups large project lists instead of filling the Telegram
   screen with every project name.

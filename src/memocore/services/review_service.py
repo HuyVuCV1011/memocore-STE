@@ -14,6 +14,15 @@ from memocore.domain.models import EventType, FeedbackSignal, FeedbackStatus, Me
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
 
+UNDOABLE_EVENT_TYPES = {
+    EventType.WORK_ITEM_CHANGED,
+    EventType.TASK_BATCH_COMPLETED,
+    EventType.TASK_DONE,
+    EventType.FOLLOWUP_DONE,
+    EventType.COMMITMENT_DONE,
+    EventType.DAILY_CLOSEOUT_APPLIED,
+}
+
 
 @dataclass(frozen=True)
 class ProjectHealthReview:
@@ -71,6 +80,7 @@ class ReviewService:
         system_failures = await self.event_service.list_recent(
             EventType.BACKUP_FAILED, since=since, limit=100
         )
+        recent_undo = await self._recent_undoable_events(limit=5)
         feedback_events = await self.event_service.list_recent(
             EventType.USER_FEEDBACK_RECORDED, since=since, limit=100
         )
@@ -117,6 +127,7 @@ class ReviewService:
                     lines=[
                         f"Gợi ý trùng: {len(duplicates)}",
                         f"Clarification chưa giải quyết được: {len(failed_clarifications)}",
+                        f"Gần đây có thể hoàn tác: {len(recent_undo)}",
                         f"Project health backlog: {project_review.total}",
                         f"Cảnh báo hệ thống: {len(system_failures)}",
                         (
@@ -138,9 +149,33 @@ class ReviewService:
                 AssistantAction(label="❓ Đang chờ", action_id="nav:review:clarifications", row=1),
                 AssistantAction(label="💬 Phản hồi", action_id="nav:review:feedback", row=2),
                 AssistantAction(label="⚙️ Hệ thống", action_id="nav:review:system", row=2),
+                AssistantAction(label="↩ Gần đây", action_id="nav:review:recent", row=3),
                 AssistantAction(label="📍 Project health", action_id="nav:review:project-health", row=3),
                 AssistantAction(label="📋 Task", action_id="nav:work:tasks", row=4),
             ],
+        )
+
+    async def recent_operations(self) -> AssistantResponse:
+        events = await self._recent_undoable_events(limit=5)
+        lines = [
+            f"{index}. {_undoable_event_label(event.event_type)} · {_format_event_time(event.created_at)}"
+            for index, event in enumerate(events, 1)
+        ] or ["Không có thao tác gần đây nào còn có thể hoàn tác."]
+        actions = [
+            AssistantAction(
+                label=f"↩ Hoàn tác {index}",
+                action_id=f"work:u:e:{event.id}",
+                row=index - 1,
+            )
+            for index, event in enumerate(events, 1)
+        ]
+        actions.append(AssistantAction(label="Quay lại", action_id="nav:review", row=6))
+        return AssistantResponse(
+            title="Gần đây có thể hoàn tác",
+            summary=f"{len(events)} thao tác còn trong vùng an toàn để undo.",
+            sections=[AssistantSection(lines=lines)],
+            footer="MemoCore chỉ khôi phục mục chưa bị sửa tiếp sau thao tác gốc.",
+            actions=actions,
         )
 
     async def clarifications(self) -> AssistantResponse:
@@ -350,6 +385,20 @@ class ReviewService:
         ]
         return sorted(projects, key=lambda project: _sort_datetime(project.updated_at), reverse=True)
 
+    async def _recent_undoable_events(self, limit: int) -> list:
+        candidates = [
+            event
+            for event in await self.event_service.list_recent(limit=100)
+            if event.event_type in UNDOABLE_EVENT_TYPES
+        ]
+        events = []
+        for event in candidates:
+            if not await self.event_service.was_undone(event.id):
+                events.append(event)
+            if len(events) >= limit:
+                break
+        return events
+
 
 def _feedback_signal_label(value: str | None) -> str:
     return {
@@ -369,6 +418,21 @@ def _artifact_label(value: str) -> str:
         "person": "người",
         "project": "dự án",
     }.get(value, "dữ liệu")
+
+
+def _undoable_event_label(event_type: EventType) -> str:
+    return {
+        EventType.WORK_ITEM_CHANGED: "Cập nhật công việc",
+        EventType.TASK_BATCH_COMPLETED: "Hoàn thành batch task",
+        EventType.TASK_DONE: "Đóng task",
+        EventType.FOLLOWUP_DONE: "Đóng follow-up",
+        EventType.COMMITMENT_DONE: "Đóng commitment",
+        EventType.DAILY_CLOSEOUT_APPLIED: "Closeout cuối ngày",
+    }.get(event_type, "Thao tác")
+
+
+def _format_event_time(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%d/%m %H:%M UTC")
 
 
 def _sort_datetime(value: datetime) -> datetime:

@@ -234,3 +234,24 @@ async def test_daily_closeout_undo_skips_items_changed_after_apply(repos):
     assert undone is not None and undone.title == "Đã hoàn tác closeout"
     assert "Bỏ qua 1 mục" in undone.summary
     assert unchanged.due_at == manual_due
+
+
+async def test_daily_closeout_undo_is_idempotent(repos):
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="idempotent closeout undo"))
+    task = await repos["tasks"].create(
+        Task(title="Undo once", source_note_id=note.id, due_at=now)
+    )
+    closeout, clarification, events = _services(repos)
+    work_actions = WorkActionService(repos["tasks"], repos["reminders"], events)
+
+    await closeout.preview(source_chat_id="chat-1", now=now)
+    await clarification.answer_pending("chat-1", "xác nhận")
+    applied = (await events.list_recent(EventType.DAILY_CLOSEOUT_APPLIED, limit=1))[0]
+    first = await work_actions.handle(f"work:u:e:{applied.id}")
+    second = await work_actions.handle(f"work:u:e:{applied.id}")
+    restored = await repos["tasks"].get_by_id(task.id)
+
+    assert first is not None and first.title == "Đã hoàn tác closeout"
+    assert second is not None and second.title == "Đã hoàn tác trước đó"
+    assert restored.due_at == task.due_at
