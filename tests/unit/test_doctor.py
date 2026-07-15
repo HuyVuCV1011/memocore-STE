@@ -99,11 +99,8 @@ def test_expected_telegram_command_contract_is_small():
     assert EXPECTED_COMMANDS == (
         "today",
         "work",
-        "memory",
         "context",
-        "briefing",
         "search",
-        "capture",
         "review",
     )
 

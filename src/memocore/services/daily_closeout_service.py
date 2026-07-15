@@ -78,13 +78,13 @@ class DailyCloseoutService:
         )
         if closeout.total == 0:
             return AssistantResponse(
-                title="End-of-day closeout",
-                summary="Không có task, follow-up hoặc commitment nào cần kéo sang ngày mai.",
+                title="Chốt ngày",
+                summary="Không có mục đến hạn hoặc quá hạn cần xử lý cuối ngày.",
                 sections=[
                     AssistantSection(
                         heading="Gợi ý",
                         lines=[
-                            "Anh có thể ghi thêm một ưu tiên cho ngày mai bằng /task hoặc lưu memory nếu có điều cần nhớ."
+                            "Anh có thể nhắn việc đã xong, việc cần dời, người đang chờ anh, hoặc ưu tiên ngày mai."
                         ],
                     )
                 ],
@@ -128,13 +128,13 @@ class DailyCloseoutService:
             created_at=now,
         )
         return AssistantResponse(
-            title="End-of-day closeout",
+            title="Chốt ngày",
             summary=(
-                f"Preview: chuyển {closeout.total} mục sang "
-                f"{tomorrow_due.astimezone(self.display_timezone).strftime('%H:%M ngày %d/%m')}."
+                f"Dạ, em thấy {closeout.total} mục đã đến hạn hoặc quá hạn. "
+                "Anh xác nhận thì em mới dời sang sáng mai."
             ),
             sections=[AssistantSection(heading="Sẽ cập nhật", lines=question.splitlines())],
-            footer="Chưa ghi gì vào task, follow-up hoặc commitment cho tới khi anh xác nhận.",
+            footer="Task chưa có hạn và việc đang chờ/bị chặn không bị tự dời trong bước này.",
             actions=[
                 AssistantAction(label="Xác nhận", action_id="closeout:confirm", row=0),
                 AssistantAction(label="Hủy", action_id="closeout:cancel", row=0),
@@ -149,8 +149,9 @@ class DailyCloseoutService:
         candidates = [
             task
             for task in tasks
-            if str(task.status) in {"candidate", "open", "waiting", "blocked"}
-            and (task.due_at is None or task.due_at <= day_end)
+            if str(task.status) in {"candidate", "open"}
+            and task.due_at is not None
+            and task.due_at <= day_end
         ]
         candidates.sort(
             key=lambda task: (

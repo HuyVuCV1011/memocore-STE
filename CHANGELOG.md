@@ -39,8 +39,18 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 
 ### Changed
 
+- Telegram's visible slash menu is now limited to `/today`, `/work`, `/context`, `/search`, and
+  `/review`; `/briefing`, `/memory`, and `/capture` remain available as hidden shortcuts.
+- `/today`, `/work`, and `/briefing` now share one deterministic work classification model so
+  overdue, due-today, recurring, waiting, blocked, unscheduled, and upcoming tasks are handled
+  consistently across views.
 - `/briefing` now presents evidence-backed judgment distinct from `/today`, including analysis,
   signals, and recommended next actions without exposing raw scores.
+- User-facing task rankings no longer expose raw priority scores, including hidden shortcut views
+  such as `/weekly`.
+- `/review` is now decision-first, with work hygiene and 30-day quality signals below the primary
+  review count.
+- `/endday` no longer automatically rolls undated tasks or waiting/blocked items into tomorrow.
 - `/review` and project/person context surfaces include more trust and Project Health signals.
 - Recurring task completion and missed-backlog handling use guarded policies so MemoCore does not
   silently skip or duplicate recurrence work.

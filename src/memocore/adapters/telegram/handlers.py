@@ -70,8 +70,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _safe_reply_text(
             update,
             "MemoCore đã sẵn sàng.\n\n"
-            "Gõ / để mở 8 cửa chính: /today, /work, /memory, /context, /briefing, /search, /capture, /review.\n"
-            "Anh vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /task, /prep <tên>, /person <tên>.",
+            "Gõ / để mở 5 cửa chính: /today, /work, /context, /search, /review.\n"
+            "Anh vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /briefing, /memory, /task, /prep <tên>.",
             reply_markup=keyboard,
         )
 
@@ -853,7 +853,7 @@ def _work_hub_response(summary: str | None = None) -> AssistantResponse:
     return AssistantResponse(
         title="Công việc",
         summary=summary
-        or "Chọn phần anh muốn xem. Các shortcut cũ như /tasks, /reminders, /waiting vẫn dùng được.",
+        or "Dạ, đây là nơi xử lý việc mở, nhắc nhở, chờ người khác và cam kết.",
         actions=[
             AssistantAction(label="Hôm nay", action_id="nav:work:today", row=0),
             AssistantAction(label="Task", action_id="nav:work:tasks", row=1),
@@ -916,18 +916,16 @@ def _capture_detail_response(kind: str) -> AssistantResponse:
 def _help_response() -> AssistantResponse:
     return AssistantResponse(
         title="MemoCore help",
-        summary="Menu / chỉ hiện các cửa chính. Các shortcut vẫn dùng được khi anh nhớ chính xác.",
+        summary="Menu / chỉ hiện 5 cửa chính. Shortcut cũ vẫn dùng được khi anh cần đi thẳng.",
         sections=[
             AssistantSection(
                 heading="Cửa chính",
                 lines=[
-                    "/today - top việc hôm nay",
-                    "/work - dashboard work/open loops",
-                    "/memory - review bộ nhớ",
-                    "/context - people/projects/prep",
-                    "/briefing - briefing trong ngày",
+                    "/today - trách nhiệm trong ngày",
+                    "/work - xử lý công việc và open loops",
+                    "/context - người, dự án, meeting prep",
                     "/search <câu hỏi> - tìm timeline/source",
-                    "/capture - cách lưu nhanh",
+                    "/review - nơi MemoCore cần anh quyết định",
                 ],
             ),
             AssistantSection(
@@ -935,7 +933,7 @@ def _help_response() -> AssistantResponse:
                 lines=[
                     "/task <nội dung>, /mem <nội dung>, /li <nội dung>",
                     "/prep <person/project>, /person <tên>, /project <tên>",
-                    "/people review, /projects review, /memory stale, /goals, /endday",
+                    "/briefing, /memory, /people review, /projects review, /goals, /endday",
                 ],
             ),
         ],

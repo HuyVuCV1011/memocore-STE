@@ -21,11 +21,8 @@ from memocore.services.runtime_version_service import runtime_version_descriptor
 EXPECTED_COMMANDS = (
     "today",
     "work",
-    "memory",
     "context",
-    "briefing",
     "search",
-    "capture",
     "review",
 )
 

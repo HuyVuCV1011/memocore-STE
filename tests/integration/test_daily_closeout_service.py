@@ -50,7 +50,7 @@ async def test_daily_closeout_previews_before_writing_and_confirms(repos):
     updated = await repos["tasks"].get_by_id(overdue.id)
     applied = await events.list_recent(EventType.DAILY_CLOSEOUT_APPLIED, limit=10)
 
-    assert "Preview: chuyển 1 mục" in preview.summary
+    assert "1 mục đã đến hạn hoặc quá hạn" in preview.summary
     assert unchanged.due_at == overdue.due_at
     assert result.handled is True
     assert "đã chuyển 1 task, 0 follow-up và 0 commitment" in result.message
@@ -85,7 +85,7 @@ async def test_daily_closeout_rolls_followups_and_commitments(repos):
     updated_commitment = await repos["commitments"].get_by_id(commitment.id)
     applied = await events.list_recent(EventType.DAILY_CLOSEOUT_APPLIED, limit=10)
 
-    assert "Preview: chuyển 2 mục" in preview.summary
+    assert "2 mục đã đến hạn hoặc quá hạn" in preview.summary
     assert "Follow-up:" in preview.sections[0].lines
     assert "Commitment:" in preview.sections[0].lines
     assert result.handled is True
@@ -96,7 +96,7 @@ async def test_daily_closeout_rolls_followups_and_commitments(repos):
     assert applied[0].payload["commitment_count"] == 1
 
 
-async def test_daily_closeout_skips_task_changed_after_preview(repos):
+async def test_daily_closeout_does_not_auto_move_undated_tasks(repos):
     now = datetime(2026, 7, 15, 20, 0, tzinfo=UTC)
     note = await repos["notes"].create(Note(raw_text="stale closeout"))
     task = await repos["tasks"].create(
@@ -104,13 +104,13 @@ async def test_daily_closeout_skips_task_changed_after_preview(repos):
     )
     closeout, clarification, _events = _services(repos)
 
-    await closeout.preview(source_chat_id="chat-1", now=now)
+    preview = await closeout.preview(source_chat_id="chat-1", now=now)
     await repos["tasks"].update_status(task.id, TaskStatus.CANCELLED.value)
     result = await clarification.answer_pending("chat-1", "xác nhận")
     updated = await repos["tasks"].get_by_id(task.id)
 
-    assert "đã chuyển 0 task, 0 follow-up và 0 commitment" in result.message
-    assert "Bỏ qua 1 mục" in result.message
+    assert "Không có mục đến hạn hoặc quá hạn" in preview.summary
+    assert result.handled is False
     assert updated.status == TaskStatus.CANCELLED or str(updated.status) == "cancelled"
 
 

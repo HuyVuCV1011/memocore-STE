@@ -21,12 +21,9 @@ logger = logging.getLogger(__name__)
 async def post_init(application: Application) -> None:
     commands = [
         BotCommand("today", "Việc hôm nay"),
-        BotCommand("work", "Tasks, reminders, waiting"),
-        BotCommand("memory", "Bộ nhớ cá nhân"),
-        BotCommand("context", "People, projects, meeting prep"),
-        BotCommand("briefing", "Briefing trong ngày"),
+        BotCommand("work", "Công việc và open loops"),
+        BotCommand("context", "Người, dự án, meeting prep"),
         BotCommand("search", "Tìm timeline/source"),
-        BotCommand("capture", "Cách lưu task/memory/note"),
         BotCommand("review", "Các mục cần anh xem lại"),
     ]
     await application.bot.set_my_commands(commands)

@@ -41,7 +41,7 @@ backend.
 | Knowledge quality | Source-linked entity relations, decision supersession, conflict detection, canonical memory selection, and review evidence. |
 | Work and context state | Tasks, reminders, projects, people, meetings, follow-ups, commitments, memory candidates, and event logs. |
 | Knowledge model | Canonical projects, people, organizations, decisions, and source-linked memory claims. |
-| Secretary queries | Compact `/` menu for `/today`, `/work`, `/memory`, `/context`, `/briefing`, `/search`, `/capture`, and `/review`; power-user shortcuts remain available. |
+| Secretary queries | Compact `/` menu for `/today`, `/work`, `/context`, `/search`, and `/review`; power-user shortcuts remain available. |
 | Memory lifecycle | Candidate, active, rejected, superseded, and delete/forget flows. |
 | V4 context retrieval | Person/project context, linked commitments, meeting preparation summaries, and SQLite retrieval by linked entities. |
 | Reliability | Schema validation, provider fallback, transactional derived writes, and audit events. |
@@ -56,17 +56,14 @@ entry points:
 
 | Command | Behavior |
 | --- | --- |
-| `/today` | Show the day's top priorities, due work, reminders, and meetings. |
-| `/work` | Open a work dashboard with tasks, reminders, waiting items, and commitments. |
-| `/memory` | Open the memory dashboard with review/stale/topic slices. |
+| `/today` | Show the day's factual agenda, due work, reminders, meetings, and a short highlight list. |
+| `/work` | Open a work hub with tasks, reminders, waiting items, commitments, and action buttons. |
 | `/context` | Open people, projects, meeting prep, and memory navigation. |
-| `/review` | Open uncertain memory, aliases, clarification, and work-quality triage. |
-| `/briefing` | Generate the current daily briefing. |
 | `/search <query>` | Search cross-domain timeline/source evidence without exposing backend ids. |
-| `/capture` | Show quick capture patterns for tasks, memory, and content notes. |
+| `/review` | Open uncertain memory, aliases, clarification, feedback, and system triage. |
 
 Power-user shortcuts still work but are kept out of the visible command menu:
-`/task`, `/t`, `/mem`, `/m`, `/li`, `/linkedin`, `/tasks`, `/reminders`, `/waiting`,
+`/briefing`, `/memory`, `/capture`, `/task`, `/t`, `/mem`, `/m`, `/li`, `/linkedin`, `/tasks`, `/reminders`, `/waiting`,
 `/projects`, `/people`, `/person <name>`, `/project <name>`, `/context <name>`,
 `/prep <name>`, `/weekly`, `/endday`, `/goals`, `/people review`, `/projects review`,
 `/memory review`, and `/memory stale`.
@@ -104,8 +101,8 @@ V4 adds linked operational context without importing private data automatically:
 | Linked retrieval | Tasks, meetings, follow-ups, commitments, and memory can be retrieved by person or project id. |
 | Personal context import | Still review-gated; large private context files should produce Markdown/import plans before any database write. |
 
-Current V4 deepening also includes an eight-command Telegram menu, inline navigation hubs, ranked work
-priorities, evidence metadata in context/prep views, review-gated entity matching, paginated memory
+Current V4 deepening also includes a five-command Telegram menu, inline navigation hubs, shared work
+classification for `/today`, `/work`, and `/briefing`, evidence metadata in context/prep views, review-gated entity matching, paginated memory
 triage, a resolvable feedback inbox, cross-domain search/timeline answers, reminder snooze,
 pre-deadline nudge digests, end-of-day and weekly rituals, lightweight goals, and a runtime
 `doctor` preflight.

@@ -76,7 +76,7 @@ remains review-gated and separate from live database writes.
 
 The active V4 deepening track adds:
 
-- A compact eight-command Telegram menu with inline hubs and hidden power-user shortcuts.
+- A compact five-command Telegram menu with inline hubs and hidden power-user shortcuts.
 - Ranked `/today`, `/work`, `/briefing`, and `/weekly` views for priorities and open loops.
 - Evidence-backed storage with clean person, project, context, and meeting-preparation views;
   source/confidence metadata stays behind an explicit detail action.

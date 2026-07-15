@@ -13,6 +13,7 @@ from memocore.domain.models import (
     ProjectStatus,
     ProjectType,
     Task,
+    TaskStatus,
 )
 from memocore.services.event_service import EventService
 from memocore.services.review_service import ReviewService
@@ -172,18 +173,18 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
     project_health = await service.project_health()
 
     assert "1 ghi nhớ" in overview.summary
-    assert "1 câu hỏi đang chờ" in overview.summary
-    assert "1 task chưa có hạn" in overview.summary
-    assert "project thiếu next action" in overview.summary
-    assert "1 phản hồi chưa xử lý" in overview.summary
+    assert "1 câu hỏi" in overview.summary
+    assert "1 phản hồi" in overview.summary
     assert "1 cảnh báo hệ thống" in overview.summary
-    assert "Gợi ý trùng: 1" in overview.sections[0].lines
+    assert "1 task chưa có hạn" in overview.sections[0].lines
+    assert "1 project active thiếu next action" in overview.sections[0].lines
+    assert "Gợi ý trùng: 1" in overview.sections[1].lines
     assert any(
         line.startswith("Project thiếu next action: ")
-        for line in overview.sections[0].lines
+        for line in overview.sections[1].lines
     )
-    assert "Cảnh báo hệ thống: 1" in overview.sections[0].lines
-    assert any("1 sửa sai" in line for line in overview.sections[0].lines)
+    assert "Cảnh báo hệ thống: 1" in overview.sections[1].lines
+    assert any("1 sửa sai" in line for line in overview.sections[1].lines)
     assert "Anh muốn hoàn thành task nào?" in pending.sections[0].lines
     assert "1 lỗi backup" in system.summary
     assert "disk full" not in "\n".join(system.sections[0].lines)
@@ -200,3 +201,103 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
     resolved = await service.resolve_feedback(feedback.id)
     assert resolved is not None
     assert "0 mục đang mở" in resolved.summary
+
+
+async def test_review_project_health_uses_descendant_tasks_and_skips_portfolio_noise(repos):
+    note = await repos["notes"].create(Note(raw_text="portfolio tree"))
+    portfolio = await repos["projects"].find_or_create("STE")
+    await repos["projects"].update_taxonomy(
+        portfolio.id,
+        ProjectType.PORTFOLIO,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    child = await repos["projects"].find_or_create("STEDATA")
+    await repos["projects"].update_taxonomy(
+        child.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        portfolio.id,
+    )
+    quiet = await repos["projects"].find_or_create("Quiet Client")
+    await repos["projects"].update_taxonomy(
+        quiet.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["tasks"].create(
+        Task(title="Ship STEDATA dashboard", source_note_id=note.id, project_id=child.id)
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "STE" not in text
+    assert "STEDATA" not in text
+    assert "Quiet Client" in text
+
+
+async def test_work_views_share_priority_logic_and_keep_waiting_out_of_next_actions(repos):
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="work state"))
+    await repos["tasks"].create(
+        Task(
+            title="Follow up Alex",
+            source_note_id=note.id,
+            status=TaskStatus.WAITING,
+            due_at=now - timedelta(hours=1),
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Finish BI report",
+            source_note_id=note.id,
+            due_at=now - timedelta(hours=2),
+            priority="high",
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            source_note_id=note.id,
+            due_at=now + timedelta(hours=3),
+            recurrence_rule="daily",
+        )
+    )
+    service = _secretary(repos)
+
+    dashboard = await service.work_dashboard(now)
+    briefing = await service.daily_briefing(now)
+    next_action_block = briefing.split("Nên làm tiếp", 1)[1]
+
+    assert "Score:" not in dashboard
+    assert "Top priorities" not in dashboard
+    assert "Finish BI report" in next_action_block
+    assert "Tập gym" in next_action_block
+    assert "Follow up Alex" not in next_action_block
+    assert "Việc đang chờ" in briefing
+
+
+async def test_weekly_review_hides_raw_priority_scores(repos):
+    note = await repos["notes"].create(Note(raw_text="weekly no score"))
+    await repos["tasks"].create(
+        Task(
+            title="Prepare trust report",
+            source_note_id=note.id,
+            due_at=datetime.now(UTC) - timedelta(days=1),
+            priority="high",
+        )
+    )
+
+    weekly = await _secretary(repos).weekly_review()
+
+    assert "Score:" not in weekly
+    assert "Prepare trust report" in weekly

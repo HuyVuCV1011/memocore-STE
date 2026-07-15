@@ -479,8 +479,12 @@ The user may answer naturally in one message. MemoCore should produce a preview 
 Nothing durable is changed until the preview is confirmed when multiple artifacts or ambiguous
 references are involved. The confirmed closeout is one audited batch with guarded partial undo.
 
-Current V4 implementation: `/endday` previews and confirms tomorrow rollover for active tasks,
-open follow-ups, and open commitments in one guarded batch. Each item is snapshot-validated before
+Current V4 implementation: `/today`, `/work`, and `/briefing` share a deterministic work
+classification model so overdue, due-today, recurring, waiting, blocked, unscheduled, and upcoming
+items are not ranked differently across surfaces. Waiting and blocked work is shown separately and
+is not presented as immediately actionable. `/endday` previews and confirms tomorrow rollover for
+dated active tasks, dated open follow-ups, and dated open commitments in one guarded batch. Undated
+tasks and waiting/blocked items are not moved automatically. Each item is snapshot-validated before
 writing, so MemoCore skips anything changed after preview instead of overwriting newer state.
 
 ### Acceptance gates

@@ -8,6 +8,7 @@ from memocore.domain.models import EventType, ReminderStatus
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
 from memocore.services.task_operation_service import TaskOperationService
+from memocore.services.work_state_service import WorkStateService
 
 
 class WorkActionService:
@@ -24,14 +25,23 @@ class WorkActionService:
         self.event_service = event_service
         self.display_timezone = display_timezone
         self.task_operation_service = task_operation_service
+        self.work_state_service = WorkStateService(display_timezone)
 
     async def tasks_view(self) -> AssistantResponse:
         tasks = await self.task_repo.list_active()
         if not tasks:
             return AssistantResponse(title="Tasks đang mở", summary="Không có task đang mở.")
-        visible = tasks[:5]
+        state = self.work_state_service.classify(tasks)
+        ordered = [
+            *[item.task for item in state.next_actions],
+            *state.waiting,
+            *state.blocked,
+            *state.unscheduled,
+            *state.upcoming,
+        ]
+        visible = _unique_tasks(ordered)[:5]
         lines = [
-            f"{index}. {_priority_icon(task.priority)} {task.title}{_recurrence_badge(task.recurrence_rule)} · {_format_due(task.due_at, self.display_timezone)}"
+            f"{index}. {_priority_icon(task.priority)} {task.title}{_recurrence_badge(task.recurrence_rule)} · {_task_hint(task, self.display_timezone)}"
             for index, task in enumerate(visible, 1)
         ]
         actions: list[AssistantAction] = []
@@ -88,9 +98,10 @@ class WorkActionService:
     ) -> AssistantResponse:
         local_today = datetime.now(UTC).astimezone(self.display_timezone).date()
         tasks = await self.task_repo.list_active()
+        state = self.work_state_service.classify(tasks)
         visible = [
             task
-            for task in tasks
+            for task in _unique_tasks([*state.overdue, *state.due_today, *state.waiting, *state.blocked])
             if task.due_at is not None
             and (
                 task.due_at.astimezone(self.display_timezone).date() == target_date
@@ -412,6 +423,28 @@ def _recurrence_badge(rule: str | None) -> str:
         unit = "ngày" if match.group(2) == "d" else "tuần"
         return f" · 🔁 Mỗi {int(match.group(1))} {unit}"
     return ""
+
+
+def _task_hint(task, display_timezone: tzinfo) -> str:
+    status = str(getattr(task, "status", "open"))
+    if status == "waiting":
+        return "đang chờ"
+    if status == "blocked":
+        return "bị chặn"
+    return _format_due(task.due_at, display_timezone)
+
+
+def _unique_tasks(tasks) -> list:
+    seen: set[str] = set()
+    result = []
+    for task in tasks:
+        task_id = getattr(task, "id", None)
+        if task_id in seen:
+            continue
+        if task_id is not None:
+            seen.add(task_id)
+        result.append(task)
+    return result
 
 
 def _parse_dt(value: str | None) -> datetime | None:

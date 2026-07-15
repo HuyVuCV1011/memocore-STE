@@ -77,16 +77,29 @@ class ReviewService:
             and event.id not in resolved_feedback_ids
         ]
         feedback_counts = Counter(event.payload["signal"] for event in feedback)
+        decision_count = (
+            len(review_memories)
+            + len(unresolved_aliases)
+            + len(pending)
+            + len(open_feedback)
+            + len(system_failures)
+        )
 
         return AssistantResponse(
             title="Cần xem lại",
             summary=(
-                f"{len(review_memories)} ghi nhớ · {len(unresolved_aliases)} liên kết tên · "
-                f"{len(pending)} câu hỏi đang chờ · {len(undated_tasks)} task chưa có hạn · "
-                f"{len(projects_without_next_action)} project thiếu next action · "
-                f"{len(open_feedback)} phản hồi chưa xử lý · {len(system_failures)} cảnh báo hệ thống."
+                f"{decision_count} mục cần quyết định: {len(review_memories)} ghi nhớ, "
+                f"{len(unresolved_aliases)} liên kết tên, {len(pending)} câu hỏi, "
+                f"{len(open_feedback)} phản hồi và {len(system_failures)} cảnh báo hệ thống."
             ),
             sections=[
+                AssistantSection(
+                    heading="Công việc nên rà sau",
+                    lines=[
+                        f"{len(undated_tasks)} task chưa có hạn",
+                        f"{len(projects_without_next_action)} project active thiếu next action",
+                    ],
+                ),
                 AssistantSection(
                     heading="Chất lượng 30 ngày",
                     lines=[
@@ -105,7 +118,7 @@ class ReviewService:
                     ],
                 )
             ],
-            footer="Chỉ các mục chưa chắc chắn mới xuất hiện ở đây; dữ liệu bình thường không chen vào hội thoại hằng ngày.",
+            footer="Các mục cần quyết định được ưu tiên trước; metric 30 ngày chỉ để soi xu hướng.",
             actions=[
                 AssistantAction(label="🧠 Ghi nhớ", action_id="mem:t:review:0", row=0),
                 AssistantAction(label="👤 Tên người", action_id="nav:review:people", row=0),
@@ -267,11 +280,24 @@ class ReviewService:
     async def _projects_without_next_action(self, tasks) -> list:
         if self.project_repo is None:
             return []
+        projects = await self.project_repo.list_all()
+        children_by_parent: dict[str, list] = {}
+        for project in projects:
+            if project.parent_project_id:
+                children_by_parent.setdefault(project.parent_project_id, []).append(project)
         task_project_ids = {task.project_id for task in tasks if task.project_id}
+
+        def has_task_in_tree(project_id: str) -> bool:
+            if project_id in task_project_ids:
+                return True
+            return any(has_task_in_tree(child.id) for child in children_by_parent.get(project_id, []))
+
         projects = [
             project
-            for project in await self.project_repo.list_all()
-            if str(project.status) == "active" and project.id not in task_project_ids
+            for project in projects
+            if str(project.status) == "active"
+            and str(project.project_type) not in {"portfolio", "capability"}
+            and not has_task_in_tree(project.id)
         ]
         return sorted(projects, key=lambda project: _sort_datetime(project.updated_at), reverse=True)
 
