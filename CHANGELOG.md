@@ -50,6 +50,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   recurring routines into their own lane when harder deadlines or commitments need focus.
 - `/work` no longer repeats the same overdue task in both the recommended next-action list and the
   overdue detail section.
+- `/work` waiting and commitment tabs now show actionable inline controls for follow-ups and
+  commitments, including complete, reschedule, cancel, and undo-supported updates.
 - User-facing task rankings no longer expose raw priority scores, including hidden shortcut views
   such as `/weekly`.
 - `/review` is now decision-first, with work hygiene and 30-day quality signals below the primary

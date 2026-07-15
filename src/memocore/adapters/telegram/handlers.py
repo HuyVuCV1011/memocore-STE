@@ -825,8 +825,12 @@ async def _navigation_response(
     if callback_data == "nav:work":
         return _work_hub_response(await service.work_dashboard())
     if callback_data == "nav:work:waiting":
+        if work_action_service is not None:
+            return await work_action_service.waiting_view()
         return AssistantResponse(title="Đang chờ", summary=await service.waiting())
     if callback_data == "nav:work:commitments":
+        if work_action_service is not None:
+            return await work_action_service.commitments_view()
         return AssistantResponse(title="Cam kết", summary=await service.commitments())
     if callback_data == "nav:memory" and memory_view_service is not None:
         return await memory_view_service.overview()

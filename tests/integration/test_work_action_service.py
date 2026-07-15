@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from memocore.domain.models import Note, Reminder, ReminderStatus, Task
+from memocore.domain.models import Commitment, FollowUp, Note, Reminder, ReminderStatus, Task
 from memocore.services.event_service import EventService
 from memocore.services.work_action_service import WorkActionService
 
@@ -57,7 +57,7 @@ async def test_work_action_can_cancel_task(repos):
     result = await service.handle(f"work:x:t:cancel:{task.id}")
 
     updated = await repos["tasks"].get_by_id(task.id)
-    assert question is not None and question.title == "Xác nhận bỏ task"
+    assert question is not None and question.title == "Xác nhận bỏ"
     assert result is not None
     assert updated is not None and str(updated.status) == "cancelled"
 
@@ -109,3 +109,73 @@ async def test_reminder_reschedule_records_diff_and_undo(repos):
     await service.handle(result.actions[0].action_id)
     restored = await repos["reminders"].get_by_id(reminder.id)
     assert restored is not None and restored.remind_at == reminder.remind_at
+
+
+async def test_waiting_view_can_close_followup_with_undo(repos):
+    note = await repos["notes"].create(Note(raw_text="follow-up work view"))
+    followup = await repos["followups"].create(
+        FollowUp(
+            title="Ask Alex for BI file",
+            due_at=datetime(2026, 7, 15, 9, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    service = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        EventService(repos["events"]),
+        followup_repo=repos["followups"],
+        commitment_repo=repos["commitments"],
+    )
+
+    view = await service.waiting_view()
+    done_action = next(action.action_id for action in view.actions if action.action_id.startswith("work:q:f:done:"))
+    confirmation = await service.handle(done_action)
+    result = await service.handle(confirmation.actions[0].action_id)
+    updated = await repos["followups"].get_by_id(followup.id)
+    undone = await service.handle(result.actions[0].action_id)
+    restored = await repos["followups"].get_by_id(followup.id)
+
+    assert "Ask Alex for BI file" in "\n".join(view.sections[0].lines)
+    assert confirmation is not None and confirmation.title == "Xác nhận hoàn thành"
+    assert result is not None and result.title == "Đã cập nhật"
+    assert updated is not None and str(updated.status) == "done"
+    assert undone is not None and undone.title == "Đã hoàn tác"
+    assert restored is not None and str(restored.status) == "open"
+    assert restored.due_at == followup.due_at
+
+
+async def test_commitments_view_can_reschedule_and_cancel(repos):
+    note = await repos["notes"].create(Note(raw_text="commitment work view"))
+    commitment = await repos["commitments"].create(
+        Commitment(
+            title="Send design notes",
+            due_at=datetime(2026, 7, 15, 9, 0, tzinfo=UTC),
+            source_note_id=note.id,
+        )
+    )
+    service = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        EventService(repos["events"]),
+        followup_repo=repos["followups"],
+        commitment_repo=repos["commitments"],
+    )
+
+    view = await service.commitments_view()
+    due_action = next(action.action_id for action in view.actions if action.action_id.startswith("work:q:c:due:"))
+    due_choice = await service.handle(due_action)
+    due_confirmation = await service.handle(
+        next(action.action_id for action in due_choice.actions if ":tomorrow:" in action.action_id)
+    )
+    due_result = await service.handle(due_confirmation.actions[0].action_id)
+    changed = await repos["commitments"].get_by_id(commitment.id)
+    cancel_question = await service.handle(f"work:q:c:cancel:{commitment.id}")
+    cancel_result = await service.handle(cancel_question.actions[0].action_id)
+    cancelled = await repos["commitments"].get_by_id(commitment.id)
+
+    assert "Send design notes" in "\n".join(view.sections[0].lines)
+    assert due_result is not None and due_result.title == "Đã cập nhật"
+    assert changed is not None and changed.due_at != commitment.due_at
+    assert cancel_result is not None and cancel_result.title == "Đã cập nhật"
+    assert cancelled is not None and str(cancelled.status) == "cancelled"
