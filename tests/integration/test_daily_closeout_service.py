@@ -51,6 +51,9 @@ async def test_daily_closeout_previews_before_writing_and_confirms(repos):
     applied = await events.list_recent(EventType.DAILY_CLOSEOUT_APPLIED, limit=10)
 
     assert "1 mục đã đến hạn hoặc quá hạn" in preview.summary
+    assert any(section.heading == "Câu hỏi chốt ngày" for section in preview.sections)
+    assert any(action.action_id == "nav:work:tasks" for action in preview.actions)
+    assert any(action.action_id == "nav:work:waiting" for action in preview.actions)
     assert unchanged.due_at == overdue.due_at
     assert result.handled is True
     assert "đã chuyển 1 task, 0 follow-up và 0 commitment" in result.message
@@ -150,6 +153,10 @@ async def test_daily_closeout_does_not_auto_move_undated_tasks(repos):
     updated = await repos["tasks"].get_by_id(task.id)
 
     assert "Không có mục đến hạn hoặc quá hạn" in preview.summary
+    assert preview.sections[0].heading == "Gợi ý"
+    assert any("ưu tiên chính cho ngày mai" in line for line in preview.sections[0].lines)
+    assert any(action.action_id == "nav:work:tasks" for action in preview.actions)
+    assert any(action.action_id == "nav:work:waiting" for action in preview.actions)
     assert result.handled is False
     assert updated.status == TaskStatus.CANCELLED or str(updated.status) == "cancelled"
 

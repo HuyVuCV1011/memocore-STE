@@ -83,11 +83,10 @@ class DailyCloseoutService:
                 sections=[
                     AssistantSection(
                         heading="Gợi ý",
-                        lines=[
-                            "Anh có thể nhắn việc đã xong, việc cần dời, người đang chờ anh, hoặc ưu tiên ngày mai."
-                        ],
+                        lines=_closeout_reflection_lines(),
                     )
                 ],
+                actions=_reflection_actions(row=0),
             )
 
         tomorrow_due = _tomorrow_morning(now, self.display_timezone)
@@ -133,7 +132,10 @@ class DailyCloseoutService:
                 f"Dạ, em thấy {closeout.total} mục đã đến hạn hoặc quá hạn. "
                 "Anh xác nhận thì em mới dời sang sáng mai."
             ),
-            sections=[AssistantSection(heading="Sẽ cập nhật", lines=question.splitlines())],
+            sections=[
+                AssistantSection(heading="Sẽ cập nhật", lines=question.splitlines()),
+                AssistantSection(heading="Câu hỏi chốt ngày", lines=_closeout_reflection_lines()),
+            ],
             footer="Task chưa có hạn và việc đang chờ/bị chặn không bị tự dời trong bước này.",
             actions=_closeout_actions(closeout),
         )
@@ -218,6 +220,15 @@ def _append_group(
         lines.append(f"{index}. {candidate.title}")
 
 
+def _closeout_reflection_lines() -> list[str]:
+    return [
+        "Việc nào đã xong thì mở Task và đánh dấu xong.",
+        "Việc nào chưa nên dời thì bấm Hủy, rồi đổi hạn từng mục.",
+        "Đang chờ ai thì mở Đang chờ để follow-up hoặc đóng loop.",
+        "Nếu có ưu tiên chính cho ngày mai, anh nhắn tự nhiên để em ghi lại.",
+    ]
+
+
 def _closeout_actions(closeout: CloseoutPreview) -> list[AssistantAction]:
     actions = [
         AssistantAction(label="Dời tất cả", action_id="closeout:confirm", row=0),
@@ -246,4 +257,13 @@ def _closeout_actions(closeout: CloseoutPreview) -> list[AssistantAction]:
                 row=row,
             )
         )
+        row += 1
+    actions.extend(_reflection_actions(row=row))
     return actions
+
+
+def _reflection_actions(row: int) -> list[AssistantAction]:
+    return [
+        AssistantAction(label="Mở Task", action_id="nav:work:tasks", row=row),
+        AssistantAction(label="Đang chờ", action_id="nav:work:waiting", row=row),
+    ]
