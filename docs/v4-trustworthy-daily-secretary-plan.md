@@ -501,7 +501,9 @@ items are not ranked differently across surfaces. Waiting and blocked work is sh
 is not presented as immediately actionable. Briefing assessment calls out routine-only days as rhythm
 maintenance rather than strategic priority, and waiting-only days as open-loop decisions rather than
 do-now work. It also flags tight task-deadline and meeting clusters so the user can leave buffer
-instead of treating nearby time commitments as isolated items. The briefing judgment rules are isolated in a focused service module so future briefing
+instead of treating nearby time commitments as isolated items. Briefing compares the selected
+work with active goal memory and warns when today's priority does not appear connected to that goal.
+The briefing judgment rules are isolated in a focused service module so future briefing
 polish does not keep expanding the Telegram secretary orchestrator. `/endday` previews and confirms tomorrow rollover for
 dated active tasks, dated open follow-ups, and dated open commitments in one guarded batch. Undated
 tasks and waiting/blocked items are not moved automatically. Each item is snapshot-validated before

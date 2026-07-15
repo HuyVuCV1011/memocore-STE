@@ -54,6 +54,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   priority, and treats waiting-only days as open-loop decisions instead of do-now work.
 - `/briefing` now flags tight deadline/meeting clusters so the user can leave buffer instead of
   treating nearby time commitments as isolated items.
+- `/briefing` now compares recommended work with the current active goal memory and calls out when
+  today's priority does not appear connected to that goal.
 - Briefing judgment logic now lives in a focused service module, keeping the Telegram secretary
   orchestrator small enough for future UX changes without weakening module-size gates.
 - `/work` no longer repeats the same overdue task in both the recommended next-action list and the

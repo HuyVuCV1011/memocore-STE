@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, tzinfo
+import re
 
 
 def briefing_assessment(
@@ -108,6 +109,8 @@ def briefing_signals(
     due_commitments,
     upcoming_top,
     collision_tasks=None,
+    action_items=None,
+    goals=None,
     display_timezone: tzinfo,
     reference_date=None,
 ) -> list[str]:
@@ -125,6 +128,9 @@ def briefing_signals(
     collision = _time_collision_signal(collision_tasks or due_today, meetings, display_timezone)
     if collision:
         signals.append(collision)
+    goal_signal = _goal_alignment_signal(action_items or [], goals or [])
+    if goal_signal:
+        signals.append(goal_signal)
     if upcoming_top:
         signals.append(
             f"- Sắp tới: {_task_due_list(upcoming_top, display_timezone, reference_date)}."
@@ -143,6 +149,28 @@ def briefing_signals(
     if waiting:
         signals.append(f"- {len(waiting)} task đang chờ hoặc bị chặn; cần quyết định có thúc đẩy không.")
     return signals
+
+
+def _goal_alignment_signal(action_items, goals) -> str | None:
+    if not goals:
+        return None
+    goal = goals[0]
+    goal_text = getattr(goal, "content", "")
+    if not goal_text:
+        return None
+    work_text = " ".join(
+        getattr(getattr(item, "task", None), "title", "")
+        for item in action_items[:3]
+    )
+    goal_label = _short_text(goal_text, 72)
+    if not work_text:
+        return f"- Goal: chưa có việc ưu tiên nào nối trực tiếp với “{goal_label}”."
+    if _token_overlap(goal_text, work_text):
+        return f"- Goal: việc nên làm đang có dấu hiệu khớp “{goal_label}”."
+    return (
+        f"- Goal: chưa thấy việc ưu tiên hôm nay nối trực tiếp với “{goal_label}”; "
+        "nếu goal này vẫn quan trọng, nên chọn thêm một next action liên quan."
+    )
 
 
 def _time_collision_signal(tasks, meetings, display_timezone: tzinfo) -> str | None:
@@ -175,6 +203,42 @@ def _time_collision_signal(tasks, meetings, display_timezone: tzinfo) -> str | N
     if len(events) >= 4:
         return "- Có nhiều mốc trong cùng ngày; nên chọn 1-2 việc chính và gom việc nhỏ sau."
     return None
+
+
+def _token_overlap(left: str, right: str) -> bool:
+    left_tokens = _meaningful_tokens(left)
+    right_tokens = _meaningful_tokens(right)
+    return bool(left_tokens & right_tokens)
+
+
+def _meaningful_tokens(value: str) -> set[str]:
+    stopwords = {
+        "goal",
+        "muc",
+        "tieu",
+        "objective",
+        "okr",
+        "hoan",
+        "thanh",
+        "xong",
+        "cho",
+        "voi",
+        "trong",
+        "ngay",
+        "nay",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z0-9À-ỹ]+", value.casefold())
+        if len(token) >= 3 and token not in stopwords
+    }
+
+
+def _short_text(value: str, limit: int) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
 
 
 def _task_title_list(tasks) -> str:

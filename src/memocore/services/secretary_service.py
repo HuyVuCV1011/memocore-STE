@@ -450,6 +450,7 @@ class SecretaryService:
             for item in commitments
             if item.due_at is not None and item.due_at <= day_end
         ]
+        goal_memories = await self._goal_memories()
         lines = [f"Briefing hôm nay - {local_now.date():%d/%m/%Y}", ""]
         lines.append("Nhận định")
         lines.append(
@@ -478,6 +479,8 @@ class SecretaryService:
             due_commitments=due_commitments,
             upcoming_top=upcoming_top,
             collision_tasks=due_today,
+            action_items=action_items,
+            goals=goal_memories,
             display_timezone=self.display_timezone,
             reference_date=local_now.date(),
         )

@@ -8,6 +8,7 @@ from memocore.domain.models import (
     MemoryBucket,
     MemoryItem,
     MemoryKind,
+    MemoryStatus,
     Note,
     Person,
     ProjectStatus,
@@ -526,6 +527,34 @@ async def test_briefing_warns_when_deadline_and_meeting_are_too_close(repos):
     assert "Gửi báo cáo BI" in attention_block
     assert "Review dashboard" in attention_block
     assert "chừa buffer" in attention_block
+
+
+async def test_briefing_compares_recommendations_with_active_goal(repos):
+    now = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="goal alignment briefing"))
+    await repos["memory"].create(
+        MemoryItem(
+            bucket=MemoryBucket.PROFILE,
+            kind=MemoryKind.GOAL,
+            content="Goal: hoàn thiện MemoCore V4 thành daily secretary đáng tin",
+            source_note_id=note.id,
+            status=MemoryStatus.ACTIVE,
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo BI",
+            source_note_id=note.id,
+            due_at=datetime(2026, 7, 15, 10, 0, tzinfo=UTC),
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    attention_block = briefing.split("Điểm cần chú ý", 1)[1].split("Nên làm tiếp", 1)[0]
+
+    assert "Goal:" in attention_block
+    assert "chưa thấy việc ưu tiên hôm nay nối trực tiếp" in attention_block
+    assert "MemoCore V4" in attention_block
 
 
 async def test_weekly_review_hides_raw_priority_scores(repos):
