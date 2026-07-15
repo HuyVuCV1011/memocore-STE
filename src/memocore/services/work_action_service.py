@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+import re
 
 from memocore.adapters.storage.repositories import ReminderRepository, TaskRepository
 from memocore.domain.models import EventType, ReminderStatus
@@ -402,10 +403,15 @@ def _priority_icon(priority: str) -> str:
 
 
 def _recurrence_badge(rule: str | None) -> str:
-    return {
-        "daily": " · 🔁 Hằng ngày",
-        "weekly": " · 🔁 Hằng tuần",
-    }.get(rule, "")
+    if rule == "daily":
+        return " · 🔁 Hằng ngày"
+    if rule == "weekly" or (rule or "").startswith("weekly:"):
+        return " · 🔁 Hằng tuần"
+    match = re.fullmatch(r"interval:(\d+)([dw])", rule or "")
+    if match:
+        unit = "ngày" if match.group(2) == "d" else "tuần"
+        return f" · 🔁 Mỗi {int(match.group(1))} {unit}"
+    return ""
 
 
 def _parse_dt(value: str | None) -> datetime | None:

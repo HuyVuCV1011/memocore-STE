@@ -102,6 +102,19 @@ class ClarificationStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class FeedbackSignal(StrEnum):
+    ACCEPTED = "accepted"
+    EDITED = "edited"
+    REJECTED = "rejected"
+    IGNORED = "ignored"
+    CORRECTION = "correction"
+
+
+class FeedbackStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
 class EventType(StrEnum):
     NOTE_CAPTURED = "note_captured"
     NOTE_PROCESSED = "note_processed"
@@ -134,14 +147,22 @@ class EventType(StrEnum):
     CLARIFICATION_RESOLVED = "clarification_resolved"
     CLARIFICATION_FAILED = "clarification_failed"
     USER_FEEDBACK_RECORDED = "user_feedback_recorded"
+    USER_FEEDBACK_RESOLVED = "user_feedback_resolved"
     BRIEFING_SENT = "briefing_sent"
     WEEKLY_REVIEW_SENT = "weekly_review_sent"
     NUDGE_SENT = "nudge_sent"
+    BACKUP_CREATED = "backup_created"
+    BACKUP_FAILED = "backup_failed"
+    RESTORE_DRILL_COMPLETED = "restore_drill_completed"
+    DAILY_CLOSEOUT_PREVIEWED = "daily_closeout_previewed"
+    DAILY_CLOSEOUT_APPLIED = "daily_closeout_applied"
     WORK_ITEM_CHANGED = "work_item_changed"
     WORK_ITEM_UNDONE = "work_item_undone"
     MEMORY_DUPLICATE_SUGGESTED = "memory_duplicate_suggested"
     ENTITY_ALIAS_SUGGESTED = "entity_alias_suggested"
     ENTITY_ALIAS_CONFIRMED = "entity_alias_confirmed"
+    ENTITY_ALIAS_REJECTED = "entity_alias_rejected"
+    ENTITY_ALIAS_IGNORED = "entity_alias_ignored"
     KNOWLEDGE_RELATION_CREATED = "knowledge_relation_created"
     DECISION_SUPERSEDED = "decision_superseded"
     MEMORY_CONFLICT_DETECTED = "memory_conflict_detected"

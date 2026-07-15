@@ -44,8 +44,9 @@ Before starting or restarting MemoCore, run the doctor command:
 .\.venv\Scripts\memocore doctor
 ```
 
-It checks config, SQLite integrity, invalid Telegram chat ids, provider config, PM2 status, and
-the Telegram slash command menu. The restart script runs this automatically before reloading PM2.
+It checks runtime version, config, SQLite integrity, backups, invalid Telegram chat ids, provider
+config, PM2 status, and the Telegram slash command menu. The restart script runs this automatically
+before reloading PM2.
 
 If you suspect a duplicate runtime, also inspect processes manually:
 
@@ -70,6 +71,16 @@ Use the project script:
 
 The script verifies PM2 and the virtualenv entrypoint, starts or restarts `memocore-ste`, and saves
 the PM2 process list. It also runs Python compilation and `memocore doctor` before reload.
+
+By default, the script refuses to deploy from a dirty Git working tree. Commit or stash the changes
+first. For an explicit development deployment from a dirty tree, run:
+
+```powershell
+.\scripts\windows\restart-memocore.ps1 -AllowDirty
+```
+
+That override stamps the PM2 process environment with the commit, dirty flag, schema version, and
+deployment timestamp so `memocore doctor` can report what is actually running.
 
 ## Mac Remote Use
 

@@ -5,13 +5,14 @@ from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 from memocore.app import (
+    send_due_backups,
     send_due_morning_briefings,
     send_due_nudges,
     send_due_reminders,
     send_due_weekly_reviews,
 )
 from memocore.config import Settings
-from memocore.domain.models import FollowUp, Note, Reminder, ReminderStatus, Task
+from memocore.domain.models import EventType, FollowUp, Note, Reminder, ReminderStatus, Task
 from memocore.domain.schemas import CaptureRequest
 from memocore.services.event_service import EventService
 from memocore.services.reminder_service import ReminderService
@@ -206,6 +207,30 @@ async def test_v33_recurring_weekly_reminder_is_supported(capture_service, fake_
     assert fake_provider.calls == []
 
 
+async def test_interval_recurring_reminder_is_rescheduled_after_send(
+    capture_service, fake_provider, repos
+):
+    response = await capture_service.capture(
+        CaptureRequest(
+            raw_text="Nhắc tôi mỗi 2 ngày 8h tưới cây",
+            source_chat_id="9001",
+            source_message_id="interval-reminder",
+        )
+    )
+    reminder = (await repos["reminders"].list_by_note(response.note_id))[0]
+    service = ReminderService(repos["reminders"], EventService(repos["events"]))
+
+    await service.mark_sent(reminder.id)
+    updated = await repos["reminders"].get_by_id(reminder.id)
+
+    assert response.reminders_created == 1
+    assert reminder.title == "tưới cây"
+    assert reminder.recurrence_rule == "interval:2d"
+    assert updated.status == ReminderStatus.SCHEDULED
+    assert updated.remind_at == reminder.remind_at + timedelta(days=2)
+    assert fake_provider.calls == []
+
+
 async def test_v34_deadline_nudges_respect_cooldown_and_quiet_hours(repos):
     now = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
     note = await repos["notes"].create(
@@ -235,6 +260,103 @@ async def test_v34_deadline_nudges_respect_cooldown_and_quiet_hours(repos):
     assert "Task quá hạn" in bot.send_message.await_args.kwargs["text"]
 
 
+async def test_followup_nudges_respect_explicit_followup_window_without_delaying_deadlines(
+    repos,
+):
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=UTC)
+    note = await repos["notes"].create(
+        Note(raw_text="preferred windows", source_chat_id="9001", source_message_id="1")
+    )
+    await repos["followups"].create(
+        FollowUp(
+            title="Ask Lan for update",
+            source_note_id=note.id,
+            due_at=now - timedelta(days=1),
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Submit report",
+            source_note_id=note.id,
+            due_at=now + timedelta(hours=2),
+        )
+    )
+    bot = AsyncMock()
+    event_service = EventService(repos["events"])
+
+    sent = await send_due_nudges(
+        _secretary(repos),
+        event_service,
+        bot,
+        _settings(
+            proactive_deadline_warning_hours=4,
+            followup_nudge_window_start="13:00",
+            followup_nudge_window_end="17:00",
+        ),
+        now,
+    )
+
+    assert sent == 1
+    assert bot.send_message.await_count == 1
+    assert "Submit report" in bot.send_message.await_args.kwargs["text"]
+    assert "Ask Lan" not in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_predeadline_warning_sends_before_task_is_overdue(repos):
+    now = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
+    note = await repos["notes"].create(
+        Note(raw_text="setup", source_chat_id="9001", source_message_id="1")
+    )
+    await repos["tasks"].create(
+        Task(title="Submit proposal", source_note_id=note.id, due_at=now + timedelta(hours=3))
+    )
+    bot = AsyncMock()
+    event_service = EventService(repos["events"])
+    settings = _settings(proactive_deadline_warning_hours=4)
+
+    sent = await send_due_nudges(_secretary(repos), event_service, bot, settings, now)
+
+    assert sent == 1
+    assert "Task sắp đến hạn" in bot.send_message.await_args.kwargs["text"]
+    events = await event_service.list_recent(EventType.NUDGE_SENT, limit=10)
+    assert events[0].entity_type == "task_deadline_warning"
+
+
+async def test_multiple_nudges_are_bundled_limited_and_audited_per_item(repos):
+    now = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
+    note = await repos["notes"].create(
+        Note(raw_text="setup", source_chat_id="9001", source_message_id="1")
+    )
+    for index in range(3):
+        await repos["tasks"].create(
+            Task(
+                title=f"Overdue item {index + 1}",
+                source_note_id=note.id,
+                due_at=now - timedelta(hours=index + 1),
+            )
+        )
+    bot = AsyncMock()
+    event_service = EventService(repos["events"])
+    settings = _settings(
+        proactive_nudge_bundle_threshold=2,
+        proactive_nudge_max_per_run=2,
+    )
+
+    first = await send_due_nudges(_secretary(repos), event_service, bot, settings, now)
+    second = await send_due_nudges(_secretary(repos), event_service, bot, settings, now)
+
+    assert first == 1
+    assert second == 1
+    assert bot.send_message.await_count == 2
+    first_text = bot.send_message.await_args_list[0].kwargs["text"]
+    second_text = bot.send_message.await_args_list[1].kwargs["text"]
+    assert first_text.startswith("Nudge digest")
+    assert first_text.count("Task quá hạn") == 2
+    assert second_text.count("Task quá hạn") == 1
+    events = await event_service.list_recent(EventType.NUDGE_SENT, limit=10)
+    assert len(events) == 3
+
+
 async def test_v35_weekly_review_sends_once_and_includes_done_task(repos):
     now = datetime(2026, 6, 8, 8, 35, tzinfo=UTC)
     note = await repos["notes"].create(
@@ -258,6 +380,25 @@ async def test_v35_weekly_review_sends_once_and_includes_done_task(repos):
     assert bot.send_message.await_count == 1
     assert "Weekly review" in bot.send_message.await_args.kwargs["text"]
     assert "Finish V3 plan" in bot.send_message.await_args.kwargs["text"]
+
+
+async def test_scheduled_backup_runs_once_per_day(repos, tmp_path):
+    now = datetime(2026, 7, 15, 3, 35, tzinfo=UTC)
+    event_service = EventService(repos["events"])
+    settings = _settings(
+        database_path=repos["events"].database.db_path,
+        backup_time="03:30",
+        backup_dir=tmp_path / "backups",
+    )
+
+    first = await send_due_backups(event_service, settings, now)
+    second = await send_due_backups(event_service, settings, now)
+    events = await event_service.list_recent(EventType.BACKUP_CREATED, limit=10)
+
+    assert first == 1
+    assert second == 0
+    assert len(events) == 1
+    assert events[0].payload["verified"] is True
 
 
 async def test_scheduled_messages_ignore_chat_ids_found_in_notes(repos):

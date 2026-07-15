@@ -1,7 +1,12 @@
 from datetime import UTC, datetime
 
 from memocore.adapters.storage.repositories import EventLogRepository
-from memocore.domain.models import EventLog, EventType
+from memocore.domain.models import (
+    EventLog,
+    EventType,
+    FeedbackSignal,
+    FeedbackStatus,
+)
 
 
 class EventService:
@@ -51,3 +56,81 @@ class EventService:
         since: datetime,
     ) -> bool:
         return await self.event_repo.exists_recent(event_type, entity_type, entity_id, since)
+
+    async def record_feedback(
+        self,
+        signal: FeedbackSignal,
+        artifact_type: str,
+        artifact_id: str,
+        *,
+        source_chat_id: str | None = None,
+        source_message_id: str | None = None,
+        source_note_id: str | None = None,
+        action: str | None = None,
+        status: FeedbackStatus | None = None,
+        details: dict | None = None,
+    ) -> EventLog:
+        feedback_status = status or (
+            FeedbackStatus.OPEN
+            if signal == FeedbackSignal.CORRECTION
+            else FeedbackStatus.RESOLVED
+        )
+        payload = {
+            "schema_version": 1,
+            "signal": signal.value,
+            "status": feedback_status.value,
+            "artifact": {"type": artifact_type, "id": artifact_id},
+            "turn": {
+                "key": (
+                    f"{source_chat_id}:{source_message_id}"
+                    if source_chat_id and source_message_id
+                    else None
+                ),
+                "source_chat_id": source_chat_id,
+                "source_message_id": source_message_id,
+            },
+            "source_note_id": source_note_id,
+        }
+        if action:
+            payload["action"] = action
+        if details:
+            payload["details"] = details
+        return await self.append_event(
+            EventType.USER_FEEDBACK_RECORDED,
+            artifact_type,
+            artifact_id,
+            payload,
+        )
+
+    async def resolve_feedback(self, feedback_event_id: str) -> EventLog | None:
+        feedback = await self.get_event(feedback_event_id)
+        if (
+            feedback is None
+            or feedback.event_type != EventType.USER_FEEDBACK_RECORDED
+            or feedback.payload.get("schema_version") != 1
+        ):
+            return None
+        resolved = await self.list_recent(
+            EventType.USER_FEEDBACK_RESOLVED,
+            limit=500,
+        )
+        if any(
+            event.payload.get("feedback_event_id") == feedback_event_id
+            for event in resolved
+        ):
+            return next(
+                event
+                for event in resolved
+                if event.payload.get("feedback_event_id") == feedback_event_id
+            )
+        return await self.append_event(
+            EventType.USER_FEEDBACK_RESOLVED,
+            feedback.entity_type,
+            feedback.entity_id,
+            {
+                "schema_version": 1,
+                "feedback_event_id": feedback_event_id,
+                "signal": feedback.payload.get("signal"),
+                "status": FeedbackStatus.RESOLVED.value,
+            },
+        )

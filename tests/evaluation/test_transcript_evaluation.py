@@ -12,6 +12,25 @@ from memocore.services.reference_resolver import ReferenceResolver
 from memocore.services.secretary_service import SecretaryService
 
 
+EXPECTED_TRANSCRIPT_COUNT = 41
+DURABLE_TABLES = (
+    "tasks",
+    "reminders",
+    "memory_items",
+    "projects",
+    "people",
+    "meetings",
+    "meeting_people",
+    "followups",
+    "commitments",
+    "organizations",
+    "decisions",
+    "knowledge_relations",
+    "activity_links",
+    "clarification_requests",
+)
+
+
 class TranscriptKnowledge:
     async def answer(self, raw_text, **kwargs):
         return f"Context {kwargs.get('entity_name')}"
@@ -28,7 +47,22 @@ def _load_transcripts():
 
 
 def test_transcript_corpus_has_stabilization_scale():
-    assert 30 <= len(_load_transcripts()) <= 50
+    assert len(_load_transcripts()) == EXPECTED_TRANSCRIPT_COUNT
+
+
+def test_transcript_count_matches_product_docs():
+    repo_root = Path(__file__).parents[2]
+    expected_phrases = {
+        "README.md": (
+            f"| Stability corpus | {EXPECTED_TRANSCRIPT_COUNT} isolated multi-turn conversations"
+        ),
+        "docs/conversation-stability-gates.md": (
+            f"The offline corpus contains {EXPECTED_TRANSCRIPT_COUNT} isolated conversations."
+        ),
+    }
+    for relative_path, expected in expected_phrases.items():
+        text = (repo_root / relative_path).read_text(encoding="utf-8")
+        assert expected in text
 
 
 @pytest.mark.parametrize("transcript", _load_transcripts())
@@ -74,6 +108,8 @@ async def test_transcript_fixtures(transcript, capture_service, repos):
         current = await _durable_snapshot(repos)
         if step.get("expected_no_durable_writes"):
             assert current == previous
+        if step.get("expected_durable_change"):
+            assert current["durable_state"] != previous["durable_state"]
         for key, delta in step.get("expected_delta", {}).items():
             assert current[key] - previous[key] == delta
         if expected_focus := step.get("expected_focus"):
@@ -157,17 +193,42 @@ async def _seed(setup, repos):
 
 
 async def _durable_snapshot(repos):
+    tables = {
+        table: await _rows(repos["tasks"], table)
+        for table in DURABLE_TABLES
+    }
     return {
         "tasks": len(await repos["tasks"].list_active()),
         "memories": len(await repos["memory"].list_all()),
         "reminders": len(await repos["reminders"].list_recent(1000)),
-        "clarifications": len(await _rows(repos["clarifications"], "clarification_requests")),
+        "meetings": len(tables["meetings"]),
+        "followups": len(tables["followups"]),
+        "commitments": len(tables["commitments"]),
+        "people": len(tables["people"]),
+        "projects": len(tables["projects"]),
+        "organizations": len(tables["organizations"]),
+        "decisions": len(tables["decisions"]),
+        "knowledge_relations": len(tables["knowledge_relations"]),
+        "clarifications": len(tables["clarification_requests"]),
+        "durable_state": {
+            table: _row_fingerprint(rows)
+            for table, rows in tables.items()
+        },
     }
 
 
 async def _rows(repo, table):
     conn = await repo.database.connection()
     return await (await conn.execute(f"SELECT * FROM {table}")).fetchall()
+
+
+def _row_fingerprint(rows) -> tuple:
+    return tuple(
+        sorted(
+            tuple((key, row[key]) for key in row.keys())
+            for row in rows
+        )
+    )
 
 
 async def _entity_by_name(entity_type, name, repos):

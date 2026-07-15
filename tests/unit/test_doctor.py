@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from memocore.adapters.storage.sqlite import Database
-from memocore.cli.doctor import EXPECTED_COMMANDS, has_failures, run_doctor
+from memocore.cli.doctor import (
+    EXPECTED_COMMANDS,
+    _pm2_deploy_stamp,
+    has_failures,
+    run_doctor,
+)
 from memocore.config import Settings
 
 
@@ -36,12 +38,19 @@ async def test_doctor_reports_healthy_runtime_without_live_provider(tmp_path, mo
 
     assert has_failures(results) is False
     assert {result.name for result in results} >= {
+        "Runtime version",
+        "Review window",
         "Config",
         "SQLite",
         "Runtime data",
         "Telegram",
         "PM2",
     }
+    runtime_version = next(result for result in results if result.name == "Runtime version")
+    assert "package=0.4.1" in runtime_version.detail
+    assert "commit=" in runtime_version.detail
+    assert "dirty=" in runtime_version.detail
+    assert "schema=008_activity_links.sql" in runtime_version.detail
 
 
 async def test_doctor_warns_about_invalid_chat_ids(tmp_path, monkeypatch):
@@ -93,6 +102,23 @@ def test_expected_telegram_command_contract_is_small():
         "memory",
         "context",
         "briefing",
+        "search",
         "capture",
         "review",
     )
+
+
+def test_pm2_deploy_stamp_formats_recorded_runtime_env():
+    detail = _pm2_deploy_stamp(
+        {
+            "MEMOCORE_DEPLOY_COMMIT": "abc123",
+            "MEMOCORE_DEPLOY_DIRTY": "no",
+            "MEMOCORE_DEPLOY_SCHEMA": "008_activity_links.sql",
+            "MEMOCORE_DEPLOYED_AT": "2026-07-15T00:00:00Z",
+        }
+    )
+
+    assert "deploy_commit=abc123" in detail
+    assert "deploy_dirty=no" in detail
+    assert "deploy_schema=008_activity_links.sql" in detail
+    assert "deployed_at=2026-07-15T00:00:00Z" in detail

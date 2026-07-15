@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+import re
 
 from memocore.adapters.storage.repositories import (
     ActivityLinkRepository,
@@ -15,7 +16,7 @@ from memocore.adapters.storage.repositories import (
     ReminderRepository,
     TaskRepository,
 )
-from memocore.domain.models import EventType, MemoryBucket, MemoryKind, MemoryStatus, ProjectStatus, ProjectType
+from memocore.domain.models import EventType, MemoryBucket, MemoryKind, MemoryStatus, Project, ProjectStatus, ProjectType
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
 from memocore.services.presentation_labels import person_note_lines, relationship_label
@@ -668,6 +669,18 @@ class SecretaryService:
         lines.append("")
         lines.append(f"Tổng quan: {len(tasks)} task, {len(commitments)} commitment, {len(followups)} follow-up, {len(meetings)} meeting, {len(memories)} memory.")
         lines.append("")
+        lines.append("Project health")
+        lines.extend(
+            await self._project_health_lines(
+                project,
+                tasks,
+                commitments,
+                followups,
+                memories,
+                datetime.now(UTC),
+            )
+        )
+        lines.append("")
         lines.append("Task đang mở")
         lines.extend(_task_lines(tasks, self.display_timezone, note_map) if tasks else ["Không có task đang mở."])
         lines.append("")
@@ -771,6 +784,85 @@ class SecretaryService:
         matches = await self.project_repo.find_matches(query)
         return matches[0] if len(matches) == 1 else None
 
+    async def _project_health_lines(
+        self,
+        project,
+        tasks,
+        commitments,
+        followups,
+        memories,
+        now: datetime,
+    ) -> list[str]:
+        overdue_tasks = [task for task in tasks if task.due_at and task.due_at < now]
+        waiting_tasks = [
+            task for task in tasks if str(task.status) in {"waiting", "blocked"}
+        ]
+        overdue_followups = [
+            item for item in followups if item.due_at is not None and item.due_at < now
+        ]
+        overdue_commitments = [
+            item for item in commitments if item.due_at is not None and item.due_at < now
+        ]
+        risky_memories = [
+            item
+            for item in memories
+            if str(getattr(item, "conflict_state", "none")) != "none"
+            or str(item.status) == MemoryStatus.CANDIDATE.value
+        ]
+        stale_reference = max(
+            [
+                _as_utc(project.updated_at),
+                _as_utc(project.last_seen_at),
+                *(_as_utc(item.updated_at) for item in tasks),
+                *(_as_utc(item.updated_at) for item in commitments),
+                *(_as_utc(item.updated_at) for item in followups),
+                *(_as_utc(item.updated_at) for item in memories),
+            ],
+            default=_as_utc(project.updated_at),
+        )
+        stale_days = (now - stale_reference).days
+        scored = await self._top_priority_tasks(tasks, now, limit=1)
+        if scored:
+            next_task, _score, reasons = scored[0]
+            next_action = (
+                f"{next_task.title} · {_format_due(next_task.due_at, self.display_timezone)}"
+            )
+            if reasons:
+                next_action += f" · {', '.join(_reason_label(reason) for reason in reasons[:3])}"
+        else:
+            next_action = "Chưa có next action."
+
+        risks: list[str] = []
+        if not tasks:
+            risks.append("thiếu next action")
+        if overdue_tasks:
+            risks.append(f"{len(overdue_tasks)} task quá hạn")
+        if waiting_tasks:
+            risks.append(f"{len(waiting_tasks)} việc đang chờ/bị chặn")
+        if overdue_commitments:
+            risks.append(f"{len(overdue_commitments)} commitment quá hạn")
+        if overdue_followups:
+            risks.append(f"{len(overdue_followups)} follow-up quá hạn")
+        if risky_memories:
+            risks.append(f"{len(risky_memories)} memory cần rà")
+        if stale_days >= 14:
+            risks.append(f"{stale_days} ngày chưa có cập nhật")
+
+        status = "cần xem lại" if risks else "ổn"
+        return [
+            f"- Trạng thái: {status}",
+            f"- Next action: {next_action}",
+            (
+                "- Rủi ro: " + "; ".join(risks)
+                if risks
+                else "- Rủi ro: chưa thấy blocker rõ."
+            ),
+            (
+                f"- Open loops: {len(overdue_tasks)} quá hạn · {len(waiting_tasks)} chờ/bị chặn · "
+                f"{len(commitments)} commitment · {len(followups)} follow-up."
+            ),
+        ]
+
     async def weekly_review(self, now: datetime | None = None) -> str:
         now = now or datetime.now(UTC)
         local_now = now.astimezone(self.display_timezone)
@@ -839,6 +931,7 @@ class SecretaryService:
         self,
         now: datetime | None = None,
         stale_followup_days: int = 3,
+        predeadline_warning_hours: int = 0,
     ) -> list[tuple[str, str, str]]:
         now = now or datetime.now(UTC)
         local_now = now.astimezone(self.display_timezone)
@@ -852,6 +945,18 @@ class SecretaryService:
                         "task",
                         task.id,
                         f"Task quá hạn: {task.title}\nHạn: {_format_due(task.due_at, self.display_timezone)}",
+                    )
+                )
+            elif (
+                predeadline_warning_hours > 0
+                and task.due_at
+                and task.due_at <= now + timedelta(hours=predeadline_warning_hours)
+            ):
+                nudges.append(
+                    (
+                        "task_deadline_warning",
+                        task.id,
+                        f"Task sắp đến hạn: {task.title}\nHạn: {_format_due(task.due_at, self.display_timezone)}",
                     )
                 )
         stale_before = now - timedelta(days=stale_followup_days)
@@ -1141,9 +1246,24 @@ def _scored_task_lines(scored_tasks, display_timezone: tzinfo = UTC) -> list[str
 
 
 def _task_recurrence_badge(task) -> str:
-    labels = {"daily": "Hằng ngày", "weekly": "Hằng tuần"}
-    label = labels.get(task.recurrence_rule)
+    label = _recurrence_label(task.recurrence_rule)
     return f" · 🔁 {label}" if label else ""
+
+
+def _recurrence_label(rule: str | None) -> str | None:
+    if rule is None:
+        return None
+    labels = {"daily": "Hằng ngày", "weekly": "Hằng tuần"}
+    if rule in labels:
+        return labels[rule]
+    if rule.startswith("weekly:"):
+        return "Hằng tuần"
+    match = re.fullmatch(r"interval:(\d+)([dw])", rule)
+    if match:
+        count = int(match.group(1))
+        unit = "ngày" if match.group(2) == "d" else "tuần"
+        return f"Mỗi {count} {unit}"
+    return None
 
 
 def _format_time(value: datetime | None, display_timezone: tzinfo) -> str:
@@ -1347,8 +1467,28 @@ def _label_status(value) -> str:
     return labels.get(str(value), str(value))
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _label_priority(value: str) -> str:
     labels = {"low": "thấp", "medium": "vừa", "high": "cao"}
+    return labels.get(value, value)
+
+
+def _reason_label(value: str) -> str:
+    labels = {
+        "overdue": "quá hạn",
+        "due soon": "sắp đến hạn",
+        "waiting": "đang chờ",
+        "blocked": "bị chặn",
+        "person-linked": "có người liên quan",
+        "project-linked": "thuộc project",
+        "high priority": "ưu tiên cao",
+        "stale 7d+": "lâu chưa cập nhật",
+    }
     return labels.get(value, value)
 
 

@@ -88,7 +88,7 @@
     {
       "name":"update exact task priority",
       "setup":{"tasks":[{"title":"Review Gamma Evaluation"}]},
-      "steps":[{"text":"đổi ưu tiên task Review Gamma Evaluation thành cao","expected_intent":"update_task_priority","expected_no_durable_writes":true}],
+      "steps":[{"text":"đổi ưu tiên task Review Gamma Evaluation thành cao","expected_intent":"update_task_priority","expected_durable_change":true}],
       "expected_final":{"active_task_titles":["Review Gamma Evaluation"]}
     },
     {
@@ -131,7 +131,7 @@
       "name":"fuzzy recurring task completion",
       "setup":{"tasks":[{"title":"Làm audio truyện sảng văn","due_at":"2030-01-01T16:59:00+00:00","recurrence_rule":"daily","recurrence_series_id":"audio-complete-eval"}]},
       "steps":[
-        {"text":"tôi đã xong task truyện sảng văn ngày hôm nay","expected_intent":"mark_task_done","expected_reply_contains":"kỳ kế tiếp","expected_no_durable_writes":true}
+        {"text":"tôi đã xong task truyện sảng văn ngày hôm nay","expected_intent":"mark_task_done","expected_reply_contains":"kỳ kế tiếp","expected_durable_change":true}
       ],
       "expected_final":{"active_task_titles":["Làm audio truyện sảng văn"]}
     }

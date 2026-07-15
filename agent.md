@@ -222,7 +222,7 @@ MEMOCORE_RUN_LIVE_BENCHMARK=1 .venv/bin/pytest tests/benchmark/test_extraction_b
 - Handle task completion, deadline updates, bulk cancellation, memory deletion, and correction
   feedback with guardrails.
 - Keep the visible Telegram slash menu compact: `/today`, `/work`, `/memory`, `/context`,
-  `/briefing`, `/capture`, and `/review`.
+  `/briefing`, `/search`, `/capture`, and `/review`.
 - Keep power-user shortcuts available but out of the visible menu: `/task`, `/t`, `/mem`, `/m`,
   `/li`, `/linkedin`, `/tasks`, `/reminders`, `/waiting`, `/projects`, `/people`, `/person`,
   `/project`, `/context <name>`, `/prep`, `/weekly`, `/endday`, `/goals`, `/people review`,
@@ -244,7 +244,6 @@ virtual environments, caches, or generated build artifacts.
 
 ## Deferred Work
 
-- Interval recurrence such as "every 2 days" or "every 3 weeks".
 - Bundled low-priority nudge digests.
 - Explicit accepted, edited, ignored, and rejected suggestion feedback signals beyond correction
   feedback.

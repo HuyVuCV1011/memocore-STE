@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from memocore.adapters.storage.repositories import (
@@ -11,7 +11,7 @@ from memocore.adapters.storage.repositories import (
     ProjectRepository,
 )
 from memocore.domain.models import MemoryBucket, MemoryItem, MemoryKind
-from memocore.domain.models import EventType, MemoryStatus
+from memocore.domain.models import EventType, FeedbackSignal, MemoryStatus
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
 
@@ -230,6 +230,7 @@ class MemoryViewService:
             return None
         await self.memory_repo.confirm(item_id, datetime.now(UTC))
         await self._log(EventType.MEMORY_ACTIVATED, item.id, {"source": "telegram_review"})
+        await self._feedback(item, FeedbackSignal.ACCEPTED, "confirm_memory")
         return AssistantResponse(
             title="Đã xác nhận memory",
             summary=item.content,
@@ -242,6 +243,7 @@ class MemoryViewService:
             return None
         await self.memory_repo.update_status(item_id, MemoryStatus.REJECTED.value)
         await self._log(EventType.MEMORY_REJECTED, item.id, {"source": "telegram_review"})
+        await self._feedback(item, FeedbackSignal.REJECTED, "reject_memory")
         return AssistantResponse(
             title="Đã bỏ memory",
             summary=item.content,
@@ -254,6 +256,7 @@ class MemoryViewService:
             return None
         await self.memory_repo.update_status(item_id, MemoryStatus.SUPERSEDED.value)
         await self._log(EventType.MEMORY_SUPERSEDED, item.id, {"source": "telegram_review"})
+        await self._feedback(item, FeedbackSignal.EDITED, "mark_memory_stale")
         return AssistantResponse(
             title="Đã đánh dấu lỗi thời",
             summary=item.content,
@@ -295,6 +298,7 @@ class MemoryViewService:
             item.id,
             {"related_item_ids": related_ids, "source": "telegram_review"},
         )
+        await self._feedback(item, FeedbackSignal.EDITED, "select_canonical_memory")
         return AssistantResponse(
             title="Đã chọn memory chuẩn",
             summary=item.content,
@@ -337,6 +341,31 @@ class MemoryViewService:
         if self.event_service is None:
             return
         await self.event_service.append_event(event_type, "memory", item_id, payload)
+
+    async def _feedback(
+        self,
+        item: MemoryItem,
+        signal: FeedbackSignal,
+        action: str,
+    ) -> None:
+        if self.event_service is None:
+            return
+        source_chat_id = None
+        source_message_id = None
+        if self.note_repo is not None:
+            note = await self.note_repo.get_by_id(item.source_note_id)
+            if note is not None:
+                source_chat_id = note.source_chat_id
+                source_message_id = note.source_message_id
+        await self.event_service.record_feedback(
+            signal,
+            "memory_item",
+            item.id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            source_note_id=item.source_note_id,
+            action=action,
+        )
 
 
 def _topic_actions() -> list[AssistantAction]:

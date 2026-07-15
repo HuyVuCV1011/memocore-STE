@@ -869,6 +869,32 @@ async def test_batch_undo_removes_created_recurrence_occurrence(
     )
 
 
+async def test_interval_recurrence_completion_creates_next_occurrence(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="interval recurrence"))
+    task = await repos["tasks"].create(
+        Task(
+            title="Water plants",
+            due_at=datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="interval:2d",
+            recurrence_series_id="plants",
+            recurrence_occurrence_at=datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+        )
+    )
+    service = _service(capture_service, repos)
+
+    result = await service.task_operation_service.complete(
+        task.id,
+        transition="test_interval_recurrence",
+        now=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+    )
+
+    assert result.next_created is True
+    assert result.next_task is not None
+    assert result.next_task.due_at == datetime(2026, 7, 3, 9, 0, tzinfo=UTC)
+    assert result.next_task.recurrence_rule == "interval:2d"
+
+
 @pytest.mark.parametrize(
     "answer",
     [

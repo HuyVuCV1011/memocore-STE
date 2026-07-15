@@ -18,6 +18,7 @@ async def test_create_app_wires_all_v4_services(monkeypatch, tmp_path):
         "scheduled_morning_briefing_loop",
         "proactive_nudge_loop",
         "scheduled_weekly_review_loop",
+        "scheduled_backup_loop",
     ):
         monkeypatch.setattr(app_module, name, idle_loop)
 

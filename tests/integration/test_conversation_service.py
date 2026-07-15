@@ -1,6 +1,17 @@
 from datetime import UTC, datetime, time, timedelta
 
-from memocore.domain.models import Meeting, MemoryBucket, MemoryKind, Note, Person, Task, TaskStatus
+from memocore.domain.models import (
+    EventType,
+    Meeting,
+    MemoryBucket,
+    MemoryKind,
+    Note,
+    Person,
+    Reminder,
+    ReminderStatus,
+    Task,
+    TaskStatus,
+)
 from memocore.domain.schemas import (
     CaptureRequest,
     IntentClassification,
@@ -71,6 +82,9 @@ def test_classifies_unaccented_vietnamese_queries():
     assert classify_intent("nhac nho chua lam") == "query_reminders"
     assert classify_intent("ngu canh ve du an memocore") == "query_context"
     assert classify_intent("chuan bi hop voi lan") == "query_meeting_prep"
+    assert classify_intent("timeline MemoCore tuần trước") == "query_timeline"
+    assert classify_intent("vì sao task báo cáo BI được tạo") == "query_origin"
+    assert classify_intent("tuần trước tôi đã quyết định gì về MemoCore") == "query_decisions"
     assert classify_intent("ban co khoe khong") == "casual_or_noop"
     assert classify_intent("hom nay troi nhu the nao") == "casual_or_noop"
 
@@ -110,6 +124,8 @@ def test_classifies_vietnamese_and_english_examples():
     assert classify_intent(
         "mai tôi kiểm tra task của Nguyên là kiểm tra lại dữ liệu thưởng leader, đặt klichj"
     ) == "create_task_check_reminder"
+    assert classify_intent("nhắc lại uống thuốc 2 tiếng sau") == "snooze_reminder"
+    assert classify_intent("nhắc lại chiều mai") == "snooze_reminder"
 
 
 def test_action_hashtag_only_forces_route_at_end(capture_service, repos):
@@ -258,6 +274,20 @@ def test_daily_gym_schedule_gets_the_next_6am_occurrence():
     due = datetime.fromisoformat(normalized.tasks[0].due_at)
     assert due.date().isoformat() == "2026-06-24"
     assert due.hour == 6
+
+
+def test_interval_schedule_gets_structured_recurrence_rule():
+    normalized = _normalize_scheduled_work(
+        NoteExtraction(summary="Tưới cây định kỳ"),
+        "đặt cho tôi lịch tưới cây lúc 8h mỗi 2 ngày",
+        datetime(2026, 7, 15, 7, 0).astimezone(),
+    )
+
+    assert len(normalized.tasks) == 1
+    assert normalized.tasks[0].title.lower() == "tưới cây"
+    assert normalized.tasks[0].recurrence_rule == "interval:2d"
+    due = datetime.fromisoformat(normalized.tasks[0].due_at)
+    assert due.hour == 8
 
 
 async def test_multiline_future_schedule_creates_three_open_tasks(
@@ -607,6 +637,16 @@ async def test_delete_all_tasks_cancels_active_tasks_without_capture(
     assert updated_one.status == "cancelled"
     assert updated_two.status == "cancelled"
     assert fake_provider.calls == []
+    events_one = await repos["events"].list_by_entity("task", task_one.id)
+    events_two = await repos["events"].list_by_entity("task", task_two.id)
+    assert not any(
+        event.event_type == EventType.USER_FEEDBACK_RECORDED
+        for event in [*events_one, *events_two]
+    )
+    assert all(
+        any(event.event_type == EventType.WORK_ITEM_CHANGED for event in events)
+        for events in (events_one, events_two)
+    )
 
 
 async def test_memory_query_answers_profile_memory_without_extraction(
@@ -827,6 +867,70 @@ async def test_update_task_due_followup_creates_pending_and_applies_answer(
     assert fake_provider.calls == []
 
 
+async def test_snooze_reminder_updates_matching_reminder_without_extraction(
+    capture_service, fake_provider, repos
+):
+    now = datetime(2026, 6, 8, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="reminder source"))
+    reminder = await repos["reminders"].create(
+        Reminder(
+            title="uống thuốc",
+            source_note_id=note.id,
+            remind_at=now + timedelta(hours=1),
+            status=ReminderStatus.SCHEDULED,
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+    service.now_provider = lambda: now
+
+    result = await service.handle_text(
+        CaptureRequest(raw_text="nhắc lại uống thuốc 2 tiếng sau")
+    )
+
+    updated = await repos["reminders"].get_by_id(reminder.id)
+    events = await repos["events"].list_by_entity("reminder", reminder.id)
+    assert result.intent == "snooze_reminder"
+    assert "Đã dời reminder" in result.reply
+    assert updated.remind_at == now + timedelta(hours=2)
+    assert updated.status == ReminderStatus.SCHEDULED
+    assert any(event.payload.get("action") == "snooze_reminder" for event in events)
+    assert fake_provider.calls == []
+
+
+async def test_contextual_snooze_uses_recent_reminder_and_defaults_afternoon(
+    capture_service, fake_provider, repos
+):
+    now = datetime(2026, 6, 8, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="reminder source"))
+    older = await repos["reminders"].create(
+        Reminder(
+            title="gọi khách hàng",
+            source_note_id=note.id,
+            remind_at=now + timedelta(hours=1),
+            status=ReminderStatus.SCHEDULED,
+        )
+    )
+    recent = await repos["reminders"].create(
+        Reminder(
+            title="kiểm tra báo cáo",
+            source_note_id=note.id,
+            remind_at=now + timedelta(hours=2),
+            status=ReminderStatus.SCHEDULED,
+        )
+    )
+    service = _conversation_service(capture_service, repos)
+    service.now_provider = lambda: now
+
+    result = await service.handle_text(CaptureRequest(raw_text="nhắc lại chiều mai"))
+
+    older_updated = await repos["reminders"].get_by_id(older.id)
+    recent_updated = await repos["reminders"].get_by_id(recent.id)
+    assert result.intent == "snooze_reminder"
+    assert recent_updated.remind_at == datetime(2026, 6, 9, 15, 0, tzinfo=UTC)
+    assert older_updated.remind_at == now + timedelta(hours=1)
+    assert fake_provider.calls == []
+
+
 async def test_question_routes_to_knowledge_instead_of_empty_ack(
     capture_service, fake_provider, repos
 ):
@@ -994,6 +1098,11 @@ async def test_cancel_specific_task_by_name(capture_service, repos):
     assert result.intent == "cancel_task"
     assert result.reply == "Đã bỏ task: Thực hiện kịch bản audio sảng văn mới."
     assert updated is not None and str(updated.status) == "cancelled"
+    events = await repos["events"].list_by_entity("task", target.id)
+    assert not any(
+        event.event_type == EventType.USER_FEEDBACK_RECORDED for event in events
+    )
+    assert any(event.event_type == EventType.WORK_ITEM_CHANGED for event in events)
 
 
 async def test_cancel_task_by_number_from_last_rendered_list(capture_service, repos):

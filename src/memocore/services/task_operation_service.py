@@ -151,6 +151,7 @@ class TaskOperationService:
                             "task_id": task.id,
                             "before_status": str(task.status),
                             "before_updated_at": task.updated_at.isoformat(),
+                            "after_fingerprint": _task_fingerprint(result.task),
                             "after_updated_at": result.task.updated_at.isoformat(),
                             "next_task_id": (
                                 result.next_task.id
@@ -204,8 +205,7 @@ class TaskOperationService:
                 if (
                     task is None
                     or str(task.status) != TaskStatus.DONE.value
-                    or task.updated_at
-                    != datetime.fromisoformat(item["after_updated_at"])
+                    or not _matches_batch_after_snapshot(task, item)
                 ):
                     skipped.append(task_id)
                     continue
@@ -391,3 +391,30 @@ def _recurrence_backlog(
         next_future_due=next_future_due,
         expected_updated_at=next_task.updated_at,
     )
+
+
+def _matches_batch_after_snapshot(task: Task, item: dict) -> bool:
+    fingerprint = item.get("after_fingerprint")
+    if isinstance(fingerprint, dict):
+        return _task_fingerprint(task) == fingerprint
+    return task.updated_at == datetime.fromisoformat(item["after_updated_at"])
+
+
+def _task_fingerprint(task: Task) -> dict:
+    return {
+        "title": task.title,
+        "description": task.description,
+        "status": str(task.status),
+        "priority": task.priority,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "project_id": task.project_id,
+        "person_id": task.person_id,
+        "recurrence_rule": task.recurrence_rule,
+        "recurrence_series_id": task.recurrence_series_id,
+        "recurrence_occurrence_at": (
+            task.recurrence_occurrence_at.isoformat()
+            if task.recurrence_occurrence_at
+            else None
+        ),
+        "duration_minutes": task.duration_minutes,
+    }

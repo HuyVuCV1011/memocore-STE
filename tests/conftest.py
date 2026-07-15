@@ -81,13 +81,6 @@ def fake_provider() -> FakeProvider:
     return FakeProvider()
 
 
-@pytest.fixture(autouse=True)
-def isolate_feedback_log(tmp_path, monkeypatch):
-    feedback_path = tmp_path / "user_feedback.jsonl"
-    monkeypatch.setenv("MEMOCORE_FEEDBACK_PATH", str(feedback_path))
-    return feedback_path
-
-
 @pytest.fixture
 def repos(tmp_database):
     return {
@@ -131,6 +124,8 @@ def capture_service(repos, fake_provider):
         reminder_service,
         event_service,
         task_repo=repos["tasks"],
+        followup_repo=repos["followups"],
+        commitment_repo=repos["commitments"],
         task_operation_service=task_operation_service,
     )
     return CaptureService(

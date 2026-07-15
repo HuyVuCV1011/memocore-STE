@@ -31,6 +31,8 @@ from memocore.services.secretary_service import SecretaryService
 from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
 from memocore.services.review_service import ReviewService
+from memocore.services.daily_closeout_service import DailyCloseoutService
+from memocore.services.timeline_query_service import TimelineQueryService
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +70,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _safe_reply_text(
             update,
             "MemoCore đã sẵn sàng.\n\n"
-            "Gõ / để mở 7 cửa chính: /today, /work, /memory, /context, /briefing, /capture, /review.\n"
+            "Gõ / để mở 8 cửa chính: /today, /work, /memory, /context, /briefing, /search, /capture, /review.\n"
             "Anh vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /task, /prep <tên>, /person <tên>.",
             reply_markup=keyboard,
         )
@@ -139,12 +141,39 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         text, keyboard = present_response(_help_response())
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
+    if command == "search":
+        query = update.message.text.partition(" ")[2].strip() if update.message.text else ""
+        timeline_query_service: TimelineQueryService | None = context.application.bot_data.get(
+            "timeline_query_service"
+        )
+        if timeline_query_service is None:
+            await _safe_reply_text(update, "Dạ, phần search/timeline chưa sẵn sàng trong runtime này.")
+            return
+        if not query:
+            await _safe_reply_text(update, "Anh muốn tra gì? Ví dụ: /search MemoCore tuần trước.")
+            return
+        await _safe_reply_text(update, await timeline_query_service.answer(query))
+        return
     if command == "review":
         review_service: ReviewService | None = context.application.bot_data.get(
             "review_service"
         )
         if review_service is not None:
             text, keyboard = present_response(await review_service.overview())
+            await _safe_reply_text(update, text, reply_markup=keyboard)
+            return
+    if command == "endday":
+        daily_closeout_service: DailyCloseoutService | None = context.application.bot_data.get(
+            "daily_closeout_service"
+        )
+        if daily_closeout_service is not None:
+            response = await daily_closeout_service.preview(
+                source_chat_id=source_chat_id,
+                source_message_id=(
+                    str(update.message.message_id) if update.message else None
+                ),
+            )
+            text, keyboard = present_response(response)
             await _safe_reply_text(update, text, reply_markup=keyboard)
             return
     if command == "memory":
@@ -414,6 +443,33 @@ async def clarification_callback_handler(
         )
 
 
+async def closeout_callback_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    service: ClarificationService | None = context.application.bot_data.get(
+        "clarification_service"
+    )
+    if (
+        query is None
+        or not query.data
+        or service is None
+        or update.effective_chat is None
+    ):
+        return
+    answer = "xác nhận" if query.data == "closeout:confirm" else "không"
+    result = await service.answer_pending(str(update.effective_chat.id), answer)
+    if not result.handled:
+        await query.answer("Closeout này đã hết hiệu lực. Hãy mở lại /endday.", show_alert=False)
+        return
+    await query.answer()
+    try:
+        await query.edit_message_text(result.message)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+
+
 async def entity_callback_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -433,7 +489,9 @@ async def entity_callback_handler(
     elif action == "x":
         response = await service.confirm(event_id)
     elif action == "n":
-        response = AssistantResponse(title="Đã bỏ qua", summary="Em không lưu biệt danh này.")
+        response = await service.reject(event_id)
+    elif action == "i":
+        response = await service.ignore(event_id)
     else:
         response = None
     if response is None:
@@ -648,6 +706,8 @@ def register_handlers(
     work_action_service: WorkActionService | None = None,
     entity_confirmation_service: EntityConfirmationService | None = None,
     review_service: ReviewService | None = None,
+    daily_closeout_service: DailyCloseoutService | None = None,
+    timeline_query_service: TimelineQueryService | None = None,
 ) -> None:
     app.bot_data["telegram_owner_id"] = owner_id
     app.bot_data["capture_service"] = capture_service
@@ -658,6 +718,8 @@ def register_handlers(
     app.bot_data["work_action_service"] = work_action_service
     app.bot_data["entity_confirmation_service"] = entity_confirmation_service
     app.bot_data["review_service"] = review_service
+    app.bot_data["daily_closeout_service"] = daily_closeout_service
+    app.bot_data["timeline_query_service"] = timeline_query_service
     app.add_error_handler(error_handler)
     app.add_handler(TypeHandler(Update, owner_only_handler), group=-1)
     app.add_handler(CallbackQueryHandler(memory_callback_handler, pattern=r"^mem:"))
@@ -665,6 +727,7 @@ def register_handlers(
     app.add_handler(
         CallbackQueryHandler(clarification_callback_handler, pattern=r"^clar:scope:")
     )
+    app.add_handler(CallbackQueryHandler(closeout_callback_handler, pattern=r"^closeout:"))
     app.add_handler(CallbackQueryHandler(entity_callback_handler, pattern=r"^entity:"))
     app.add_handler(CallbackQueryHandler(tag_prompt_callback_handler, pattern=r"^tag_prompt:"))
     app.add_handler(CallbackQueryHandler(navigation_callback_handler, pattern=r"^nav:"))
@@ -694,6 +757,7 @@ def register_handlers(
         "prep",
         "capture",
         "review",
+        "search",
     ):
         app.add_handler(CommandHandler(command, secretary_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
@@ -763,6 +827,14 @@ async def _navigation_response(
         return await memory_view_service.overview()
     if callback_data == "nav:review" and review_service is not None:
         return await review_service.overview()
+    if callback_data == "nav:review:feedback" and review_service is not None:
+        return await review_service.feedback()
+    if callback_data == "nav:review:system" and review_service is not None:
+        return await review_service.system()
+    if callback_data == "nav:review:project-health" and review_service is not None:
+        return await review_service.project_health()
+    if callback_data.startswith("nav:rf:") and review_service is not None:
+        return await review_service.resolve_feedback(callback_data.removeprefix("nav:rf:"))
     if callback_data == "nav:review:clarifications" and review_service is not None:
         return await review_service.clarifications()
     if callback_data == "nav:review:people" and entity_confirmation_service is not None:
@@ -854,6 +926,7 @@ def _help_response() -> AssistantResponse:
                     "/memory - review bộ nhớ",
                     "/context - people/projects/prep",
                     "/briefing - briefing trong ngày",
+                    "/search <câu hỏi> - tìm timeline/source",
                     "/capture - cách lưu nhanh",
                 ],
             ),

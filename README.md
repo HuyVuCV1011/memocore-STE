@@ -41,7 +41,7 @@ backend.
 | Knowledge quality | Source-linked entity relations, decision supersession, conflict detection, canonical memory selection, and review evidence. |
 | Work and context state | Tasks, reminders, projects, people, meetings, follow-ups, commitments, memory candidates, and event logs. |
 | Knowledge model | Canonical projects, people, organizations, decisions, and source-linked memory claims. |
-| Secretary queries | Compact `/` menu for `/today`, `/work`, `/memory`, `/context`, `/briefing`, `/capture`, and `/review`; power-user shortcuts remain available. |
+| Secretary queries | Compact `/` menu for `/today`, `/work`, `/memory`, `/context`, `/briefing`, `/search`, `/capture`, and `/review`; power-user shortcuts remain available. |
 | Memory lifecycle | Candidate, active, rejected, superseded, and delete/forget flows. |
 | V4 context retrieval | Person/project context, linked commitments, meeting preparation summaries, and SQLite retrieval by linked entities. |
 | Reliability | Schema validation, provider fallback, transactional derived writes, and audit events. |
@@ -62,6 +62,7 @@ entry points:
 | `/context` | Open people, projects, meeting prep, and memory navigation. |
 | `/review` | Open uncertain memory, aliases, clarification, and work-quality triage. |
 | `/briefing` | Generate the current daily briefing. |
+| `/search <query>` | Search cross-domain timeline/source evidence without exposing backend ids. |
 | `/capture` | Show quick capture patterns for tasks, memory, and content notes. |
 
 Power-user shortcuts still work but are kept out of the visible command menu:
@@ -87,9 +88,10 @@ V3 intentionally defers a few deeper behaviors to V4/V5 unless they become painf
 
 | Deferred item | Current decision |
 | --- | --- |
-| Interval recurrence | Daily and weekly recurrence are supported. Rules like "every 2 days" or "every 3 weeks" are deferred. |
-| Nudge bundling | Quiet hours and cooldown exist. Bundling many low-priority nudges into one digest is deferred. |
-| Feedback signals | Correction feedback exists. Explicit accepted, edited, ignored, and rejected suggestion signals are deferred. |
+| Interval recurrence | Daily, weekly, and interval rules like "every 2 days" or "every 3 weeks" are supported for scheduled work. |
+| Reminder ergonomics | Natural snooze phrases such as "nhắc lại chiều mai" and "nhắc lại uống thuốc 2 tiếng sau" update existing reminders. |
+| Nudge bundling | Quiet hours, cooldown, pre-deadline warnings, per-run limits, and multi-item digest bundling are supported. |
+| Feedback signals | Accepted, edited, rejected, ignored, and correction signals are structured, artifact-linked, and reviewable. |
 
 V4 adds linked operational context without importing private data automatically:
 
@@ -102,9 +104,11 @@ V4 adds linked operational context without importing private data automatically:
 | Linked retrieval | Tasks, meetings, follow-ups, commitments, and memory can be retrieved by person or project id. |
 | Personal context import | Still review-gated; large private context files should produce Markdown/import plans before any database write. |
 
-Current V4 deepening also includes a seven-command Telegram menu, inline navigation hubs, ranked work
+Current V4 deepening also includes an eight-command Telegram menu, inline navigation hubs, ranked work
 priorities, evidence metadata in context/prep views, review-gated entity matching, paginated memory
-triage, end-of-day and weekly rituals, lightweight goals, and a runtime `doctor` preflight.
+triage, a resolvable feedback inbox, cross-domain search/timeline answers, reminder snooze,
+pre-deadline nudge digests, end-of-day and weekly rituals, lightweight goals, and a runtime
+`doctor` preflight.
 
 Tool orchestration, calendar, email, and multi-agent workers remain intentionally held until the
 [conversation stability gates](docs/conversation-stability-gates.md) pass in real Telegram usage.
@@ -136,9 +140,22 @@ TELEGRAM_BOT_TOKEN=your-token
 TELEGRAM_OWNER_ID=123456789
 DATABASE_PATH=data/memocore.db
 USER_TIMEZONE=Asia/Ho_Chi_Minh
+MORNING_BRIEFING_TIME=08:00
+REMINDER_DEFAULT_TIME=09:00
+FOLLOWUP_NUDGE_WINDOW_START=
+FOLLOWUP_NUDGE_WINDOW_END=
+FOCUS_WINDOW_START=
+FOCUS_WINDOW_END=
+QUIET_HOURS_START=22:00
+QUIET_HOURS_END=07:00
 MODEL_PROVIDER=ollama
 MODEL_NAME=qwen3:14b
 ```
+
+Preferred windows are explicit configuration only: MemoCore will not silently infer permanent
+briefing, reminder, focus, or follow-up windows from your behavior. `FOLLOWUP_NUDGE_WINDOW_*`
+limits stale follow-up nudges, while urgent task deadline warnings can still be sent outside that
+window unless quiet hours block them.
 
 Install the default local model when using Ollama:
 
@@ -152,8 +169,17 @@ ollama pull qwen3:14b
 | --- | --- |
 | `.venv/bin/memocore models` | List configured provider profiles on Linux/macOS. |
 | `.venv/bin/memocore doctor` | Check config, SQLite, Telegram slash menu, PM2, and runtime data. |
+| `.venv/bin/memocore review-window --days 14` | Report the production trust review-window gate from event logs; add `--require-passed` for release gating. |
+| `.venv/bin/memocore backup` | Create a verified SQLite backup. |
+| `.venv/bin/memocore restore-drill` | Verify the latest backup by restoring it into a temporary database and recording the drill report. |
+| `.venv/bin/memocore export --format json --output exports/memocore.json --redacted` | Export recovery data without raw note text or Telegram identifiers. |
+| `python scripts/quality/v4_readiness_gate.py --strict --require-clean` | Final local V4 release gate after the review window reaches 14/14 days. |
 | `.\.venv\Scripts\memocore models` | List configured provider profiles on Windows. |
 | `.\.venv\Scripts\memocore doctor` | Check config, SQLite, Telegram slash menu, PM2, and runtime data on Windows. |
+| `.\.venv\Scripts\memocore review-window --days 14` | Report the production trust review-window gate on Windows; add `--require-passed` for release gating. |
+| `.\.venv\Scripts\memocore backup` | Create a verified SQLite backup on Windows. |
+| `.\.venv\Scripts\memocore restore-drill` | Run a restore drill on Windows. |
+| `.\.venv\Scripts\python.exe scripts\quality\v4_readiness_gate.py --strict --require-clean` | Final Windows V4 release-readiness gate. |
 | `.venv/bin/memocore run --provider ollama` | Run the bot with Ollama. |
 | `.venv/bin/memocore run --provider groq` | Run the bot with Groq. |
 | `.venv/bin/pytest -q` | Run the test suite on Linux/macOS. |
@@ -175,6 +201,10 @@ pm2 list
 .\scripts\windows\restart-memocore.ps1
 .\scripts\windows\logs-memocore.ps1
 ```
+
+The restart script blocks dirty working-tree deployments by default and stamps PM2 with the deployed
+commit, dirty flag, schema version, and timestamp. Use `-AllowDirty` only for an explicit
+development deployment.
 
 Do not start a manual second bot while PM2 is online:
 
@@ -226,6 +256,7 @@ Legacy `OLLAMA_BASE_URL` and `OLLAMA_MODEL` are still accepted during migration.
 | Schemas | Pydantic and Pydantic Settings |
 | Async I/O | `python-telegram-bot`, `aiosqlite`, `httpx` |
 | Tests | `pytest`, `pytest-asyncio` |
+| CI quality gate | Python 3.12 compile, ruff source lint, targeted mypy, module-size guard, Markdown link check, clean and previous-release migration smoke, release metadata checks, coverage-gated offline tests, pip-audit, and tracked-file secret scan on Windows and Linux |
 | Windows service | PM2 process `memocore-ste` |
 
 ### Task references and recurrence
@@ -325,12 +356,14 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | [Engineering Guide](agent.md) | Code ownership boundaries, runtime rules, and engineering conventions. |
 | [Architecture](docs/architecture.md) | Layering, capture flow, conversation flow, model boundary, and storage direction. |
 | [Conversation Stability Gates](docs/conversation-stability-gates.md) | Required evidence before calendar, email, tools, or multi-agent work. |
+| [V4 Trustworthy Daily Secretary Plan](docs/v4-trustworthy-daily-secretary-plan.md) | Complete V4 execution plan for review, recovery, closeout, search, and quality gates. |
 | [Windows Runtime Guide](docs/windows-runtime.md) | Single-instance PM2 runtime policy for the primary Windows machine. |
 | [Telegram Command Model](docs/telegram-command-model.md) | Visible command menu, hidden shortcuts, inline hubs, and verification rules. |
 | [Implementation Plan](implementation_plan.md) | Delivered foundations, active V4 work, and held future versions. |
 | [Roadmap](docs/personal-assistant-version-roadmap.md) | Product version roadmap from V1 through controlled autonomy. |
 | [Agent Harness Direction](docs/agent-harness.md) | Future audited tool-use and approval boundary. |
 | [0.5.0 Readiness](docs/version-0.5-readiness.md) | Verified capability audit, release scope, risks, and acceptance gates. |
+| [Changelog](CHANGELOG.md) | User-visible behavior changes before release tags are cut. |
 | [Storage Migrations](docs/storage/README.md) | SQLite runtime and PostgreSQL/pgvector blueprint status. |
 | [V2 Manual Tests](docs/v2-manual-test-cases.md) | Telegram messages for conversational secretary verification. |
 | [Content Integration Bridge](docs/content_integration_bridge.md) | Read-only SQLite contract for the LinkedIn content engine. |

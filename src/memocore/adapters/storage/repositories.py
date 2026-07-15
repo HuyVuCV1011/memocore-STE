@@ -248,6 +248,15 @@ class TaskRepository(BaseRepository):
         rows = await (await conn.execute("SELECT * FROM tasks WHERE source_note_id = ?", (note_id,))).fetchall()
         return [_task_from_row(row) for row in rows]
 
+    async def list_all(self) -> list[Task]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM tasks ORDER BY updated_at DESC, created_at DESC"
+            )
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
     async def list_active(self) -> list[Task]:
         conn = await self.database.connection()
         rows = await (
@@ -704,6 +713,15 @@ class ReminderRepository(BaseRepository):
     async def list_by_note(self, note_id: str) -> list[Reminder]:
         conn = await self.database.connection()
         rows = await (await conn.execute("SELECT * FROM reminders WHERE source_note_id = ?", (note_id,))).fetchall()
+        return [_reminder_from_row(row) for row in rows]
+
+    async def list_all(self) -> list[Reminder]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM reminders ORDER BY updated_at DESC, created_at DESC"
+            )
+        ).fetchall()
         return [_reminder_from_row(row) for row in rows]
 
     async def list_recent(self, limit: int = 20) -> list[Reminder]:
@@ -1255,6 +1273,13 @@ class FollowUpRepository(BaseRepository):
         )
         return followup
 
+    async def get_by_id(self, followup_id: str) -> FollowUp | None:
+        conn = await self.database.connection()
+        row = await (
+            await conn.execute("SELECT * FROM followups WHERE id = ?", (followup_id,))
+        ).fetchone()
+        return _followup_from_row(row) if row else None
+
     async def list_open(self) -> list[FollowUp]:
         conn = await self.database.connection()
         rows = await (
@@ -1265,10 +1290,25 @@ class FollowUpRepository(BaseRepository):
         ).fetchall()
         return [_followup_from_row(row) for row in rows]
 
+    async def update_due_at(self, followup_id: str, due_at: datetime | None) -> None:
+        await self._execute(
+            "UPDATE followups SET due_at = ?, updated_at = ? WHERE id = ?",
+            (_dt(due_at), _dt(utc_now()), followup_id),
+        )
+
     async def list_by_note(self, note_id: str) -> list[FollowUp]:
         conn = await self.database.connection()
         rows = await (
             await conn.execute("SELECT * FROM followups WHERE source_note_id = ?", (note_id,))
+        ).fetchall()
+        return [_followup_from_row(row) for row in rows]
+
+    async def list_all(self) -> list[FollowUp]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM followups ORDER BY updated_at DESC, created_at DESC"
+            )
         ).fetchall()
         return [_followup_from_row(row) for row in rows]
 
@@ -1354,6 +1394,15 @@ class CommitmentRepository(BaseRepository):
         ).fetchall()
         return [_commitment_from_row(row) for row in rows]
 
+    async def list_all(self) -> list[Commitment]:
+        conn = await self.database.connection()
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM commitments ORDER BY updated_at DESC, created_at DESC"
+            )
+        ).fetchall()
+        return [_commitment_from_row(row) for row in rows]
+
     async def list_open_by_project(self, project_id: str) -> list[Commitment]:
         conn = await self.database.connection()
         rows = await (
@@ -1386,6 +1435,12 @@ class CommitmentRepository(BaseRepository):
         await self._execute(
             "UPDATE commitments SET status = ?, updated_at = ? WHERE id = ?",
             (status.value, _dt(utc_now()), commitment_id),
+        )
+
+    async def update_due_at(self, commitment_id: str, due_at: datetime | None) -> None:
+        await self._execute(
+            "UPDATE commitments SET due_at = ?, updated_at = ? WHERE id = ?",
+            (_dt(due_at), _dt(utc_now()), commitment_id),
         )
 
 

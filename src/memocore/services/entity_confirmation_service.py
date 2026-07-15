@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from memocore.adapters.storage.repositories import (
+    NoteRepository,
     PersonRepository,
     ProjectRepository,
     normalize_lookup,
 )
-from memocore.domain.models import EventType
+from memocore.domain.models import EventLog, EventType, FeedbackSignal
 from memocore.domain.schemas import AssistantAction, AssistantResponse
 from memocore.services.event_service import EventService
 
@@ -18,14 +19,20 @@ class EntityConfirmationService:
         person_repo: PersonRepository,
         project_repo: ProjectRepository,
         event_service: EventService,
+        note_repo: NoteRepository | None = None,
     ):
         self.person_repo = person_repo
         self.project_repo = project_repo
         self.event_service = event_service
+        self.note_repo = note_repo
 
     async def prompt(self, event_id: str) -> AssistantResponse | None:
         event = await self.event_service.get_event(event_id)
-        if event is None or event.event_type != EventType.ENTITY_ALIAS_SUGGESTED:
+        if (
+            event is None
+            or event.event_type != EventType.ENTITY_ALIAS_SUGGESTED
+            or await self._is_resolved(event_id)
+        ):
             return None
         alias = event.payload.get("alias")
         canonical = event.payload.get("canonical_name")
@@ -46,15 +53,7 @@ class EntityConfirmationService:
 
     async def review(self, entity_type: str) -> AssistantResponse:
         recent_since = datetime.now(UTC) - timedelta(days=30)
-        confirmed_suggestion_ids = {
-            event.payload.get("suggestion_event_id")
-            for event in await self.event_service.list_recent(
-                EventType.ENTITY_ALIAS_CONFIRMED,
-                since=recent_since,
-                limit=200,
-            )
-            if event.payload.get("suggestion_event_id")
-        }
+        resolved_suggestion_ids = await self._resolved_suggestion_ids(recent_since)
         candidates = [
             event
             for event in await self.event_service.list_recent(
@@ -63,7 +62,7 @@ class EntityConfirmationService:
                 limit=50,
             )
             if event.entity_type == entity_type
-            and event.id not in confirmed_suggestion_ids
+            and event.id not in resolved_suggestion_ids
         ]
         events = []
         seen: set[tuple[str, str]] = set()
@@ -91,7 +90,7 @@ class EntityConfirmationService:
             actions.extend(
                 [
                     AssistantAction(label="Gộp", action_id=f"entity:x:{event.id}", row=index),
-                    AssistantAction(label="Bỏ qua", action_id=f"entity:n:{event.id}", row=index),
+                    AssistantAction(label="Bỏ qua", action_id=f"entity:i:{event.id}", row=index),
                     AssistantAction(label="Không phải", action_id=f"entity:n:{event.id}", row=index),
                 ]
             )
@@ -119,7 +118,11 @@ class EntityConfirmationService:
 
     async def confirm(self, event_id: str) -> AssistantResponse | None:
         event = await self.event_service.get_event(event_id)
-        if event is None or event.event_type != EventType.ENTITY_ALIAS_SUGGESTED:
+        if (
+            event is None
+            or event.event_type != EventType.ENTITY_ALIAS_SUGGESTED
+            or await self._is_resolved(event_id)
+        ):
             return None
         alias = str(event.payload.get("alias", "")).strip()
         if not alias:
@@ -144,11 +147,116 @@ class EntityConfirmationService:
             EventType.ENTITY_ALIAS_CONFIRMED,
             event.entity_type,
             event.entity_id,
-            {"alias": alias, "suggestion_event_id": event_id},
+            {
+                "alias": alias,
+                "suggestion_event_id": event_id,
+                "source_note_id": event.payload.get("source_note_id"),
+                "status": "resolved",
+            },
         )
+        await self._record_feedback(event, FeedbackSignal.ACCEPTED, "confirm_alias")
         return AssistantResponse(
             title="Đã ghi nhớ biệt danh",
             summary=f"Từ giờ “{alias}” sẽ được hiểu là “{canonical}”.",
+        )
+
+    async def reject(self, event_id: str) -> AssistantResponse | None:
+        event = await self._unresolved_suggestion(event_id)
+        if event is None:
+            return None
+        await self.event_service.append_event(
+            EventType.ENTITY_ALIAS_REJECTED,
+            event.entity_type,
+            event.entity_id,
+            {
+                "alias": event.payload.get("alias"),
+                "suggestion_event_id": event.id,
+                "source_note_id": event.payload.get("source_note_id"),
+                "status": "resolved",
+            },
+        )
+        await self._record_feedback(event, FeedbackSignal.REJECTED, "reject_alias")
+        return AssistantResponse(
+            title="Đã từ chối biệt danh",
+            summary="Em sẽ không đề xuất lại liên kết tên này trong hàng chờ hiện tại.",
+        )
+
+    async def ignore(self, event_id: str) -> AssistantResponse | None:
+        event = await self._unresolved_suggestion(event_id)
+        if event is None:
+            return None
+        await self.event_service.append_event(
+            EventType.ENTITY_ALIAS_IGNORED,
+            event.entity_type,
+            event.entity_id,
+            {
+                "alias": event.payload.get("alias"),
+                "suggestion_event_id": event.id,
+                "source_note_id": event.payload.get("source_note_id"),
+                "status": "resolved",
+            },
+        )
+        await self._record_feedback(event, FeedbackSignal.IGNORED, "ignore_alias")
+        return AssistantResponse(
+            title="Đã bỏ qua",
+            summary="Em đã đóng gợi ý này và không lưu biệt danh.",
+        )
+
+    async def _unresolved_suggestion(self, event_id: str) -> EventLog | None:
+        event = await self.event_service.get_event(event_id)
+        if (
+            event is None
+            or event.event_type != EventType.ENTITY_ALIAS_SUGGESTED
+            or await self._is_resolved(event_id)
+        ):
+            return None
+        return event
+
+    async def _is_resolved(self, event_id: str) -> bool:
+        return event_id in await self._resolved_suggestion_ids(
+            datetime.now(UTC) - timedelta(days=30)
+        )
+
+    async def _resolved_suggestion_ids(self, since: datetime) -> set[str]:
+        resolved: set[str] = set()
+        for event_type in (
+            EventType.ENTITY_ALIAS_CONFIRMED,
+            EventType.ENTITY_ALIAS_REJECTED,
+            EventType.ENTITY_ALIAS_IGNORED,
+        ):
+            for event in await self.event_service.list_recent(
+                event_type,
+                since=since,
+                limit=200,
+            ):
+                suggestion_id = event.payload.get("suggestion_event_id")
+                if suggestion_id:
+                    resolved.add(suggestion_id)
+        return resolved
+
+    async def _record_feedback(
+        self,
+        event: EventLog,
+        signal: FeedbackSignal,
+        action: str,
+    ) -> None:
+        source_note_id = event.payload.get("source_note_id")
+        source_chat_id = None
+        source_message_id = None
+        if self.note_repo is not None and source_note_id:
+            note = await self.note_repo.get_by_id(source_note_id)
+            if note is not None:
+                source_chat_id = note.source_chat_id
+                source_message_id = note.source_message_id
+        await self.event_service.record_feedback(
+            signal,
+            event.entity_type,
+            event.entity_id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            source_note_id=source_note_id,
+            action=action,
+            details={"suggestion_event_id": event.id},
         )
 
 

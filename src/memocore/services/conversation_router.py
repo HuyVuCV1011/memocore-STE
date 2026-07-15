@@ -23,6 +23,10 @@ SAFE_MODEL_INTENTS = {
     "query_commitments",
     "query_context",
     "query_meeting_prep",
+    "query_search",
+    "query_timeline",
+    "query_origin",
+    "query_decisions",
     "update_knowledge",
     "rollback_knowledge_update",
     "casual_or_noop",
@@ -33,6 +37,7 @@ SAFE_MODEL_INTENTS = {
     "cancel_task",
     "update_task_priority",
     "update_task_recurrence",
+    "snooze_reminder",
 }
 
 

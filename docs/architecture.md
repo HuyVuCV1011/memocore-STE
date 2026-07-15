@@ -108,6 +108,12 @@ entity names. This prevents ordinary words such as `nghĩa là` from fuzzy-match
 Nghĩa. A knowledge update is also treated as one reversible batch through its source note, so
 “xóa 3 thông tin vừa cập nhật” removes only that batch and leaves unrelated memory untouched.
 
+Feedback is stored in the event log with one normalized signal (`accepted`, `edited`, `rejected`,
+`ignored`, or `correction`), the affected artifact, source-note provenance, and the originating chat
+turn reference when available. Correction signals remain open until they are explicitly resolved in
+`/review`. Alias confirmation, rejection, and ignore decisions are separate immutable events, so a
+closed suggestion does not reappear.
+
 ## Model Boundary
 
 `ExtractionService` and `IntentClassifierService` own prompt construction. Providers implement:

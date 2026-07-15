@@ -12,6 +12,10 @@ module.exports = {
       exp_backoff_restart_delay: 2000,
       env: {
         PYTHONUNBUFFERED: "1",
+        MEMOCORE_DEPLOY_COMMIT: process.env.MEMOCORE_DEPLOY_COMMIT || "unknown",
+        MEMOCORE_DEPLOY_DIRTY: process.env.MEMOCORE_DEPLOY_DIRTY || "unknown",
+        MEMOCORE_DEPLOY_SCHEMA: process.env.MEMOCORE_DEPLOY_SCHEMA || "unknown",
+        MEMOCORE_DEPLOYED_AT: process.env.MEMOCORE_DEPLOYED_AT || "unknown",
       },
     },
   ],

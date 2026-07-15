@@ -12,6 +12,8 @@ from memocore.services.secretary_service import SecretaryService
 from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
 from memocore.services.review_service import ReviewService
+from memocore.services.daily_closeout_service import DailyCloseoutService
+from memocore.services.timeline_query_service import TimelineQueryService
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ async def post_init(application: Application) -> None:
         BotCommand("memory", "Bộ nhớ cá nhân"),
         BotCommand("context", "People, projects, meeting prep"),
         BotCommand("briefing", "Briefing trong ngày"),
+        BotCommand("search", "Tìm timeline/source"),
         BotCommand("capture", "Cách lưu task/memory/note"),
         BotCommand("review", "Các mục cần anh xem lại"),
     ]
@@ -41,6 +44,8 @@ def create_bot(
     work_action_service: WorkActionService | None = None,
     entity_confirmation_service: EntityConfirmationService | None = None,
     review_service: ReviewService | None = None,
+    daily_closeout_service: DailyCloseoutService | None = None,
+    timeline_query_service: TimelineQueryService | None = None,
 ) -> Application:
     app = ApplicationBuilder().token(token).post_init(post_init).build()
     register_handlers(
@@ -54,5 +59,7 @@ def create_bot(
         work_action_service,
         entity_confirmation_service,
         review_service,
+        daily_closeout_service,
+        timeline_query_service,
     )
     return app

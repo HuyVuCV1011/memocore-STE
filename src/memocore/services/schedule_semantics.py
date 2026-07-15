@@ -215,10 +215,8 @@ def _recurring_schedule_spec(
     normalized = _normalize(raw_text)
     if not is_future_schedule_request(normalized):
         return None
-    if not any(
-        signal in normalized
-        for signal in ("moi ngay", "hang ngay", "daily", "every day")
-    ):
+    recurrence_rule = _recurrence_rule(normalized)
+    if recurrence_rule is None:
         return None
     clock, duration_minutes = time_and_duration(normalized)
     if clock is None:
@@ -229,7 +227,7 @@ def _recurring_schedule_spec(
     title_match = re.search(
         r"(?:đặt|dat)(?:\s+cho\s+(?:tôi|toi))?\s+(?:lịch|lich)\s+(.+?)"
         r"(?:\s+định\s+kỳ|\s+dinh\s+ky|\s+như\s+sau|\s+nhu\s+sau|,|"
-        r"\s+vào\s+|\s+vao\s+)",
+        r"\s+vào\s+|\s+vao\s+|\s+lúc\s+|\s+luc\s+)",
         raw_text,
         flags=re.IGNORECASE,
     )
@@ -238,7 +236,35 @@ def _recurring_schedule_spec(
         if title_match
         else "Lịch định kỳ"
     )
-    return title, due_at, "daily", duration_minutes
+    return title, due_at, recurrence_rule, duration_minutes
+
+
+def _recurrence_rule(normalized: str) -> str | None:
+    interval = re.search(
+        r"\b(?:moi|every)\s+(\d+)\s+(ngay|day|days|tuan|week|weeks)\b",
+        normalized,
+    )
+    if interval is not None:
+        count = int(interval.group(1))
+        unit = interval.group(2)
+        if count >= 1:
+            return f"interval:{count}{'w' if unit in {'tuan', 'week', 'weeks'} else 'd'}"
+    if any(
+        signal in normalized
+        for signal in ("moi ngay", "hang ngay", "daily", "every day")
+    ):
+        return "daily"
+    weekday = _explicit_weekday(normalized)
+    if weekday is not None and any(
+        signal in normalized for signal in ("moi", "hang", "every", "weekly")
+    ):
+        return f"weekly:{weekday}"
+    if any(
+        signal in normalized
+        for signal in ("moi tuan", "hang tuan", "weekly", "every week")
+    ):
+        return "weekly"
+    return None
 
 
 def _explicit_weekday(normalized: str) -> int | None:

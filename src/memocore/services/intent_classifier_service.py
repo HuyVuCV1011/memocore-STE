@@ -40,7 +40,7 @@ class IntentClassifierService:
         errors: list[ExtractionError] = []
         providers = getattr(self.provider, "providers", (self.provider,))
         for provider in providers:
-            for attempt in range(2):
+            for _attempt in range(2):
                 try:
                     response = await provider.chat(
                         self._build_request(raw_text, provider, context=context)

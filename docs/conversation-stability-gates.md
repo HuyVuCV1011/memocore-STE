@@ -27,8 +27,10 @@ specialized handler implementations, but orchestration no longer owns their disp
 
 ## Transcript Corpus
 
-The offline corpus contains 42 isolated conversations. Each fixture can assert intent, reply,
+The offline corpus contains 41 isolated conversations. Each fixture can assert intent, reply,
 durable-write deltas, focused entity, final task state, final memory state, and batch rollback.
+No-write assertions fingerprint tasks, reminders, memory, projects, people, meetings, follow-ups,
+commitments, organizations, decisions, knowledge relations, activity links, and clarifications.
 The corpus covers read-only queries, casual/no-op input, ambiguous writes, person/project/
 organization focus, focus switching, scoped knowledge updates, wrong-entity isolation, task
 mutations, recurring schedule queries, future-completion wording, task merge corrections, timezone
@@ -69,6 +71,8 @@ Every production failure must be added to this corpus before its fix is merged.
 13. Recurrence backlog must never be silently completed; preserving or skipping missed occurrences
     requires an explicit user choice.
 14. Task-reference metrics must omit raw messages, titles, and other user-authored content.
+15. Pull requests must pass the Python 3.12 offline quality gate on Windows and Linux, including
+    compilation, migration smoke tests, and the full non-provider test suite.
 
 ## Orchestration Hold
 

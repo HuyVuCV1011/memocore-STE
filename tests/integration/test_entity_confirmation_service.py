@@ -83,3 +83,59 @@ async def test_existing_alias_is_filtered_even_without_confirmation_event(repos)
     review = await service.review("person")
 
     assert review.summary == "Chưa có gợi ý alias/merge cần xác nhận."
+
+
+async def test_rejected_alias_is_persisted_and_removed_from_review(repos):
+    person = await repos["people"].create(Person(display_name="Nguyễn Hoàng Khôi Nguyên"))
+    event_service = EventService(repos["events"])
+    suggestion = await event_service.append_event(
+        EventType.ENTITY_ALIAS_SUGGESTED,
+        "person",
+        person.id,
+        {"alias": "Dưa hấu", "canonical_name": person.display_name},
+    )
+    service = EntityConfirmationService(repos["people"], repos["projects"], event_service)
+
+    result = await service.reject(suggestion.id)
+    review = await service.review("person")
+    events = await repos["events"].list_by_entity("person", person.id)
+
+    assert result is not None
+    assert review.summary == "Chưa có gợi ý alias/merge cần xác nhận."
+    rejected = next(
+        event for event in events if event.event_type == EventType.ENTITY_ALIAS_REJECTED
+    )
+    assert rejected.payload["suggestion_event_id"] == suggestion.id
+    assert rejected.payload["status"] == "resolved"
+    feedback = next(
+        event for event in events if event.event_type == EventType.USER_FEEDBACK_RECORDED
+    )
+    assert feedback.payload["signal"] == "rejected"
+    assert feedback.payload["status"] == "resolved"
+    assert await service.confirm(suggestion.id) is None
+
+
+async def test_ignored_alias_has_distinct_feedback_and_does_not_reappear(repos):
+    project = await repos["projects"].find_or_create("MemoCore")
+    event_service = EventService(repos["events"])
+    suggestion = await event_service.append_event(
+        EventType.ENTITY_ALIAS_SUGGESTED,
+        "project",
+        project.id,
+        {"alias": "trợ lý", "canonical_name": project.name},
+    )
+    service = EntityConfirmationService(repos["people"], repos["projects"], event_service)
+
+    result = await service.ignore(suggestion.id)
+    review = await service.review("project")
+    events = await repos["events"].list_by_entity("project", project.id)
+
+    assert result is not None
+    assert review.summary == "Chưa có gợi ý alias/merge cần xác nhận."
+    assert any(
+        event.event_type == EventType.ENTITY_ALIAS_IGNORED for event in events
+    )
+    feedback = next(
+        event for event in events if event.event_type == EventType.USER_FEEDBACK_RECORDED
+    )
+    assert feedback.payload["signal"] == "ignored"

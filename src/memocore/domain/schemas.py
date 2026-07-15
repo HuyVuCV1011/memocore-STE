@@ -1,4 +1,5 @@
 from typing import Any, Literal
+import re
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -27,7 +28,7 @@ class TaskCandidate(BaseModel):
     due_at: str | None = None
     person_name: str | None = None
     project_name: str | None = None
-    recurrence_rule: Literal["daily", "weekly"] | None = None
+    recurrence_rule: str | None = None
     duration_minutes: int | None = Field(default=None, ge=1)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
@@ -35,6 +36,17 @@ class TaskCandidate(BaseModel):
     @classmethod
     def _normalize_confidence(cls, value: Any) -> float:
         return normalize_confidence(value)
+
+    @field_validator("recurrence_rule")
+    @classmethod
+    def _validate_recurrence_rule(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value in {"daily", "weekly"} or value.startswith("weekly:"):
+            return value
+        if re.fullmatch(r"interval:\d+[dw]", value):
+            return value
+        raise ValueError("Unsupported recurrence_rule")
 
 
 class ReminderCandidate(BaseModel):
@@ -240,6 +252,7 @@ class IntentClassification(BaseModel):
         "update_task_due",
         "update_task_priority",
         "update_task_recurrence",
+        "snooze_reminder",
         "mark_task_done",
         "cancel_task",
         "delete_all_tasks",

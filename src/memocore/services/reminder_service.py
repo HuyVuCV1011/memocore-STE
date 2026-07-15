@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from memocore.adapters.storage.repositories import ReminderRepository, parse_model_datetime
+from memocore.domain.recurrence import next_recurrence_occurrence
 from memocore.domain.models import EventType, Reminder, ReminderStatus
 from memocore.domain.schemas import ReminderCandidate
 from memocore.services.event_service import EventService
@@ -68,8 +69,7 @@ class ReminderService:
 
 
 def next_recurrence(current: datetime, recurrence_rule: str) -> datetime | None:
-    if recurrence_rule == "daily":
-        return current + timedelta(days=1)
-    if recurrence_rule.startswith("weekly"):
-        return current + timedelta(days=7)
-    return None
+    try:
+        return next_recurrence_occurrence(current, recurrence_rule)
+    except ValueError:
+        return None

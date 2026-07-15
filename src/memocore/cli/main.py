@@ -3,11 +3,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Sequence
+import json
+import shutil
+import subprocess
 
 from memocore.app import create_app, shutdown_app
 from memocore.adapters.llm.provider_factory import PROVIDER_DEFAULTS
 from memocore.cli.doctor import has_failures, print_doctor_report, run_doctor
 from memocore.config import Settings, get_settings
+from memocore.services.backup_service import BackupService
+from memocore.services.review_window_service import review_window_report
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -21,6 +26,24 @@ def main(argv: Sequence[str] | None = None) -> None:
         print_doctor_report(results)
         if has_failures(results):
             raise SystemExit(1)
+        return
+    if args.command == "backup":
+        _run_backup(settings, args)
+        return
+    if args.command == "backups":
+        _run_backups(settings, args)
+        return
+    if args.command == "restore":
+        _run_restore(settings, args)
+        return
+    if args.command == "restore-drill":
+        _run_restore_drill(settings, args)
+        return
+    if args.command == "export":
+        _run_export(settings, args)
+        return
+    if args.command == "review-window":
+        _run_review_window(settings, args)
         return
     settings = settings.with_model_override(provider=args.provider, name=args.model)
     asyncio.run(_run(settings))
@@ -61,11 +84,68 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Also call the configured model provider health check.",
     )
+    backup_parser = subparsers.add_parser("backup", help="Create a verified SQLite backup.")
+    backup_parser.add_argument("--backup-dir", help="Override the backup directory.")
+    backup_parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Create the backup without requiring post-backup verification.",
+    )
+    backups_parser = subparsers.add_parser("backups", help="Inspect local backups.")
+    backups_subparsers = backups_parser.add_subparsers(dest="backups_command")
+    backups_list = backups_subparsers.add_parser("list", help="List known backups.")
+    backups_list.add_argument("--backup-dir", help="Override the backup directory.")
+    backups_prune = backups_subparsers.add_parser("prune", help="Delete old verified backups.")
+    backups_prune.add_argument("--backup-dir", help="Override the backup directory.")
+    backups_prune.add_argument("--keep", type=int, default=14, help="Keep at least this many newest backups.")
+    backups_prune.add_argument("--max-age-days", type=int, help="Also prune backups at least this old.")
+    restore_parser = subparsers.add_parser("restore", help="Verify or restore a SQLite backup.")
+    restore_parser.add_argument("backup", help="Backup id or path.")
+    restore_parser.add_argument("--backup-dir", help="Override the backup directory.")
+    restore_parser.add_argument(
+        "--maintenance",
+        action="store_true",
+        help="Acknowledge the Telegram runtime is stopped before a confirmed restore.",
+    )
+    restore_mode = restore_parser.add_mutually_exclusive_group(required=True)
+    restore_mode.add_argument("--dry-run", action="store_true", help="Verify restore without replacing the live database.")
+    restore_mode.add_argument("--confirm", action="store_true", help="Replace the live database after verification.")
+    restore_drill_parser = subparsers.add_parser(
+        "restore-drill",
+        help="Run a verified restore drill into a temporary database and record the result.",
+    )
+    restore_drill_parser.add_argument("--backup", help="Backup id or path; defaults to the latest backup.")
+    restore_drill_parser.add_argument("--backup-dir", help="Override the backup directory.")
+    export_parser = subparsers.add_parser("export", help="Export MemoCore data.")
+    export_parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    export_parser.add_argument("--output", required=True, help="Output file path.")
+    export_parser.add_argument(
+        "--redacted",
+        action="store_true",
+        help="Omit raw notes, chat ids, source message ids, and event payloads.",
+    )
+    review_window_parser = subparsers.add_parser(
+        "review-window",
+        help="Report the production trust review-window gate from event logs.",
+    )
+    review_window_parser.add_argument(
+        "--days",
+        type=int,
+        default=14,
+        help="Required consecutive observation days for the gate.",
+    )
+    review_window_parser.add_argument(
+        "--require-passed",
+        action="store_true",
+        help="Exit non-zero unless the review-window gate has passed.",
+    )
     args = parser.parse_args(argv)
     if args.command is None:
         args.command = "run"
         args.provider = None
         args.model = None
+    if args.command == "backups" and args.backups_command is None:
+        args.backups_command = "list"
     return args
 
 
@@ -79,6 +159,125 @@ def _print_models(settings: Settings) -> None:
         else:
             availability = "key set" if settings.api_key_for_provider(provider) else "key missing"
         print(f"- {provider}: {default_model} ({availability})")
+
+
+def _backup_service(settings: Settings, backup_dir: str | None = None) -> BackupService:
+    return BackupService(settings.database_path, backup_dir=backup_dir or settings.backup_dir)
+
+
+def _run_backup(settings: Settings, args: argparse.Namespace) -> None:
+    result = _backup_service(settings, args.backup_dir).create_backup(
+        verify=not args.no_verify
+    )
+    status = "verified" if result.verified else "created"
+    print(f"Backup {status}: {result.backup_id}")
+    print(f"Database: {result.database_path}")
+    print(f"Manifest: {result.manifest_path}")
+
+
+def _run_backups(settings: Settings, args: argparse.Namespace) -> None:
+    service = _backup_service(settings, args.backup_dir)
+    if args.backups_command == "prune":
+        removed = service.prune_backups(keep_count=args.keep, max_age_days=args.max_age_days)
+        if removed:
+            print("Pruned backups:")
+            for backup_id in removed:
+                print(f"- {backup_id}")
+        else:
+            print("No backups pruned.")
+        return
+    backups = service.list_backups()
+    if not backups:
+        print("No backups found.")
+        return
+    for backup in backups:
+        verified = "verified" if backup.get("verified") else "unverified"
+        print(
+            f"{backup.get('backup_id')} | {backup.get('created_at')} | "
+            f"{verified} | {backup.get('size_bytes')} bytes"
+        )
+
+
+def _run_restore(settings: Settings, args: argparse.Namespace) -> None:
+    if args.confirm and not args.maintenance and _runtime_process_online():
+        raise SystemExit(
+            "Refusing confirmed restore while memocore-ste is online. "
+            "Stop the runtime first, then rerun with --maintenance."
+        )
+    plan = _backup_service(settings, args.backup_dir).restore(
+        args.backup,
+        dry_run=args.dry_run,
+        confirm=args.confirm,
+    )
+    if plan.dry_run:
+        print(f"Restore dry-run passed: {plan.backup_id}")
+        print(f"Target: {plan.target_path}")
+        return
+    print(f"Restore completed: {plan.backup_id}")
+    print(f"Target: {plan.target_path}")
+    if plan.pre_restore_backup is not None:
+        print(f"Pre-restore safety backup: {plan.pre_restore_backup}")
+
+
+def _run_restore_drill(settings: Settings, args: argparse.Namespace) -> None:
+    result = _backup_service(settings, args.backup_dir).run_restore_drill(args.backup)
+    print(f"Restore drill passed: {result.backup_id}")
+    print(f"Backup: {result.backup_path}")
+    print(f"Report: {result.report_path}")
+
+
+def _run_export(settings: Settings, args: argparse.Namespace) -> None:
+    service = _backup_service(settings)
+    if args.format == "json":
+        output = service.export_json(args.output, redacted=args.redacted)
+    else:
+        output = service.export_markdown(args.output, redacted=args.redacted)
+    print(f"Export written: {output}")
+
+
+def _run_review_window(settings: Settings, args: argparse.Namespace) -> None:
+    report = review_window_report(settings.database_path, required_days=args.days)
+    print("MemoCore review window")
+    print("")
+    for line in report.lines():
+        print(line)
+    print("")
+    if report.gate_passed:
+        print("Result: passed")
+    elif report.status == "failed":
+        print("Result: failed")
+        raise SystemExit(1)
+    else:
+        print("Result: collecting")
+        if args.require_passed:
+            raise SystemExit(1)
+
+
+def _runtime_process_online() -> bool:
+    pm2 = shutil.which("pm2") or shutil.which("pm2.cmd")
+    if pm2 is None:
+        return False
+    try:
+        completed = subprocess.run(
+            [pm2, "jlist"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return True
+    if completed.returncode != 0:
+        return False
+    try:
+        processes = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return True
+    return any(
+        process.get("name") == "memocore-ste"
+        and process.get("pm2_env", {}).get("status") == "online"
+        for process in processes
+    )
 
 
 if __name__ == "__main__":

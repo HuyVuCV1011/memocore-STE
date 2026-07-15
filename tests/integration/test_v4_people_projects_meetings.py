@@ -17,6 +17,7 @@ from memocore.domain.models import (
     NoteStatus,
     Person,
     Task,
+    TaskStatus,
 )
 from memocore.domain.schemas import CaptureRequest
 from memocore.services.conversation_service import ConversationService, classify_intent
@@ -137,6 +138,68 @@ async def test_v42_project_context_and_meeting_prep_include_linked_operational_s
     assert "Meeting prep cho project MemoCore STE" in prep
     assert "Commitments còn mở" in prep
     assert "MemoCore V4 planning" in prep
+
+
+async def test_project_context_includes_health_risks_and_next_action(repos):
+    note = await repos["notes"].create(Note(raw_text="project health"))
+    project = await repos["projects"].find_or_create("Trust Loop")
+    await repos["tasks"].create(
+        Task(
+            title="Fix wrong-entity transcript",
+            source_note_id=note.id,
+            project_id=project.id,
+            due_at=datetime.now(UTC) - timedelta(days=1),
+            priority="high",
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Wait for review evidence",
+            source_note_id=note.id,
+            project_id=project.id,
+            status=TaskStatus.WAITING,
+        )
+    )
+    await repos["commitments"].create(
+        Commitment(
+            title="Send review summary",
+            direction=CommitmentDirection.USER_OWES,
+            project_id=project.id,
+            source_note_id=note.id,
+            due_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+    await repos["memory"].create(
+        MemoryItem(
+            bucket=MemoryBucket.PROJECT,
+            kind=MemoryKind.PROJECT_STATE,
+            content="Trust loop has conflicting source notes.",
+            source_note_id=note.id,
+            project_id=project.id,
+            status=MemoryStatus.ACTIVE,
+            conflict_state="conflict",
+        )
+    )
+
+    context = await _secretary(repos).project_context("Trust Loop")
+
+    assert "Project health" in context
+    assert "Trạng thái: cần xem lại" in context
+    assert "Next action: Fix wrong-entity transcript" in context
+    assert "1 task quá hạn" in context
+    assert "1 việc đang chờ/bị chặn" in context
+    assert "1 commitment quá hạn" in context
+    assert "1 memory cần rà" in context
+
+
+async def test_project_context_flags_missing_next_action(repos):
+    await repos["projects"].find_or_create("Quiet Project")
+
+    context = await _secretary(repos).project_context("Quiet Project")
+
+    assert "Project health" in context
+    assert "Next action: Chưa có next action." in context
+    assert "thiếu next action" in context
 
 
 async def test_v43_people_and_commitments_views_are_empty_safe_and_list_real_items(repos):

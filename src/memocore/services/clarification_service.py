@@ -10,14 +10,16 @@ from typing import Any
 
 from memocore.adapters.storage.repositories import (
     ClarificationRequestRepository,
+    CommitmentRepository,
+    FollowUpRepository,
     ReminderRepository,
     TaskRepository,
     parse_model_datetime,
 )
-from memocore.domain.models import ClarificationRequest, EventType
+from memocore.domain.models import ClarificationRequest, EventType, FeedbackSignal
 from memocore.services.event_service import EventService
-from memocore.services.feedback_log import write_feedback_signal
 from memocore.services.reminder_service import ReminderService
+from memocore.services.daily_closeout_service import decode_closeout_field
 from memocore.services.task_operation_service import (
     RecurrenceBacklog,
     TaskOperationService,
@@ -45,9 +47,12 @@ class ClarificationService:
         event_service: EventService,
         default_timezone: tzinfo = UTC,
         task_repo: TaskRepository | None = None,
+        followup_repo: FollowUpRepository | None = None,
+        commitment_repo: CommitmentRepository | None = None,
         task_operation_service: TaskOperationService | None = None,
         confirmation_ttl: timedelta = timedelta(minutes=15),
         now_provider: Callable[[], datetime] | None = None,
+        default_reminder_time: time = time(hour=9),
     ):
         self.clarification_repo = clarification_repo
         self.reminder_repo = reminder_repo
@@ -55,8 +60,11 @@ class ClarificationService:
         self.event_service = event_service
         self.default_timezone = default_timezone
         self.task_repo = task_repo
+        self.followup_repo = followup_repo
+        self.commitment_repo = commitment_repo
         self.confirmation_ttl = confirmation_ttl
         self.now_provider = now_provider or (lambda: datetime.now(UTC))
+        self.default_reminder_time = default_reminder_time
         self.task_operation_service = (
             task_operation_service
             or (
@@ -164,6 +172,8 @@ class ClarificationService:
                 or _is_edit(answer_text)
                 or bool(re.search(r"\b\d+\b", answer_text))
             )
+        if pending.entity_type == "daily_closeout":
+            return _is_yes(answer_text) or _is_no(answer_text)
         return False
 
     async def cancel_pending_for_chat(self, source_chat_id: str, reason: str) -> bool:
@@ -333,6 +343,99 @@ class ClarificationService:
                 True,
                 f"Dạ, em chỉ đổi kỳ hiện tại của “{task.title}” sang {local_due}.",
             )
+
+        if pending.entity_type == "daily_closeout" and self.task_repo:
+            if _is_no(answer_text):
+                await self.clarification_repo.cancel(pending.id, answer_text)
+                return ClarificationResult(
+                    True, "Dạ, em giữ nguyên các task, follow-up và commitment."
+                )
+            if not _is_yes(answer_text):
+                return ClarificationResult(
+                    True,
+                    "Anh xác nhận hoặc hủy closeout này giúp em nha.",
+                )
+            payload = decode_closeout_field(pending.field_name)
+            if payload is None:
+                await self.clarification_repo.cancel(pending.id, answer_text)
+                return ClarificationResult(
+                    True,
+                    "Closeout preview này bị lỗi định dạng nên em chưa thay đổi gì.",
+                )
+            due_at = datetime.fromisoformat(payload["due_at"])
+            moved = 0
+            skipped = 0
+            followups_moved = 0
+            followups_skipped = 0
+            commitments_moved = 0
+            commitments_skipped = 0
+            async with self.task_repo.database.transaction():
+                for item in payload.get("tasks", []):
+                    task = await self.task_repo.get_by_id(item["id"])
+                    expected_updated_at = datetime.fromisoformat(item["updated_at"])
+                    if (
+                        task is None
+                        or str(task.status) != item["status"]
+                        or task.updated_at != expected_updated_at
+                    ):
+                        skipped += 1
+                        continue
+                    await self.task_repo.update_due_at(task.id, due_at)
+                    moved += 1
+                if self.followup_repo:
+                    for item in payload.get("followups", []):
+                        followup = await self.followup_repo.get_by_id(item["id"])
+                        expected_updated_at = datetime.fromisoformat(item["updated_at"])
+                        if (
+                            followup is None
+                            or str(followup.status) != item["status"]
+                            or followup.updated_at != expected_updated_at
+                        ):
+                            followups_skipped += 1
+                            continue
+                        await self.followup_repo.update_due_at(followup.id, due_at)
+                        followups_moved += 1
+                else:
+                    followups_skipped += len(payload.get("followups", []))
+                if self.commitment_repo:
+                    for item in payload.get("commitments", []):
+                        commitment = await self.commitment_repo.get_by_id(item["id"])
+                        expected_updated_at = datetime.fromisoformat(item["updated_at"])
+                        if (
+                            commitment is None
+                            or str(commitment.status) != item["status"]
+                            or commitment.updated_at != expected_updated_at
+                        ):
+                            commitments_skipped += 1
+                            continue
+                        await self.commitment_repo.update_due_at(commitment.id, due_at)
+                        commitments_moved += 1
+                else:
+                    commitments_skipped += len(payload.get("commitments", []))
+                await self.clarification_repo.resolve(pending.id, answer_text)
+                await self.event_service.append_event(
+                    EventType.DAILY_CLOSEOUT_APPLIED,
+                    "clarification_request",
+                    pending.id,
+                    {
+                        "task_count": moved,
+                        "skipped_task_count": skipped,
+                        "followup_count": followups_moved,
+                        "skipped_followup_count": followups_skipped,
+                        "commitment_count": commitments_moved,
+                        "skipped_commitment_count": commitments_skipped,
+                        "due_at": due_at.isoformat(),
+                    },
+                )
+            local_due = due_at.astimezone(self.default_timezone).strftime("%H:%M %d/%m/%Y")
+            message = (
+                f"Dạ, em đã chuyển {moved} task, {followups_moved} follow-up "
+                f"và {commitments_moved} commitment sang {local_due}."
+            )
+            skipped_total = skipped + followups_skipped + commitments_skipped
+            if skipped_total:
+                message += f" Bỏ qua {skipped_total} mục đã thay đổi sau preview."
+            return ClarificationResult(True, message)
 
         # Check for task / status confirmations
         if pending.entity_type == "task_bulk_done" and self.task_repo:
@@ -557,22 +660,16 @@ class ClarificationService:
                 if _is_yes(answer_text):
                     status_val = pending.field_name.split("|", 1)[1]
                     next_task = None
-                    next_created = False
                     if status_val == "done":
                         operation = await self.task_operation_service.complete(
                             pending.entity_id,
                             transition="completed_from_confirmation",
                             now=self.now_provider().astimezone(UTC),
                         )
-                        completed = operation.task
                         next_task = operation.next_task
-                        next_created = operation.next_created
                     else:
                         await self.task_repo.update_status(
                             pending.entity_id, status_val
-                        )
-                        completed = await self.task_repo.get_by_id(
-                            pending.entity_id
                         )
                     await self.clarification_repo.resolve(pending.id, answer_text)
                     task = await self.task_repo.get_by_id(pending.entity_id)
@@ -786,20 +883,24 @@ class ClarificationService:
                             ),
                         )
                     
-                    await self.task_repo.update_status(target_task_id, "cancelled")
+                    if self.task_operation_service is not None:
+                        await self.task_operation_service.cancel(target_task_id)
+                    else:
+                        await self.task_repo.update_status(target_task_id, "cancelled")
                     await self.event_service.append_event(
                         EventType.NOTE_PROCESSED,
                         "note",
                         pending.source_message_id or "system",
                         {"conversation_intent": "memory_correction", "cancelled_task_id": target_task_id},
                     )
-                    await self.event_service.append_event(
-                        EventType.USER_FEEDBACK_RECORDED,
+                    await self.event_service.record_feedback(
+                        FeedbackSignal.CORRECTION,
                         "task",
                         target_task_id,
-                        {"pattern": answer_text, "action": "cancel_task"},
+                        source_chat_id=pending.source_chat_id,
+                        source_message_id=pending.source_message_id,
+                        action="cancel_misclassified_task_after_clarification",
                     )
-                    write_feedback_signal("correction_feedback", answer_text, {"cancelled_task_id": target_task_id, "title": task.title})
                     await self.clarification_repo.resolve(pending.id, answer_text)
                     return ClarificationResult(
                         handled=True,
@@ -826,7 +927,11 @@ class ClarificationService:
                 message="Em chưa áp dụng được câu trả lời này, nên item gốc vẫn giữ nguyên.",
             )
 
-        remind_at = parse_clarification_datetime(answer_text, default_timezone=self.default_timezone)
+        remind_at = parse_clarification_datetime(
+            answer_text,
+            default_timezone=self.default_timezone,
+            default_time=self.default_reminder_time,
+        )
         if remind_at is None:
             await self.event_service.append_event(
                 EventType.CLARIFICATION_FAILED,
@@ -861,6 +966,7 @@ def parse_clarification_datetime(
     value: str,
     now: datetime | None = None,
     default_timezone: tzinfo = UTC,
+    default_time: time = time(hour=9),
 ) -> datetime | None:
     parsed = parse_model_datetime(value)
     if parsed is not None:
@@ -889,7 +995,7 @@ def parse_clarification_datetime(
 
     parsed_time = _parse_time(lowered)
     if parsed_time is None:
-        parsed_time = time(hour=9)
+        parsed_time = default_time
 
     return datetime.combine(target_date, parsed_time, tzinfo=now.tzinfo).astimezone(UTC)
 
