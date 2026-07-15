@@ -500,7 +500,8 @@ classification model so overdue, due-today, recurring, waiting, blocked, unsched
 items are not ranked differently across surfaces. Waiting and blocked work is shown separately and
 is not presented as immediately actionable. Briefing assessment calls out routine-only days as rhythm
 maintenance rather than strategic priority, and waiting-only days as open-loop decisions rather than
-do-now work. `/endday` previews and confirms tomorrow rollover for
+do-now work. The briefing judgment rules are isolated in a focused service module so future briefing
+polish does not keep expanding the Telegram secretary orchestrator. `/endday` previews and confirms tomorrow rollover for
 dated active tasks, dated open follow-ups, and dated open commitments in one guarded batch. Undated
 tasks and waiting/blocked items are not moved automatically. Each item is snapshot-validated before
 writing, so MemoCore skips anything changed after preview instead of overwriting newer state.
