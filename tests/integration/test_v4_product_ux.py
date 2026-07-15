@@ -460,6 +460,47 @@ async def test_briefing_does_not_repeat_attention_tasks_as_next_actions(repos):
     assert "Tập gym" not in next_action_block
 
 
+async def test_briefing_treats_routine_only_day_as_rhythm_not_main_priority(repos):
+    now = datetime(2026, 7, 15, 6, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="routine-only briefing"))
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            source_note_id=note.id,
+            due_at=now + timedelta(hours=1),
+            recurrence_rule="daily",
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    assessment = briefing.split("Nhận định", 1)[1].split("Điểm cần chú ý", 1)[0]
+
+    assert "routine “Tập gym”" in assessment
+    assert "chưa thấy một kết quả chính" in assessment
+    assert "Việc cần chốt hôm nay" not in assessment
+
+
+async def test_briefing_waiting_only_day_recommends_closing_loop_not_doing_work(repos):
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="waiting-only briefing"))
+    await repos["tasks"].create(
+        Task(
+            title="Chờ Alex gửi brief",
+            source_note_id=note.id,
+            status=TaskStatus.WAITING,
+            due_at=now - timedelta(hours=1),
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    assessment = briefing.split("Nhận định", 1)[1].split("Điểm cần chú ý", 1)[0]
+    next_action_block = briefing.split("Nên làm tiếp", 1)[1]
+
+    assert "open loop đang chờ/bị chặn" in assessment
+    assert "follow-up, tiếp tục chờ, hoặc đóng loop" in assessment
+    assert "Chờ Alex gửi brief" not in next_action_block
+
+
 async def test_weekly_review_hides_raw_priority_scores(repos):
     note = await repos["notes"].create(Note(raw_text="weekly no score"))
     await repos["tasks"].create(

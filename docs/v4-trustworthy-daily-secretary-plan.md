@@ -498,7 +498,9 @@ references are involved. The confirmed closeout is one audited batch with guarde
 Current V4 implementation: `/today`, `/work`, and `/briefing` share a deterministic work
 classification model so overdue, due-today, recurring, waiting, blocked, unscheduled, and upcoming
 items are not ranked differently across surfaces. Waiting and blocked work is shown separately and
-is not presented as immediately actionable. `/endday` previews and confirms tomorrow rollover for
+is not presented as immediately actionable. Briefing assessment calls out routine-only days as rhythm
+maintenance rather than strategic priority, and waiting-only days as open-loop decisions rather than
+do-now work. `/endday` previews and confirms tomorrow rollover for
 dated active tasks, dated open follow-ups, and dated open commitments in one guarded batch. Undated
 tasks and waiting/blocked items are not moved automatically. Each item is snapshot-validated before
 writing, so MemoCore skips anything changed after preview instead of overwriting newer state.

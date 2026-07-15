@@ -459,6 +459,9 @@ class SecretaryService:
                 waiting=waiting,
                 overdue_followups=overdue_followups,
                 due_commitments=due_commitments,
+                action_items=action_items,
+                routine_count=len(routines := _tasks_excluding(state.routine_today, action_item_ids)),
+                undated_count=len(undated_priority),
                 display_timezone=self.display_timezone,
                 reference_date=local_now.date(),
             )
@@ -483,7 +486,6 @@ class SecretaryService:
                 f"- {task.title}{_task_recurrence_badge(task)} - {_waiting_action_label(task)}"
                 for task in waiting[:3]
             )
-        routines = _tasks_excluding(state.routine_today, action_item_ids)
         if routines:
             lines.extend(["", "Routine hôm nay"])
             lines.extend(
@@ -1024,6 +1026,9 @@ def _briefing_assessment(
     waiting,
     overdue_followups,
     due_commitments,
+    action_items,
+    routine_count: int,
+    undated_count: int,
     display_timezone: tzinfo,
     reference_date=None,
 ) -> str:
@@ -1059,10 +1064,42 @@ def _briefing_assessment(
         )
     if len(due_today) == 1:
         task = due_today[0]
+        if getattr(task, "recurrence_rule", None):
+            return (
+                f"Hôm nay có routine “{task.title}”. Nên giữ nhịp nếu còn năng lượng, "
+                "nhưng briefing chưa thấy một kết quả chính; anh nên chọn thêm một priority chủ động."
+            )
         return (
             f"Việc cần chốt hôm nay là “{task.title}”, hạn "
             f"{_format_due(task.due_at, display_timezone, reference_date)}. Khối lượng hiện vẫn ở mức "
             "kiểm soát được nếu anh bảo vệ thời gian cho việc này."
+        )
+    if action_items:
+        top = action_items[0]
+        task = top.task
+        if getattr(task, "recurrence_rule", None):
+            return (
+                f"Việc hệ thống thấy rõ nhất là routine “{task.title}”. Nên giữ nhịp nếu còn năng lượng, "
+                "nhưng đây chưa phải một ưu tiên chiến lược; anh nên chọn thêm một kết quả chính cho ngày."
+            )
+        return (
+            f"Ưu tiên nên khóa trước là “{task.title}” vì {top.reason}. "
+            "Sau khi xong việc này mới nên chuyển sang các việc nhỏ hơn."
+        )
+    if waiting and not (overdue or due_today or overdue_followups or due_commitments):
+        return (
+            "Không có việc làm-ngay thật sự nổi bật, nhưng có open loop đang chờ/bị chặn. "
+            "Hôm nay nên quyết định follow-up, tiếp tục chờ, hoặc đóng loop thay vì tự tạo thêm việc."
+        )
+    if routine_count and pressure == routine_count:
+        return (
+            "Hôm nay chủ yếu là routine. Giữ nhịp là tốt, nhưng briefing chưa thấy một kết quả chính; "
+            "anh nên chọn một priority chủ động nếu muốn ngày này có tiến triển rõ."
+        )
+    if undated_count and pressure == 0:
+        return (
+            "Không có deadline ép trong hôm nay, nhưng vẫn có việc chưa được quyết định hạn/bước tiếp theo. "
+            "Nên chọn một việc để gắn deadline hoặc xác định next action."
         )
     if pressure >= 5:
         return (

@@ -50,6 +50,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   signals, and recommended next actions without exposing raw scores.
 - `/briefing` now keeps attention signals distinct from recommended next actions, and separates
   recurring routines into their own lane when harder deadlines or commitments need focus.
+- `/briefing` now treats routine-only days as rhythm maintenance rather than a main strategic
+  priority, and treats waiting-only days as open-loop decisions instead of do-now work.
 - `/work` no longer repeats the same overdue task in both the recommended next-action list and the
   overdue detail section.
 - `/work` waiting and commitment tabs now show actionable inline controls for follow-ups and
