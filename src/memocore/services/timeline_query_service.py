@@ -81,6 +81,8 @@ class TimelineQueryService:
         normalized = normalize_lookup(query)
         if not normalized:
             return "Anh muốn tìm gì? Ví dụ: /search MemoCore tuần trước."
+        if _is_latest_query(query):
+            return await self.latest(query)
         entries = await self.search(query, limit=limit)
         if not entries:
             return f"Dạ, em chưa tìm thấy dấu vết rõ cho “{query}”."
@@ -91,6 +93,21 @@ class TimelineQueryService:
             detail = self._entry_detail(entry, note_map.get(entry.source_note_id or ""))
             if detail:
                 lines.append(f"  {detail}")
+        return "\n".join(lines)
+
+    async def latest(self, query: str) -> str:
+        entries = await self.search(query, limit=20)
+        if not entries:
+            return f"Dạ, em chưa thấy dấu vết gần nhất đủ rõ cho “{query}”."
+        latest = max(entries, key=lambda entry: entry.happened_at)
+        note_map = await self._note_map([latest])
+        lines = [
+            f"Lần gần nhất em thấy liên quan đến “{query}”:",
+            f"- {_date_label(latest.happened_at, self.display_timezone)} · {latest.title}",
+        ]
+        detail = self._entry_detail(latest, note_map.get(latest.source_note_id or ""))
+        if detail:
+            lines.append(f"  {detail}")
         return "\n".join(lines)
 
     async def timeline(self, query: str, *, limit: int = 10) -> str:
@@ -342,8 +359,19 @@ def _strip_query_words(query: str) -> str:
         "tim", "kiem", "search", "timeline", "lich", "su", "vi", "sao",
         "tai", "nguon", "goc", "quyet", "dinh", "lan", "gan", "nhat",
         "khi", "nao", "da", "duoc", "tao", "ve", "lien", "quan", "cho", "toi",
+        "noi", "chuyen", "voi", "gap", "trao", "doi",
     }
     return " ".join(token for token in normalized.split() if token not in stop)
+
+
+def _is_latest_query(query: str) -> bool:
+    normalized = normalize_lookup(query)
+    return (
+        "lan gan nhat" in normalized
+        or "gan nhat" in normalized and "khi nao" in normalized
+        or "latest" in normalized
+        or "most recent" in normalized
+    )
 
 
 def _since_hint(query: str) -> datetime | None:

@@ -12,6 +12,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   reminders, nudges, unified search/timeline, and quality gates.
 - Telegram `/search` and natural timeline/source/decision queries backed by a cross-domain
   timeline projection.
+- `/search` now recognizes "latest / lần gần nhất" style questions and returns the most recent
+  human-readable trace instead of a long mixed result list.
 - Telegram `/endday` closeout preview and confirmation for active tasks, open follow-ups, and open
   commitments with snapshot validation before writing.
 - Verified SQLite backup, restore dry-run, maintenance-aware atomic restore, restore outcome and

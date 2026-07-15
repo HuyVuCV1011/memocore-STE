@@ -119,3 +119,35 @@ async def test_decision_timeline_returns_source_linked_decisions(repos):
     assert "Trust before expansion" in answer
     assert "tin nhắn Telegram" in answer
     assert note.id not in answer
+
+
+async def test_latest_query_returns_most_recent_human_readable_trace(repos):
+    old_note = await repos["notes"].create(
+        Note(
+            raw_text="Nói chuyện với Alex về báo cáo BI.",
+            summary="Alex BI discussion",
+            source_chat_id="9001",
+            source_message_id="old-alex",
+            created_at=datetime(2030, 1, 5, 9, 0, tzinfo=UTC),
+        )
+    )
+    latest_note = await repos["notes"].create(
+        Note(
+            raw_text="Alex gửi lại file BI cuối cùng.",
+            summary="Alex sent final BI file",
+            source_chat_id="9001",
+            source_message_id="latest-alex",
+            created_at=datetime(2030, 1, 6, 15, 30, tzinfo=UTC),
+        )
+    )
+
+    answer = await _service(repos).answer("Lần gần nhất nói chuyện với Alex là khi nào?")
+
+    assert "Lần gần nhất em thấy" in answer
+    assert "06/01/2030 15:30" in answer
+    assert "Alex sent final BI file" in answer
+    assert "Alex BI discussion" not in answer
+    assert old_note.id not in answer
+    assert latest_note.id not in answer
+    assert "9001" not in answer
+    assert "latest-alex" not in answer
