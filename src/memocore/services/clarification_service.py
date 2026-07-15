@@ -350,7 +350,8 @@ class ClarificationService:
                 return ClarificationResult(
                     True, "Dạ, em giữ nguyên các task, follow-up và commitment."
                 )
-            if not _is_yes(answer_text):
+            selected_groups = _closeout_selected_groups(answer_text)
+            if selected_groups is None:
                 return ClarificationResult(
                     True,
                     "Anh xác nhận hoặc hủy closeout này giúp em nha.",
@@ -370,19 +371,20 @@ class ClarificationService:
             commitments_moved = 0
             commitments_skipped = 0
             async with self.task_repo.database.transaction():
-                for item in payload.get("tasks", []):
-                    task = await self.task_repo.get_by_id(item["id"])
-                    expected_updated_at = datetime.fromisoformat(item["updated_at"])
-                    if (
-                        task is None
-                        or str(task.status) != item["status"]
-                        or task.updated_at != expected_updated_at
-                    ):
-                        skipped += 1
-                        continue
-                    await self.task_repo.update_due_at(task.id, due_at)
-                    moved += 1
-                if self.followup_repo:
+                if "tasks" in selected_groups:
+                    for item in payload.get("tasks", []):
+                        task = await self.task_repo.get_by_id(item["id"])
+                        expected_updated_at = datetime.fromisoformat(item["updated_at"])
+                        if (
+                            task is None
+                            or str(task.status) != item["status"]
+                            or task.updated_at != expected_updated_at
+                        ):
+                            skipped += 1
+                            continue
+                        await self.task_repo.update_due_at(task.id, due_at)
+                        moved += 1
+                if self.followup_repo and "followups" in selected_groups:
                     for item in payload.get("followups", []):
                         followup = await self.followup_repo.get_by_id(item["id"])
                         expected_updated_at = datetime.fromisoformat(item["updated_at"])
@@ -395,9 +397,9 @@ class ClarificationService:
                             continue
                         await self.followup_repo.update_due_at(followup.id, due_at)
                         followups_moved += 1
-                else:
+                elif not self.followup_repo and "followups" in selected_groups:
                     followups_skipped += len(payload.get("followups", []))
-                if self.commitment_repo:
+                if self.commitment_repo and "commitments" in selected_groups:
                     for item in payload.get("commitments", []):
                         commitment = await self.commitment_repo.get_by_id(item["id"])
                         expected_updated_at = datetime.fromisoformat(item["updated_at"])
@@ -410,7 +412,7 @@ class ClarificationService:
                             continue
                         await self.commitment_repo.update_due_at(commitment.id, due_at)
                         commitments_moved += 1
-                else:
+                elif not self.commitment_repo and "commitments" in selected_groups:
                     commitments_skipped += len(payload.get("commitments", []))
                 await self.clarification_repo.resolve(pending.id, answer_text)
                 await self.event_service.append_event(
@@ -425,6 +427,7 @@ class ClarificationService:
                         "commitment_count": commitments_moved,
                         "skipped_commitment_count": commitments_skipped,
                         "due_at": due_at.isoformat(),
+                        "selected_groups": sorted(selected_groups),
                     },
                 )
             local_due = due_at.astimezone(self.default_timezone).strftime("%H:%M %d/%m/%Y")
@@ -1108,6 +1111,30 @@ def _is_yes(text: str) -> bool:
 def _is_no(text: str) -> bool:
     normalized = _normalize_text(text)
     return normalized in {"khong", "no", "n", "k", "huy", "cancel", "skip", "never mind", "nevermind"}
+
+
+def _closeout_selected_groups(text: str) -> set[str] | None:
+    if _is_yes(text):
+        return {"tasks", "followups", "commitments"}
+    normalized = _normalize_text(text)
+    if normalized.startswith("closeout:apply:"):
+        groups = {
+            group
+            for group in normalized.removeprefix("closeout:apply:").split(",")
+            if group in {"tasks", "followups", "commitments"}
+        }
+        return groups or None
+    aliases = {
+        "chi task": {"tasks"},
+        "task": {"tasks"},
+        "chi follow up": {"followups"},
+        "chi follow-up": {"followups"},
+        "follow up": {"followups"},
+        "follow-up": {"followups"},
+        "chi commitment": {"commitments"},
+        "commitment": {"commitments"},
+    }
+    return aliases.get(normalized)
 
 
 def _is_edit(text: str) -> bool:

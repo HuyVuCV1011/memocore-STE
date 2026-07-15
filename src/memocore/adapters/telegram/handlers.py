@@ -457,7 +457,12 @@ async def closeout_callback_handler(
         or update.effective_chat is None
     ):
         return
-    answer = "xác nhận" if query.data == "closeout:confirm" else "không"
+    if query.data == "closeout:confirm":
+        answer = "xác nhận"
+    elif query.data == "closeout:cancel":
+        answer = "không"
+    else:
+        answer = query.data
     result = await service.answer_pending(str(update.effective_chat.id), answer)
     if not result.handled:
         await query.answer("Closeout này đã hết hiệu lực. Hãy mở lại /endday.", show_alert=False)

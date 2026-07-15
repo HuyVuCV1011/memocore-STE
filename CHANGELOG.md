@@ -51,6 +51,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 - `/review` is now decision-first, with work hygiene and 30-day quality signals below the primary
   review count.
 - `/endday` no longer automatically rolls undated tasks or waiting/blocked items into tomorrow.
+- `/endday` closeout previews now support grouped confirmation, so the user can move all items or
+  only tasks, follow-ups, or commitments.
 - `/review` and project/person context surfaces include more trust and Project Health signals.
 - Recurring task completion and missed-backlog handling use guarded policies so MemoCore does not
   silently skip or duplicate recurrence work.

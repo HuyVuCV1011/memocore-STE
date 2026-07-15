@@ -135,10 +135,7 @@ class DailyCloseoutService:
             ),
             sections=[AssistantSection(heading="Sẽ cập nhật", lines=question.splitlines())],
             footer="Task chưa có hạn và việc đang chờ/bị chặn không bị tự dời trong bước này.",
-            actions=[
-                AssistantAction(label="Xác nhận", action_id="closeout:confirm", row=0),
-                AssistantAction(label="Hủy", action_id="closeout:cancel", row=0),
-            ],
+            actions=_closeout_actions(closeout),
         )
 
     def _carry_candidates(self, tasks, now: datetime) -> list[CloseoutCandidate]:
@@ -205,7 +202,7 @@ def _preview_question(
     _append_group(lines, "Task", closeout.tasks)
     _append_group(lines, "Follow-up", closeout.followups)
     _append_group(lines, "Commitment", closeout.commitments)
-    lines.append("Anh xác nhận để em cập nhật, hoặc hủy để giữ nguyên.")
+    lines.append("Anh có thể dời tất cả, dời riêng từng nhóm, hoặc hủy để giữ nguyên.")
     return "\n".join(lines)
 
 
@@ -219,3 +216,34 @@ def _append_group(
     lines.append(f"{label}:")
     for index, candidate in enumerate(candidates, 1):
         lines.append(f"{index}. {candidate.title}")
+
+
+def _closeout_actions(closeout: CloseoutPreview) -> list[AssistantAction]:
+    actions = [
+        AssistantAction(label="Dời tất cả", action_id="closeout:confirm", row=0),
+        AssistantAction(label="Hủy", action_id="closeout:cancel", row=0),
+    ]
+    row = 1
+    if closeout.tasks:
+        actions.append(
+            AssistantAction(label="Chỉ task", action_id="closeout:apply:tasks", row=row)
+        )
+        row += 1
+    if closeout.followups:
+        actions.append(
+            AssistantAction(
+                label="Chỉ follow-up",
+                action_id="closeout:apply:followups",
+                row=row,
+            )
+        )
+        row += 1
+    if closeout.commitments:
+        actions.append(
+            AssistantAction(
+                label="Chỉ commitment",
+                action_id="closeout:apply:commitments",
+                row=row,
+            )
+        )
+    return actions

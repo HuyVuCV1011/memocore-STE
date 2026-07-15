@@ -96,6 +96,46 @@ async def test_daily_closeout_rolls_followups_and_commitments(repos):
     assert applied[0].payload["commitment_count"] == 1
 
 
+async def test_daily_closeout_can_apply_only_selected_group(repos):
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="grouped closeout"))
+    task = await repos["tasks"].create(
+        Task(title="Move task", source_note_id=note.id, due_at=now)
+    )
+    followup = await repos["followups"].create(
+        FollowUp(
+            title="Keep follow-up",
+            source_note_id=note.id,
+            due_at=now,
+        )
+    )
+    commitment = await repos["commitments"].create(
+        Commitment(
+            title="Keep commitment",
+            source_note_id=note.id,
+            due_at=now,
+        )
+    )
+    closeout, clarification, events = _services(repos)
+
+    preview = await closeout.preview(source_chat_id="chat-1", now=now)
+    result = await clarification.answer_pending("chat-1", "closeout:apply:tasks")
+    updated_task = await repos["tasks"].get_by_id(task.id)
+    updated_followup = await repos["followups"].get_by_id(followup.id)
+    updated_commitment = await repos["commitments"].get_by_id(commitment.id)
+    applied = await events.list_recent(EventType.DAILY_CLOSEOUT_APPLIED, limit=10)
+
+    assert any(action.action_id == "closeout:apply:tasks" for action in preview.actions)
+    assert any(action.action_id == "closeout:apply:followups" for action in preview.actions)
+    assert any(action.action_id == "closeout:apply:commitments" for action in preview.actions)
+    assert result.handled is True
+    assert "đã chuyển 1 task, 0 follow-up và 0 commitment" in result.message
+    assert updated_task.due_at == datetime(2026, 7, 16, 9, 0, tzinfo=UTC)
+    assert updated_followup.due_at == followup.due_at
+    assert updated_commitment.due_at == commitment.due_at
+    assert applied[0].payload["selected_groups"] == ["tasks"]
+
+
 async def test_daily_closeout_does_not_auto_move_undated_tasks(repos):
     now = datetime(2026, 7, 15, 20, 0, tzinfo=UTC)
     note = await repos["notes"].create(Note(raw_text="stale closeout"))
