@@ -243,6 +243,84 @@ async def test_review_project_health_uses_descendant_tasks_and_skips_portfolio_n
     assert "Quiet Client" in text
 
 
+async def test_review_project_health_focuses_actionable_leaf_projects(repos):
+    parent = await repos["projects"].find_or_create("MemoCore")
+    await repos["projects"].update_taxonomy(
+        parent.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    child = await repos["projects"].find_or_create("MemoCore Telegram UX")
+    await repos["projects"].update_taxonomy(
+        child.id,
+        ProjectType.INITIATIVE,
+        ProjectStatus.ACTIVE,
+        parent.id,
+    )
+    unknown = await repos["projects"].find_or_create("Unclassified context")
+    await repos["projects"].update_taxonomy(
+        unknown.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["projects"]._execute(
+        "UPDATE projects SET project_type = NULL WHERE id = ?",
+        (unknown.id,),
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "MemoCore Telegram UX" in text
+    assert "MemoCore ·" not in text
+    assert "Unclassified context" not in text
+    assert "1 project cần quyết định trước" in health.summary
+
+
+async def test_weekly_review_project_health_uses_actionable_leaf_projects(repos):
+    note = await repos["notes"].create(Note(raw_text="weekly project health"))
+    parent = await repos["projects"].find_or_create("MemoCore Weekly")
+    await repos["projects"].update_taxonomy(
+        parent.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    child = await repos["projects"].find_or_create("MemoCore Weekly Child")
+    await repos["projects"].update_taxonomy(
+        child.id,
+        ProjectType.INITIATIVE,
+        ProjectStatus.ACTIVE,
+        parent.id,
+    )
+    covered = await repos["projects"].find_or_create("Covered Client")
+    await repos["projects"].update_taxonomy(
+        covered.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["tasks"].create(
+        Task(title="Ship covered work", source_note_id=note.id, project_id=covered.id)
+    )
+
+    weekly = await _secretary(repos).weekly_review(datetime(2026, 7, 15, 10, 0, tzinfo=UTC))
+    lines = weekly.splitlines()
+
+    assert "MemoCore Weekly Child" in weekly
+    assert "- MemoCore Weekly" not in lines
+    assert "Covered Client" not in weekly
+
+
 async def test_review_project_health_groups_large_backlog(repos):
     for index in range(7):
         project = await repos["projects"].find_or_create(f"Backlog project {index + 1}")

@@ -402,6 +402,11 @@ Project health should classify projects as:
 This state is derived, not manually duplicated. A project with no next action should create a review
 item or a low-frequency prompt rather than silently remaining inactive.
 
+Current V4 implementation: `/review` Project Health treats missing-next-action prompts as leaf-level
+work hygiene. Portfolio and capability containers, active parents with active child projects, and
+unclassified context records are kept out of the immediate decision inbox so Telegram does not turn
+structural project hierarchy into a noisy work queue.
+
 ### Telegram experience
 
 - Extend `/work` with `Đang chờ`, `Tôi còn nợ`, and `Dự án cần chú ý`.

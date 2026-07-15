@@ -824,9 +824,29 @@ class SecretaryService:
         overdue = [task for task in active if task.due_at and task.due_at < now]
         top = await self._top_priority_tasks(active, now, limit=5)
         projects = await self.project_repo.list_all()
+        children_by_parent: dict[str, list] = defaultdict(list)
+        for project in projects:
+            if project.parent_project_id:
+                children_by_parent[project.parent_project_id].append(project)
+        active_container_ids = {
+            parent_id
+            for parent_id, children in children_by_parent.items()
+            if any(str(child.status) == ProjectStatus.ACTIVE.value for child in children)
+        }
         task_project_ids = {task.project_id for task in active if task.project_id}
         projects_without_next_action = [
-            project for project in projects if str(project.status) == "active" and project.id not in task_project_ids
+            project
+            for project in projects
+            if str(project.status) == ProjectStatus.ACTIVE.value
+            and project.project_type
+            in {
+                ProjectType.PRODUCT,
+                ProjectType.INITIATIVE,
+                ProjectType.CLIENT_PROJECT,
+                ProjectType.INDEPENDENT_PROJECT,
+            }
+            and project.id not in active_container_ids
+            and not _project_has_task_in_tree(project.id, children_by_parent, task_project_ids)
         ]
         lines = [f"Weekly review - tuần kết thúc {local_now.date():%d/%m/%Y}"]
         lines.append("")
@@ -1383,6 +1403,19 @@ def _next_dated_task(tasks):
     if not dated:
         return None
     return min(dated, key=lambda task: task.due_at)
+
+
+def _project_has_task_in_tree(
+    project_id: str,
+    children_by_parent: dict[str, list],
+    task_project_ids: set[str],
+) -> bool:
+    if project_id in task_project_ids:
+        return True
+    return any(
+        _project_has_task_in_tree(child.id, children_by_parent, task_project_ids)
+        for child in children_by_parent.get(project_id, [])
+    )
 
 
 def _day_label(value: date, today: date) -> str:

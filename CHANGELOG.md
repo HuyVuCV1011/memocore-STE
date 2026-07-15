@@ -63,6 +63,10 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 - `/review` Project Health now separates projects that need a near-term next-action decision from
   lower-pressure hygiene backlog, and groups large project lists instead of filling the Telegram
   screen with every project name.
+- `/review` Project Health now focuses missing-next-action prompts on actionable leaf projects,
+  avoiding portfolio/capability containers, active parents with child projects, and unclassified
+  context records.
+- Hidden `/weekly` project hygiene now uses the same actionable leaf-project rule as `/review`.
 - `/endday` no longer automatically rolls undated tasks or waiting/blocked items into tomorrow.
 - `/endday` closeout previews now support grouped confirmation, so the user can move all items or
   only tasks, follow-ups, or commitments.

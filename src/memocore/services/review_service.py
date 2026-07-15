@@ -22,6 +22,12 @@ UNDOABLE_EVENT_TYPES = {
     EventType.COMMITMENT_DONE,
     EventType.DAILY_CLOSEOUT_APPLIED,
 }
+ACTIONABLE_PROJECT_TYPES = {
+    "product",
+    "initiative",
+    "client_project",
+    "independent_project",
+}
 
 
 @dataclass(frozen=True)
@@ -369,6 +375,11 @@ class ReviewService:
         for project in projects:
             if project.parent_project_id:
                 children_by_parent.setdefault(project.parent_project_id, []).append(project)
+        active_container_ids = {
+            parent_id
+            for parent_id, children in children_by_parent.items()
+            if any(str(child.status) == "active" for child in children)
+        }
         task_project_ids = {task.project_id for task in tasks if task.project_id}
 
         def has_task_in_tree(project_id: str) -> bool:
@@ -380,7 +391,8 @@ class ReviewService:
             project
             for project in projects
             if str(project.status) == "active"
-            and str(project.project_type) not in {"portfolio", "capability"}
+            and str(project.project_type) in ACTIONABLE_PROJECT_TYPES
+            and project.id not in active_container_ids
             and not has_task_in_tree(project.id)
         ]
         return sorted(projects, key=lambda project: _sort_datetime(project.updated_at), reverse=True)
