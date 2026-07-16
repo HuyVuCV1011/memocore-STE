@@ -106,11 +106,9 @@ async def run_case(
 
     started_at = datetime.now(UTC).isoformat()
     steps: list[QaStepResult] = []
-    async with TelegramClient(session_path, api_id, api_hash) as client:
-        if phone:
-            await client.start(phone=phone)
-        else:
-            await client.start()
+    client = TelegramClient(session_path, api_id, api_hash)
+    await client.start(phone=phone)
+    try:
         bot = await client.get_entity(case.bot_username)
         me = await client.get_me()
         for message in case.messages:
@@ -127,6 +125,8 @@ async def run_case(
             steps.append(QaStepResult(user_text=message.text, bot_replies=replies))
             if message.wait_after_seconds > 0:
                 await asyncio.sleep(message.wait_after_seconds)
+    finally:
+        await client.disconnect()
     partial = QaRunResult(
         case_name=case.name,
         bot_username=case.bot_username,
