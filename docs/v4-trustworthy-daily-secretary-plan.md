@@ -296,13 +296,18 @@ python scripts/quality/v4_readiness_gate.py --strict --require-clean
 
 ### Restore behavior
 
-- Refuse restore while the Telegram process is writing unless maintenance mode is active.
-- Always create a pre-restore safety backup.
+- Require explicit maintenance acknowledgement and always refuse a confirmed restore while the
+  Telegram process is online.
+- Migrate and semantically verify a same-filesystem candidate before creating a verified
+  pre-restore safety backup and swapping the live database.
 - Run restore as dry-run first: decrypt, checksum, integrity check, schema compatibility, and free
   disk-space check.
 - Restore to a temporary file, verify it, then atomically swap database paths.
 - Preserve the failed/current database for forensic recovery.
-- Start the application only after migrations and `memocore doctor` pass.
+- Keep at most one checksum-recorded failed restore candidate under a privacy-safe fixed filename;
+  a later failure replaces the previous forensic candidate.
+- Run postflight integrity, relationship, schema, and semantic checks after the swap; automatically
+  restore and verify the retained safety backup if postflight fails.
 - Record restore and restore-drill outcomes in local operation reports without storing private
   content.
 

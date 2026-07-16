@@ -5,12 +5,14 @@ from datetime import UTC, datetime
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import sqlite3
-import tempfile
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from memocore import __version__
+
+if TYPE_CHECKING:
+    from memocore.services.recovery_preflight_service import RestoreAuthorization
 
 
 BACKUP_SUFFIX = ".sqlite3"
@@ -100,7 +102,7 @@ class BackupService:
             "table_count": verification.table_count,
             "migrations": list(verification.migrations),
         }
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        _write_json_atomic(manifest_path, manifest)
         if verify and not verification.ok:
             raise RuntimeError(verification.error or "Backup verification failed")
         return BackupResult(backup_id, backup_path, manifest_path, verification.ok)
@@ -175,13 +177,26 @@ class BackupService:
             return None
 
     def latest_restore_report(self) -> dict | None:
+        state, report = self.read_restore_report()
+        return report if state == "valid" else None
+
+    def read_restore_report(self) -> tuple[str, dict | None]:
         report_path = self._restore_report_path()
         if not report_path.exists():
-            return None
+            return "missing", None
         try:
-            return json.loads(report_path.read_text(encoding="utf-8"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return None
+            return "invalid", None
+        allowed_statuses = {"passed", "failed", "rolled_back", "rollback_failed", "incomplete"}
+        if (
+            not isinstance(report, dict)
+            or report.get("schema_version") != 2
+            or report.get("status") not in allowed_statuses
+            or not isinstance(report.get("phase"), str)
+        ):
+            return "invalid", None
+        return "valid", report
 
     def verify_backup(self, backup: Path | str) -> BackupVerification:
         backup_path = self._resolve_backup_path(backup)
@@ -269,57 +284,21 @@ class BackupService:
         *,
         dry_run: bool,
         confirm: bool = False,
+        authorization: RestoreAuthorization | None = None,
     ) -> RestorePlan:
-        backup_path = self._resolve_backup_path(backup)
-        verification = self.verify_backup(backup_path)
-        if not verification.ok:
-            raise RuntimeError(verification.error or "Backup verification failed")
-        if dry_run:
-            with tempfile.TemporaryDirectory(prefix="memocore-restore-") as tmp:
-                candidate = Path(tmp) / self.database_path.name
-                shutil.copy2(backup_path, candidate)
-                dry_verification = self.verify_backup(candidate)
-                if not dry_verification.ok:
-                    raise RuntimeError(dry_verification.error or "Restore dry-run failed")
-            plan = RestorePlan(
-                verification.backup_id or _backup_id_from_path(backup_path) or backup_path.stem,
-                backup_path,
-                self.database_path,
-                True,
-                True,
-            )
-            self._write_restore_report(plan)
-            return plan
-        if not confirm:
-            raise ValueError("Restore requires --confirm unless --dry-run is used")
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        pre_restore = None
-        if self.database_path.exists():
-            safety = self.create_backup(verify=False)
-            pre_restore = safety.database_path
-        restore_candidate = self.database_path.with_name(
-            f".{self.database_path.name}.restore-{uuid4().hex[:8]}.tmp"
+        from memocore.services.recovery_preflight_service import RecoveryPreflightService
+
+        outcome = RecoveryPreflightService(self).restore(
+            backup, dry_run=dry_run, confirm=confirm, authorization=authorization
         )
-        try:
-            shutil.copy2(backup_path, restore_candidate)
-            candidate_verification = self.verify_backup(restore_candidate)
-            if not candidate_verification.ok:
-                raise RuntimeError(
-                    candidate_verification.error or "Restore candidate verification failed"
-                )
-            restore_candidate.replace(self.database_path)
-        finally:
-            if restore_candidate.exists():
-                restore_candidate.unlink()
         plan = RestorePlan(
-            verification.backup_id or _backup_id_from_path(backup_path) or backup_path.stem,
-            backup_path,
+            outcome.backup_id,
+            outcome.backup_path,
             self.database_path,
-            False,
+            dry_run,
             True,
-            pre_restore,
+            outcome.safety_backup,
         )
-        self._write_restore_report(plan)
         return plan
 
     def run_restore_drill(self, backup: Path | str | None = None) -> RestoreDrillResult:
@@ -331,23 +310,13 @@ class BackupService:
                 backup = self.create_backup().backup_id
         if backup is None:
             raise RuntimeError("No backup available for restore drill")
-        backup_path = self._resolve_backup_path(backup)
-        verification = self.verify_backup(backup_path)
-        if not verification.ok:
-            raise RuntimeError(verification.error or "Backup verification failed")
+        from memocore.services.recovery_preflight_service import RecoveryPreflightService
 
-        with tempfile.TemporaryDirectory(prefix="memocore-restore-drill-") as tmp:
-            candidate = Path(tmp) / self.database_path.name
-            shutil.copy2(backup_path, candidate)
-            candidate_verification = self.verify_backup(candidate)
-            if not candidate_verification.ok:
-                raise RuntimeError(candidate_verification.error or "Restore drill verification failed")
-            table_counts = _required_table_counts(candidate)
+        backup_id, backup_path, table_counts = RecoveryPreflightService(self).drill(backup)
 
         drilled_at = datetime.now(UTC).isoformat()
         report_path = self._restore_drill_report_path()
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        backup_id = verification.backup_id or _backup_id_from_path(backup_path) or backup_path.stem
         payload = {
             "schema_version": 1,
             "backup_id": backup_id,
@@ -356,7 +325,7 @@ class BackupService:
             "verified": True,
             "table_counts": table_counts,
         }
-        report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _write_json_atomic(report_path, payload)
         return RestoreDrillResult(
             backup_id=backup_id,
             backup_path=backup_path,
@@ -444,27 +413,16 @@ class BackupService:
     def _restore_report_path(self) -> Path:
         return self.backup_dir / "latest-restore.json"
 
-    def _write_restore_report(self, plan: RestorePlan) -> None:
-        report_path = self._restore_report_path()
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": 1,
-            "backup_id": plan.backup_id,
-            "backup_file": plan.backup_path.name,
-            "target_database_name": plan.target_path.name,
-            "restored_at": datetime.now(UTC).isoformat(),
-            "dry_run": plan.dry_run,
-            "verified": plan.verified,
-            "pre_restore_backup_file": (
-                plan.pre_restore_backup.name if plan.pre_restore_backup is not None else None
-            ),
-        }
-        report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
 def _backup_id() -> str:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{uuid4().hex[:8]}"
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _backup_id_from_path(path: Path) -> str | None:
@@ -508,26 +466,6 @@ def _export_tables(conn: sqlite3.Connection) -> list[str]:
         """
     ).fetchall()
     return [row[0] for row in rows]
-
-
-def _required_table_counts(database_path: Path) -> dict[str, int]:
-    conn = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
-    try:
-        tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
-        missing = sorted(set(_REQUIRED_RESTORE_TABLES) - tables)
-        if missing:
-            raise RuntimeError(f"Restore drill missing tables: {', '.join(missing)}")
-        return {
-            table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-            for table in _REQUIRED_RESTORE_TABLES
-        }
-    finally:
-        conn.close()
 
 
 def _table_rows(

@@ -15,6 +15,7 @@ from memocore.adapters.storage.repositories import (
 from memocore.domain.models import EventType, FeedbackSignal, FeedbackStatus, MemoryStatus
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
 from memocore.services.event_service import EventService
+from memocore.services.backup_service import BackupService
 
 UNDOABLE_EVENT_TYPES = {
     EventType.WORK_ITEM_CHANGED,
@@ -68,6 +69,7 @@ class ReviewService:
         project_repo: ProjectRepository | None = None,
         commitment_repo: CommitmentRepository | None = None,
         followup_repo: FollowUpRepository | None = None,
+        backup_service: BackupService | None = None,
     ):
         self.memory_repo = memory_repo
         self.task_repo = task_repo
@@ -76,6 +78,7 @@ class ReviewService:
         self.project_repo = project_repo
         self.commitment_repo = commitment_repo
         self.followup_repo = followup_repo
+        self.backup_service = backup_service
 
     async def overview(self) -> AssistantResponse:
         memories = await self.memory_repo.list_all()
@@ -279,17 +282,39 @@ class ReviewService:
             limit=20,
         )
         lines: list[str] = []
+        recovery_report_failure = False
+        if self.backup_service is not None:
+            report_state, report = self.backup_service.read_restore_report()
+            if report_state == "invalid":
+                recovery_report_failure = True
+                lines.append("Recovery journal không đọc được · cần chạy doctor")
+            elif report and report.get("status") != "passed":
+                recovery_report_failure = True
+                lines.append(
+                    "Recovery "
+                    f"{report.get('status')} · {report.get('phase')} · "
+                    f"{report.get('failure_code', 'unknown')} · "
+                    f"{report.get('recovery_code') or report.get('recovery_phase', 'not_completed')}"
+                )
         if backup_failures:
-            lines.extend(
-                f"{index}. Backup lỗi · {event.created_at.date().isoformat()}"
-                for index, event in enumerate(backup_failures[:8], 1)
-            )
-        else:
+            for index, event in enumerate(backup_failures[:8], 1):
+                operation = event.payload.get("operation", "backup")
+                code = event.payload.get("failure_code", "unknown")
+                rollback = event.payload.get("rollback")
+                suffix = f" · rollback {rollback}" if rollback else ""
+                lines.append(
+                    f"{index}. Backup lỗi · {event.created_at.date().isoformat()} · "
+                    f"{operation}/{code}{suffix}"
+                )
+        elif not recovery_report_failure:
             lines.append("Không có lỗi backup nào trong 30 ngày gần nhất.")
         lines.append(f"Restore drill đã ghi nhận: {len(restore_drills)}")
         return AssistantResponse(
             title="Hệ thống cần xem lại",
-            summary=f"{len(backup_failures)} lỗi backup trong 30 ngày gần nhất.",
+            summary=(
+                f"{len(backup_failures) + int(recovery_report_failure)} "
+                "cảnh báo backup/recovery trong 30 ngày gần nhất."
+            ),
             sections=[AssistantSection(lines=lines)],
             footer=(
                 "Màn hình này chỉ hiện trạng thái vận hành; không hiển thị nội dung note, task hay memory."

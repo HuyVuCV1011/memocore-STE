@@ -7,6 +7,7 @@
 - Automated verification on June 21, 2026: `279 passed, 1 skipped`.
 - Current local verification on July 15, 2026: `434 passed, 1 skipped`.
 - Current W1 trust-evidence verification on July 16, 2026: `504 passed, 1 skipped`.
+- Current W3 fail-safe recovery verification on July 16, 2026: `561 passed, 1 skipped`.
 - Python compilation check: passed for `src` and `tests`.
 - Live provider benchmark and live Telegram polling were not exercised because they require
   external services and credentials.

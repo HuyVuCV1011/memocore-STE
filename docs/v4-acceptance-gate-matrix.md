@@ -24,7 +24,7 @@ Status meanings:
 | W0 Release/runtime hygiene | PARTIAL | Runtime commit/dirty/schema descriptor, dirty-tree deploy guard, Windows/Linux CI, and release tag gate. | Combined code-and-database rollback procedure and final clean release candidate evidence. |
 | W1 Production evidence | IMPLEMENTED_UNPROVEN | Owner-private Telegram observations are recorded once per local day; feedback uses a privacy-safe schema; the exact review interval and production-failure regression registry are release-gated. | Deploy the implementation, collect 14 consecutive owner-observed days without backfill, and prove the window has no unresolved high/critical trust failure or uncovered severe production regression. |
 | W2 Unified Review Center | PARTIAL | Memory, alias, clarification, feedback, system, recent undo, commitment, project health, and quality views are reachable. | Typed `ReviewItem`, complete task-hygiene projections, migration/reconciliation warnings, and guarded batch review contract are absent. |
-| W3 Backup/restore/export | PARTIAL | Online SQLite backup, checksum/integrity manifest, bounded prune, temp restore, drill, JSON, Markdown, and maintenance guard. | Scheduled/pre-deploy backup, verified safety backup, free-space/schema compatibility, post-restore migrate/doctor, complete drill semantics, and restore-failure review signals. |
+| W3 Backup/restore/export | PARTIAL | Restore now requires a matching manifest and offline maintenance mode, migrates and semantically verifies a same-filesystem candidate, checks disk/schema/FKs, verifies a retained safety backup, atomically swaps, postflight-checks, and auto-rolls back with doctor/review evidence. Drill uses the same validator across critical domains; export, retention, and scheduled local backup remain covered. | Pre-deploy backup orchestration, a real periodic drill window, and production evidence of a successful drill plus an exercised rollback remain unproven. |
 | W4 Commitment/waiting/project closure | PARTIAL | Conservative person-scoped closure, ambiguity handling, audited events, undo, work actions, and project risk projection. | Full commitment state model and one transactional linked task/follow-up/commitment/project reconciliation operation. |
 | W5 Briefing/closeout | PARTIAL | Briefing is distinct from today; waiting/blocked isolation, routine, collision, and goal scenarios are tested; closeout has preview/snapshot/undo. | Ranking evidence is not persisted; closeout remains deadline rollover rather than natural multi-artifact closeout; closeout-to-next-briefing regression is absent. |
 | W6 Recurrence/reminder/nudge | PARTIAL | Interval day/week recurrence, backlog choice, lease-based reminder delivery, pre-deadline warning, snooze, bundling, and limits. | Monthly/weekday/end/count and future/whole-series semantics, DST/month-end tests, meeting-relative snooze, urgent bundle separation, and dismissal-to-review policy. |
@@ -57,10 +57,14 @@ These proven items must retain regression coverage while the partial gates are c
 
 ### P1: Recovery And Durable-State Safety
 
-1. Make pre-restore safety backups verified and fail closed.
-2. Add free-space and schema/application compatibility checks before restore.
-3. Run required migrations and doctor after atomic replacement before normal runtime resumes.
-4. Surface backup and restore verification failures in review and doctor.
+1. **Completed 2026-07-16:** require a semantically verified safety backup and fail closed before
+   any live swap.
+2. **Completed 2026-07-16:** gate candidate, safety, forensic, and fallback capacity on their
+   actual filesystems and verify schema/application compatibility.
+3. **Completed 2026-07-16:** migrate and semantically validate the candidate before swap, then run
+   shared postflight checks with exact-file rollback and verified safety fallback.
+4. **Completed 2026-07-16:** surface phase-specific restore, rollback, journal, and verification
+   failures in `/review` and doctor without private paths or content.
 5. Reconcile linked task, follow-up, commitment, and project state through one audited operation.
 
 ### P2: Daily Workflow Completion

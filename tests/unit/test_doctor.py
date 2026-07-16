@@ -5,11 +5,57 @@ from types import SimpleNamespace
 from memocore.adapters.storage.sqlite import Database
 from memocore.cli.doctor import (
     EXPECTED_COMMANDS,
+    _check_backups,
     _pm2_deploy_stamp,
     has_failures,
     run_doctor,
 )
 from memocore.config import Settings
+
+
+async def test_doctor_fails_closed_on_incomplete_restore_journal(tmp_path):
+    import json
+
+    from memocore.services.backup_service import BackupService
+
+    db_path = tmp_path / "memocore.db"
+    database = Database(db_path)
+    await database.initialize()
+    await database.close()
+    backup_dir = tmp_path / "backups"
+    BackupService(db_path, backup_dir).create_backup()
+    (backup_dir / "latest-restore.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "status": "incomplete",
+                "phase": "swap_pending",
+                "failure_code": "unknown",
+                "rollback": "not_started",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _check_backups(Settings(database_path=db_path, backup_dir=backup_dir))
+
+    assert result.level == "FAIL"
+    assert "rollback=not_started" in result.detail
+
+
+async def test_doctor_fails_closed_on_malformed_restore_journal(tmp_path):
+    db_path = tmp_path / "memocore.db"
+    database = Database(db_path)
+    await database.initialize()
+    await database.close()
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    (backup_dir / "latest-restore.json").write_text("{bad", encoding="utf-8")
+
+    result = _check_backups(Settings(database_path=db_path, backup_dir=backup_dir))
+
+    assert result.level == "FAIL"
+    assert "unreadable or invalid" in result.detail
 
 
 async def test_doctor_reports_healthy_runtime_without_live_provider(tmp_path, monkeypatch):
@@ -31,8 +77,9 @@ async def test_doctor_reports_healthy_runtime_without_live_provider(tmp_path, mo
         Settings(
             telegram_bot_token="test-token",
             telegram_owner_id=9001,
-            database_path=db_path,
-            model_provider="ollama",
+                database_path=db_path,
+                backup_dir=tmp_path / "backups",
+                model_provider="ollama",
         )
     )
 

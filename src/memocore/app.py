@@ -194,6 +194,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         project_repo,
         commitment_repo,
         followup_repo,
+        BackupService(settings.database_path, settings.backup_dir),
     )
     daily_closeout_service = DailyCloseoutService(
         task_repo,

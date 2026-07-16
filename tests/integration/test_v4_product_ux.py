@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import json
 
 from memocore.domain.models import (
     ClarificationRequest,
@@ -21,6 +22,7 @@ from memocore.domain.models import (
     TaskStatus,
 )
 from memocore.services.event_service import EventService
+from memocore.services.backup_service import BackupService
 from memocore.services.review_service import ReviewService
 from memocore.services.secretary_service import SecretaryService
 
@@ -37,6 +39,66 @@ def _secretary(repos) -> SecretaryService:
         commitment_repo=repos["commitments"],
         activity_link_repo=repos["activity_links"],
     )
+
+
+async def test_review_system_surfaces_critical_recovery_report_without_event(repos, tmp_path):
+    backup_service = BackupService(tmp_path / "missing.db", tmp_path / "backups")
+    backup_service.backup_dir.mkdir()
+    (backup_service.backup_dir / "latest-restore.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "status": "rollback_failed",
+                "phase": "rollback_failed",
+                "failure_code": "rollback_failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+        repos["commitments"],
+        repos["followups"],
+        backup_service,
+    )
+
+    response = await service.system()
+
+    text = "\n".join(response.sections[0].lines)
+    assert "rollback_failed" in text
+
+
+async def test_review_system_surfaces_failed_restore_without_false_healthy_line(repos, tmp_path):
+    backup_service = BackupService(tmp_path / "missing.db", tmp_path / "backups")
+    backup_service.backup_dir.mkdir()
+    (backup_service.backup_dir / "latest-restore.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "status": "failed",
+                "phase": "migration",
+                "failure_code": "migration_failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        backup_service=backup_service,
+    )
+
+    response = await service.system()
+
+    text = "\n".join(response.sections[0].lines)
+    assert "failed · migration · migration_failed" in text
+    assert "Không có lỗi backup" not in text
 
 
 async def test_people_view_is_paginated_and_never_leaks_internal_relationship_codes(repos):
@@ -296,7 +358,7 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
     assert "Cảnh báo hệ thống: 1" in overview.sections[1].lines
     assert any("1 sửa sai" in line for line in overview.sections[1].lines)
     assert "Anh muốn hoàn thành task nào?" in pending.sections[0].lines
-    assert "1 lỗi backup" in system.summary
+    assert "1 cảnh báo backup/recovery" in system.summary
     assert "disk full" not in "\n".join(system.sections[0].lines)
     assert "1 project cần quyết định trước" in project_health.summary
     assert any(

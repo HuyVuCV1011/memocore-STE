@@ -23,6 +23,10 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 - Verified SQLite backup, restore dry-run, maintenance-aware atomic restore, restore outcome and
   drill reports, retention pruning, grouped Markdown/JSON export, scheduled backup, doctor backup
   check, and review warning surfaces.
+- Restore now fail-closes on an invalid manifest, future/unknown schema, foreign-key or semantic
+  damage, insufficient disk, or an unverified safety backup. Candidates are migrated and checked
+  before the atomic swap; failed postflight automatically rolls back and leaves privacy-safe
+  evidence in doctor and `/review`, plus one bounded checksum-recorded forensic candidate.
 - Explicit preferred time windows for briefing/reminder/follow-up/focus behavior. MemoCore does not
   silently infer permanent preferred windows from behavior.
 - Pre-deadline task warnings, bundled nudge digests, per-run nudge limits, natural reminder snooze,

@@ -3,9 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Sequence
-import json
-import shutil
-import subprocess
 from zoneinfo import ZoneInfo
 
 from memocore.app import create_app, shutdown_app
@@ -13,6 +10,10 @@ from memocore.adapters.llm.provider_factory import PROVIDER_DEFAULTS
 from memocore.cli.doctor import has_failures, print_doctor_report, run_doctor
 from memocore.config import Settings, get_settings
 from memocore.services.backup_service import BackupService
+from memocore.services.recovery_preflight_service import (
+    RecoveryError,
+    issue_restore_authorization,
+)
 from memocore.services.review_window_service import review_window_report
 
 
@@ -200,15 +201,21 @@ def _run_backups(settings: Settings, args: argparse.Namespace) -> None:
 
 
 def _run_restore(settings: Settings, args: argparse.Namespace) -> None:
-    if args.confirm and not args.maintenance and _runtime_process_online():
-        raise SystemExit(
-            "Refusing confirmed restore while memocore-ste is online. "
-            "Stop the runtime first, then rerun with --maintenance."
-        )
+    authorization = None
+    if args.confirm and not args.maintenance:
+        raise SystemExit("Confirmed restore requires --maintenance after stopping the runtime.")
+    if args.confirm:
+        try:
+            authorization = issue_restore_authorization(
+                explicit_maintenance=args.maintenance
+            )
+        except RecoveryError as exc:
+            raise SystemExit(str(exc)) from exc
     plan = _backup_service(settings, args.backup_dir).restore(
         args.backup,
         dry_run=args.dry_run,
         confirm=args.confirm,
+        authorization=authorization,
     )
     if plan.dry_run:
         print(f"Restore dry-run passed: {plan.backup_id}")
@@ -257,33 +264,6 @@ def _run_review_window(settings: Settings, args: argparse.Namespace) -> None:
         print("Result: collecting")
         if args.require_passed:
             raise SystemExit(1)
-
-
-def _runtime_process_online() -> bool:
-    pm2 = shutil.which("pm2") or shutil.which("pm2.cmd")
-    if pm2 is None:
-        return False
-    try:
-        completed = subprocess.run(
-            [pm2, "jlist"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return True
-    if completed.returncode != 0:
-        return False
-    try:
-        processes = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        return True
-    return any(
-        process.get("name") == "memocore-ste"
-        and process.get("pm2_env", {}).get("status") == "online"
-        for process in processes
-    )
 
 
 if __name__ == "__main__":

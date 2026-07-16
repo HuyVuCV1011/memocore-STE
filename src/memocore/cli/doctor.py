@@ -146,6 +146,22 @@ def _check_database(path: Path) -> CheckResult:
 
 def _check_backups(settings: Settings) -> CheckResult:
     service = BackupService(settings.database_path, settings.backup_dir)
+    report_state, restore_report = service.read_restore_report()
+    if report_state == "invalid":
+        return CheckResult("FAIL", "Backup", "latest restore journal is unreadable or invalid")
+    if restore_report and restore_report.get("status") in {
+        "failed",
+        "rolled_back",
+        "rollback_failed",
+        "incomplete",
+    }:
+        code = restore_report.get("failure_code", "unknown")
+        rollback = restore_report.get("rollback", "unknown")
+        return CheckResult(
+            "FAIL",
+            "Backup",
+            f"latest restore failed ({code}); rollback={rollback}",
+        )
     backups = service.list_backups()
     if not backups:
         return CheckResult("WARN", "Backup", "no local backup manifest found")

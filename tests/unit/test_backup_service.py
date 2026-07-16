@@ -78,18 +78,42 @@ async def test_restore_confirm_creates_pre_restore_backup(tmp_path):
 
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute("DROP TABLE notes")
+        conn.execute(
+            """
+            INSERT INTO notes (
+                id, source, raw_text, summary, tags, status, metadata, created_at, updated_at
+            ) VALUES ('new-note', 'manual', 'new', '', '[]', 'captured', '{}',
+                      '2026-07-16T00:00:00+00:00', '2026-07-16T00:00:00+00:00')
+            """
+        )
         conn.commit()
     finally:
         conn.close()
 
-    plan = service.restore(backup.backup_id, dry_run=False, confirm=True)
+    from memocore.services.recovery_preflight_service import (
+        RuntimeState,
+        _issue_restore_authorization_with_probe,
+    )
+
+    plan = service.restore(
+        backup.backup_id,
+        dry_run=False,
+        confirm=True,
+        authorization=_issue_restore_authorization_with_probe(
+            explicit_maintenance=True, runtime_probe=lambda: RuntimeState.OFFLINE
+        ),
+    )
     verification = service.verify_backup(db_path)
 
     assert plan.verified is True
     assert plan.pre_restore_backup is not None
     assert plan.pre_restore_backup.exists()
     assert verification.ok is True
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM notes WHERE id = 'new-note'").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 async def test_prune_backups_deletes_only_verified_old_backups(tmp_path):
@@ -235,3 +259,68 @@ def test_backup_cli_parse_commands():
     assert drill.backup == "backup-id"
     assert export.command == "export"
     assert export.format == "markdown"
+
+
+def test_confirmed_restore_requires_maintenance_and_offline_runtime(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    from memocore.cli.main import _run_restore
+
+    settings = SimpleNamespace(database_path=tmp_path / "db.sqlite3", backup_dir=tmp_path)
+    args = SimpleNamespace(
+        confirm=True,
+        dry_run=False,
+        maintenance=False,
+        backup="backup-id",
+        backup_dir=None,
+    )
+    from memocore.services.recovery_preflight_service import (
+        RecoveryError,
+        RestoreAuthorization,
+        RuntimeState,
+    )
+
+    monkeypatch.setattr(
+        "memocore.cli.main.issue_restore_authorization",
+        lambda **kwargs: RestoreAuthorization(RuntimeState.OFFLINE, True, object()),
+    )
+    with pytest.raises(SystemExit, match="requires --maintenance"):
+        _run_restore(settings, args)
+
+    args.maintenance = True
+    monkeypatch.setattr(
+        "memocore.cli.main.issue_restore_authorization",
+        lambda **kwargs: (_ for _ in ()).throw(
+            RecoveryError("maintenance_not_verified", "runtime is not verified offline")
+        ),
+    )
+    with pytest.raises(SystemExit, match="not verified offline"):
+        _run_restore(settings, args)
+
+
+def test_runtime_state_is_unknown_for_unverifiable_pm2(monkeypatch):
+    from types import SimpleNamespace
+
+    from memocore.services.recovery_preflight_service import RuntimeState, probe_runtime_state
+
+    monkeypatch.setattr(
+        "memocore.services.recovery_runtime.shutil.which", lambda _name: None
+    )
+    assert probe_runtime_state() is RuntimeState.UNKNOWN
+
+    monkeypatch.setattr(
+        "memocore.services.recovery_runtime.shutil.which", lambda _name: "pm2"
+    )
+    monkeypatch.setattr(
+        "memocore.services.recovery_runtime.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="[]"),
+    )
+    assert probe_runtime_state() is RuntimeState.UNKNOWN
+
+    monkeypatch.setattr(
+        "memocore.services.recovery_runtime.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="not-json"),
+    )
+    assert probe_runtime_state() is RuntimeState.UNKNOWN
