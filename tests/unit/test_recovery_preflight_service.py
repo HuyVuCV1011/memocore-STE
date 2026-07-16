@@ -512,11 +512,11 @@ async def test_restore_lock_refuses_concurrent_operation(tmp_path):
     try:
         with pytest.raises(RecoveryError) as error:
             service.restore(backup.backup_id, dry_run=True)
+        assert lock.exists()
     finally:
         held.release()
 
     assert error.value.code == "restore_locked"
-    assert lock.exists()
 
 
 async def test_successful_restore_removes_stale_live_sidecars(tmp_path):

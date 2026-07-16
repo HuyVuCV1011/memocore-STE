@@ -37,7 +37,14 @@ async def test_doctor_fails_closed_on_incomplete_restore_journal(tmp_path):
         encoding="utf-8",
     )
 
-    result = _check_backups(Settings(database_path=db_path, backup_dir=backup_dir))
+    result = _check_backups(
+        Settings(
+            telegram_bot_token="test-token",
+            telegram_owner_id=9001,
+            database_path=db_path,
+            backup_dir=backup_dir,
+        )
+    )
 
     assert result.level == "FAIL"
     assert "rollback=not_started" in result.detail
@@ -52,7 +59,14 @@ async def test_doctor_fails_closed_on_malformed_restore_journal(tmp_path):
     backup_dir.mkdir()
     (backup_dir / "latest-restore.json").write_text("{bad", encoding="utf-8")
 
-    result = _check_backups(Settings(database_path=db_path, backup_dir=backup_dir))
+    result = _check_backups(
+        Settings(
+            telegram_bot_token="test-token",
+            telegram_owner_id=9001,
+            database_path=db_path,
+            backup_dir=backup_dir,
+        )
+    )
 
     assert result.level == "FAIL"
     assert "unreadable or invalid" in result.detail
