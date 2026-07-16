@@ -112,25 +112,21 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
     if command in {"today", "todays", "tomorrow"} and work_action_service is not None:
-        local_today = datetime.now(UTC).astimezone(service.display_timezone).date()
-        target_date = (
-            local_today + timedelta(days=1)
-            if command == "tomorrow"
-            else local_today
-        )
-        summary = (
-            await service.tomorrow()
-            if command == "tomorrow"
-            else await service.today()
-        )
-        response = await work_action_service.agenda_view(
-            summary,
-            target_date,
-            title="Ngày mai" if command == "tomorrow" else "Hôm nay",
+        now = datetime.now(UTC)
+        response, summary = await _agenda_response(
+            service,
+            work_action_service,
+            command,
+            now=now,
         )
         text, keyboard = present_response(response)
         if conversation_service is not None:
-            await conversation_service.remember_task_list(source_chat_id, summary, command)
+            await conversation_service.remember_task_list(
+                source_chat_id,
+                summary,
+                command,
+                now_utc=now,
+            )
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
     if command == "capture":
@@ -821,6 +817,9 @@ async def _navigation_response(
     if callback_data == "nav:work:reminders" and work_action_service is not None:
         return await work_action_service.reminders_view()
     if callback_data == "nav:work:today":
+        if work_action_service is not None:
+            response, _ = await _agenda_response(service, work_action_service, "today")
+            return response
         return AssistantResponse(title="Hôm nay", summary=await service.today())
     if callback_data == "nav:work":
         return _work_hub_response(await service.work_dashboard())
@@ -862,6 +861,29 @@ async def _navigation_response(
         return AssistantResponse(title="Dự án", summary=await service.projects())
     action = actions.get(callback_data)
     return action() if action else None
+
+
+async def _agenda_response(
+    service: SecretaryService,
+    work_action_service: WorkActionService,
+    command: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[AssistantResponse, str]:
+    now = now or datetime.now(UTC)
+    local_today = now.astimezone(service.display_timezone).date()
+    is_tomorrow = command == "tomorrow"
+    target_date = local_today + timedelta(days=1) if is_tomorrow else local_today
+    summary = await (
+        service.tomorrow(now) if is_tomorrow else service.today(now)
+    )
+    response = await work_action_service.agenda_view(
+        summary,
+        target_date,
+        title="Ngày mai" if is_tomorrow else "Hôm nay",
+        now=now,
+    )
+    return response, summary
 
 
 def _work_hub_response(summary: str | None = None) -> AssistantResponse:

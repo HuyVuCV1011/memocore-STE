@@ -47,6 +47,9 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
 
 ### Changed
 
+- `/today` is now a bounded factual agenda: it no longer promotes distant future work as a
+  priority, shows at most five actionable tasks, keeps waiting work informational, preserves one
+  dated heading, and maps numbered completion/reschedule actions to only the visible tasks.
 - Telegram's visible slash menu is now limited to `/today`, `/work`, `/context`, `/search`, and
   `/review`; `/briefing`, `/memory`, and `/capture` remain available as hidden shortcuts.
 - `/today`, `/work`, and `/briefing` now share one deterministic work classification model so

@@ -94,7 +94,9 @@ class SecretaryService:
             for task in tasks
             if task.due_at and day_start <= task.due_at <= day_end
         ]
-        if target_date <= now.astimezone(self.display_timezone).date():
+        local_today = now.astimezone(self.display_timezone).date()
+        is_today = target_date == local_today
+        if target_date <= local_today:
             due = state.actionable_today
         waiting = [
             task
@@ -128,23 +130,19 @@ class SecretaryService:
                 and not any(_meeting_duplicates_task(meeting, task) for task in due)
             ]
         conflicts = _schedule_conflicts(due, meetings, self.display_timezone)
-        heading = title or _day_label(target_date, now.astimezone(self.display_timezone).date()).capitalize()
+        heading = title or _day_label(target_date, local_today).capitalize()
         lines = [f"{heading} - {_weekday_label(target_date)}, {target_date:%d/%m/%Y}"]
-        if target_date == now.astimezone(self.display_timezone).date() and state.next_actions:
-            lines.append("")
-            lines.append("Ưu tiên nổi bật")
-            lines.extend(
-                f"{index}. {item.task.title}{_task_recurrence_badge(item.task)} - {item.reason}"
-                for index, item in enumerate(state.next_actions[:3], 1)
-            )
+        visible_due = due[:5]
         if due:
             lines.append("")
             lines.append("Cần làm")
-            lines.extend(_agenda_task_lines(due, display_timezone=self.display_timezone))
+            lines.extend(_agenda_task_lines(visible_due, display_timezone=self.display_timezone))
+            if len(due) > len(visible_due):
+                lines.append(f"Còn {len(due) - len(visible_due)} task cần làm khác.")
         else:
             lines.append("")
             lines.append("Cần làm")
-            lines.append(f"Không có task nào đến hạn {_day_label(target_date, now.astimezone(self.display_timezone).date())}.")
+            lines.append(f"Không có task nào đến hạn {_day_label(target_date, local_today)}.")
         if reminders:
             lines.append("")
             lines.append("Nhắc nhở")
@@ -160,16 +158,20 @@ class SecretaryService:
             lines.append("")
             lines.append("Đang chờ có hạn")
             lines.extend(_agenda_task_lines(waiting[:3], display_timezone=self.display_timezone))
-        if not due and not reminders and not meetings:
+        if is_today and not due and not reminders and not meetings:
             upcoming = sorted(
-                [task for task in tasks if task.due_at and task.due_at > day_end],
+                [
+                    task
+                    for task in state.upcoming
+                    if task.due_at and task.due_at <= now + timedelta(hours=48)
+                ],
                 key=lambda item: item.due_at,
             )
             if upcoming:
                 lines.extend(
                     [
                         "",
-                        "Tiếp theo",
+                        "Mốc tiếp theo trong 48 giờ",
                         f"- {upcoming[0].title} · {_format_due(upcoming[0].due_at, self.display_timezone)}",
                     ]
                 )
@@ -352,11 +354,7 @@ class SecretaryService:
             return [item.task.id for item in state.next_actions[:3]]
         if normalized in {"today", "todays"}:
             state = self.work_state_service.classify(tasks, now)
-            due = state.actionable_today
-            waiting = [
-                task for task in tasks if str(task.status) in {"waiting", "blocked"}
-            ]
-            return list(dict.fromkeys([task.id for task in [*due, *waiting]]))
+            return [task.id for task in state.actionable_today[:5]]
         if normalized == "tasks":
             return [task.id for task in tasks[:5]]
         return []

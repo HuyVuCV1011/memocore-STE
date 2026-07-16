@@ -213,13 +213,15 @@ class WorkActionService:
         target_date: date,
         *,
         title: str,
+        now: datetime | None = None,
     ) -> AssistantResponse:
-        local_today = datetime.now(UTC).astimezone(self.display_timezone).date()
+        now = now or datetime.now(UTC)
+        local_today = now.astimezone(self.display_timezone).date()
         tasks = await self.task_repo.list_active()
-        state = self.work_state_service.classify(tasks)
+        state = self.work_state_service.classify(tasks, now)
         visible = [
             task
-            for task in _unique_tasks([*state.overdue, *state.due_today, *state.waiting, *state.blocked])
+            for task in _unique_tasks([*state.overdue, *state.due_today])
             if task.due_at is not None
             and (
                 task.due_at.astimezone(self.display_timezone).date() == target_date
@@ -234,23 +236,23 @@ class WorkActionService:
             actions.extend(
                 [
                     AssistantAction(
-                        label="✅ Xong",
+                        label=f"✅ Task {index + 1}",
                         action_id=f"work:q:t:done:{task.id}",
                         row=index,
                     ),
                     AssistantAction(
-                        label="⏰ Đổi giờ",
+                        label=f"⏰ Task {index + 1}",
                         action_id=f"work:q:t:due:{task.id}",
-                        row=index,
-                    ),
-                    AssistantAction(
-                        label="🔥 Ưu tiên",
-                        action_id=f"work:q:t:pri:{task.id}",
                         row=index,
                     ),
                 ]
             )
-        return AssistantResponse(title=title, summary=summary, actions=actions)
+        summary_lines = summary.splitlines()
+        response_title = title
+        if summary_lines and summary_lines[0].startswith(f"{title} -"):
+            response_title = summary_lines[0]
+            summary = "\n".join(summary_lines[1:]).lstrip() or None
+        return AssistantResponse(title=response_title, summary=summary, actions=actions)
 
     async def handle(self, callback_data: str) -> AssistantResponse | None:
         if callback_data == "work:cancel":

@@ -358,6 +358,8 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | [Architecture](docs/architecture.md) | Layering, capture flow, conversation flow, model boundary, and storage direction. |
 | [Conversation Stability Gates](docs/conversation-stability-gates.md) | Required evidence before calendar, email, tools, or multi-agent work. |
 | [V4 Trustworthy Daily Secretary Plan](docs/v4-trustworthy-daily-secretary-plan.md) | Complete V4 execution plan for review, recovery, closeout, search, and quality gates. |
+| [V4 Remaining Execution Plan](docs/v4-remaining-execution-plan.md) | Current completion queue and Professor-Executor sub-agent workflow. |
+| [V4 Acceptance Gate Matrix](docs/v4-acceptance-gate-matrix.md) | Independent evidence audit and prioritized remaining V4 gaps. |
 | [Windows Runtime Guide](docs/windows-runtime.md) | Single-instance PM2 runtime policy for the primary Windows machine. |
 | [Telegram Command Model](docs/telegram-command-model.md) | Visible command menu, hidden shortcuts, inline hubs, and verification rules. |
 | [Implementation Plan](implementation_plan.md) | Delivered foundations, active V4 work, and held future versions. |

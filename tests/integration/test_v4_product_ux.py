@@ -16,6 +16,7 @@ from memocore.domain.models import (
     Person,
     ProjectStatus,
     ProjectType,
+    Reminder,
     Task,
     TaskStatus,
 )
@@ -79,7 +80,7 @@ async def test_person_context_hides_evidence_and_translates_relationship(repos):
     assert "tin cậy:" not in context
 
 
-async def test_agenda_surfaces_conflicts_and_a_useful_next_item(repos):
+async def test_agenda_surfaces_conflicts_without_inventing_a_distant_priority(repos):
     note_a = await repos["notes"].create(Note(raw_text="Task A"))
     note_b = await repos["notes"].create(Note(raw_text="Meeting B"))
     start = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
@@ -101,14 +102,119 @@ async def test_agenda_surfaces_conflicts_and_a_useful_next_item(repos):
     )
     service = _secretary(repos)
 
-    agenda = await service.agenda_for_date(start.date(), "Ngày kiểm thử")
-    empty_day = await service.agenda_for_date(start.date() - timedelta(days=1), "Ngày trống")
+    agenda = await service.agenda_for_date(
+        start.date(), "Ngày kiểm thử", now=start - timedelta(hours=2)
+    )
+    empty_day = await service.today(now=start - timedelta(days=10))
 
     assert "⚠️ Xung đột lịch" in agenda
     assert "Chấm bài APM10" in agenda
     assert "Review giáo trình" in agenda
-    assert "Tiếp theo" in empty_day
-    assert "Chấm bài APM10" in empty_day
+    assert "Ưu tiên nổi bật" not in empty_day
+    assert "Mốc tiếp theo" not in empty_day
+    assert "Chấm bài APM10" not in empty_day
+
+
+async def test_today_only_surfaces_a_next_milestone_inside_48_hours(repos):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="upcoming agenda"))
+    await repos["tasks"].create(
+        Task(
+            title="Gửi bản nháp gần",
+            due_at=now + timedelta(hours=47),
+            source_note_id=note.id,
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Gửi bản nháp xa",
+            due_at=now + timedelta(hours=49),
+            source_note_id=note.id,
+        )
+    )
+
+    today = await _secretary(repos).today(now)
+
+    assert "Mốc tiếp theo trong 48 giờ" in today
+    assert "Gửi bản nháp gần" in today
+    assert "Gửi bản nháp xa" not in today
+    assert "Ưu tiên" not in today
+
+
+async def test_today_caps_actionable_tasks_and_keeps_waiting_factual(repos):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="busy agenda"))
+    for index in range(7):
+        await repos["tasks"].create(
+            Task(
+                title=f"Việc trực tiếp {index + 1}",
+                due_at=now - timedelta(hours=index + 1),
+                source_note_id=note.id,
+            )
+        )
+    await repos["tasks"].create(
+        Task(
+            title="Chờ Alex phản hồi",
+            status=TaskStatus.WAITING,
+            due_at=now - timedelta(hours=1),
+            source_note_id=note.id,
+        )
+    )
+
+    today = await _secretary(repos).today(now)
+    direct_block = today.split("Cần làm", 1)[1].split("Đang chờ có hạn", 1)[0]
+
+    assert direct_block.count("Việc trực tiếp") == 5
+    assert "Còn 2 task cần làm khác." in direct_block
+    assert "Chờ Alex phản hồi" not in direct_block
+    assert "Chờ Alex phản hồi" in today.split("Đang chờ có hạn", 1)[1]
+
+
+async def test_today_mixed_agenda_keeps_each_factual_signal_visible(repos):
+    now = datetime(2030, 1, 2, 8, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="mixed agenda"))
+    task = await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo",
+            due_at=now + timedelta(hours=1),
+            source_note_id=note.id,
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Chờ số liệu",
+            status=TaskStatus.WAITING,
+            due_at=now + timedelta(hours=2),
+            source_note_id=note.id,
+        )
+    )
+    await repos["reminders"].create(
+        Reminder(
+            title="Nhắc gọi khách hàng",
+            remind_at=now + timedelta(hours=3),
+            source_note_id=note.id,
+        )
+    )
+    await repos["meetings"].create(
+        Meeting(
+            title="Họp kế hoạch",
+            starts_at=now + timedelta(hours=4),
+            ends_at=now + timedelta(hours=5),
+            source_note_id=note.id,
+        )
+    )
+
+    today = await _secretary(repos).today(now)
+
+    assert all(
+        heading in today
+        for heading in ("Cần làm", "Nhắc nhở", "Lịch/meeting", "Đang chờ có hạn")
+    )
+    assert "Gửi báo cáo" in today
+    assert "Nhắc gọi khách hàng" in today
+    assert "Họp kế hoạch" in today
+    assert "Chờ số liệu" in today
+    assert task.id not in today
 
 
 async def test_review_center_combines_uncertain_state_and_quality_signals(repos):

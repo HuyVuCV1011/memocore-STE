@@ -1,7 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from memocore.domain.models import Commitment, FollowUp, Note, Reminder, ReminderStatus, Task
+from memocore.adapters.telegram.presenter import present_response
+from memocore.adapters.telegram.handlers import _agenda_response
 from memocore.services.event_service import EventService
+from memocore.services.secretary_service import SecretaryService
 from memocore.services.work_action_service import WorkActionService
 
 
@@ -81,6 +84,148 @@ async def test_tasks_view_shows_daily_recurrence(repos):
 
     assert task.title in response.sections[0].lines[0]
     assert "🔁 Hằng ngày" in response.sections[0].lines[0]
+
+
+async def test_today_actions_map_to_numbered_actionable_tasks_only(repos):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="today action mapping"))
+    actionable = []
+    for index in range(6):
+        actionable.append(
+            await repos["tasks"].create(
+                Task(
+                    title=f"Actionable {index + 1}",
+                    due_at=now - timedelta(hours=index + 1),
+                    source_note_id=note.id,
+                )
+            )
+        )
+    waiting = await repos["tasks"].create(
+        Task(
+            title="Waiting item",
+            status="waiting",
+            due_at=now - timedelta(hours=1),
+            source_note_id=note.id,
+        )
+    )
+    service = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        EventService(repos["events"]),
+    )
+
+    response = await service.agenda_view(
+        "Hôm nay - Thứ Tư, 02/01/2030\n\nCần làm\n1. task",
+        now.date(),
+        title="Hôm nay",
+        now=now,
+    )
+
+    assert response.title == "Hôm nay - Thứ Tư, 02/01/2030"
+    assert response.summary.startswith("Cần làm")
+    assert len(response.actions) == 10
+    assert {action.label for action in response.actions} == {
+        f"{icon} Task {index}"
+        for index in range(1, 6)
+        for icon in ("✅", "⏰")
+    }
+    action_ids = {action.action_id for action in response.actions}
+    expected_visible = sorted(actionable, key=lambda task: task.due_at)[:5]
+    hidden = next(task for task in actionable if task not in expected_visible)
+    assert all(task.id in " ".join(action_ids) for task in expected_visible)
+    assert hidden.id not in " ".join(action_ids)
+    assert waiting.id not in " ".join(action_ids)
+    assert not any(":pri:" in action_id for action_id in action_ids)
+
+
+async def test_agenda_view_preserves_today_and_tomorrow_date_headings(repos):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    service = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        EventService(repos["events"]),
+    )
+
+    today = await service.agenda_view(
+        "Hôm nay - Thứ Tư, 02/01/2030\n\nCần làm\nKhông có task.",
+        now.date(),
+        title="Hôm nay",
+        now=now,
+    )
+    tomorrow = await service.agenda_view(
+        "Ngày mai - Thứ Năm, 03/01/2030\n\nCần làm\nKhông có task.",
+        (now + timedelta(days=1)).date(),
+        title="Ngày mai",
+        now=now,
+    )
+
+    assert today.title == "Hôm nay - Thứ Tư, 02/01/2030"
+    assert tomorrow.title == "Ngày mai - Thứ Năm, 03/01/2030"
+    assert "Hôm nay" not in today.summary
+    assert "Ngày mai" not in tomorrow.summary
+    today_text, _ = present_response(today)
+    tomorrow_text, _ = present_response(tomorrow)
+    assert today_text.count("Hôm nay") == 1
+    assert tomorrow_text.count("Ngày mai") == 1
+    assert "Thứ Tư, 02/01/2030" in today_text
+    assert "Thứ Năm, 03/01/2030" in tomorrow_text
+
+
+async def test_tomorrow_production_path_only_renders_target_date(repos):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="tomorrow production path"))
+    overdue = await repos["tasks"].create(
+        Task(
+            title="Việc quá hạn hôm nay",
+            due_at=now - timedelta(hours=1),
+            source_note_id=note.id,
+        )
+    )
+    tomorrow_task = await repos["tasks"].create(
+        Task(
+            title="Việc đúng ngày mai",
+            due_at=now + timedelta(hours=23),
+            source_note_id=note.id,
+        )
+    )
+    outside_target = await repos["tasks"].create(
+        Task(
+            title="Việc ngoài ngày mục tiêu",
+            due_at=now + timedelta(days=3),
+            source_note_id=note.id,
+        )
+    )
+    secretary = SecretaryService(
+        repos["tasks"],
+        repos["reminders"],
+        repos["followups"],
+        repos["projects"],
+        repos["memory"],
+        meeting_repo=repos["meetings"],
+        activity_link_repo=repos["activity_links"],
+    )
+    work_actions = WorkActionService(
+        repos["tasks"],
+        repos["reminders"],
+        EventService(repos["events"]),
+    )
+
+    response, _ = await _agenda_response(
+        secretary,
+        work_actions,
+        "tomorrow",
+        now=now,
+    )
+    text, _ = present_response(response)
+
+    assert text.count("Ngày mai") == 1
+    assert "Thứ 5, 03/01/2030" in text
+    assert tomorrow_task.title in text
+    assert overdue.title not in text
+    assert outside_target.title not in text
+    assert "Mốc tiếp theo" not in text
+    assert all(task.id not in text for task in (overdue, tomorrow_task, outside_target))
+    assert all(outside_target.id not in action.action_id for action in response.actions)
 
 
 async def test_reminder_reschedule_records_diff_and_undo(repos):

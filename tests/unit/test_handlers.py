@@ -24,6 +24,7 @@ from memocore.adapters.telegram.handlers import (
     start_handler,
     tag_prompt_callback_handler,
 )
+from memocore.adapters.telegram.presenter import present_response
 from datetime import UTC
 from memocore.domain.models import Note
 from memocore.domain.schemas import NoteExtraction
@@ -261,6 +262,68 @@ async def test_secretary_handler_accepts_todays_alias(monkeypatch):
     send_message.assert_awaited_once()
     assert send_message.await_args.kwargs["chat_id"] == 9001
     assert send_message.await_args.kwargs["text"] == "today view"
+
+
+async def test_today_command_and_navigation_share_response_and_actions(monkeypatch):
+    class FakeSecretary:
+        display_timezone = UTC
+
+        async def today(self, now=None) -> str:
+            return "Hôm nay - Thứ Năm, 16/07/2026\n\nCần làm\n1. 09:00 · Việc A"
+
+    class FakeWorkActions:
+        seen_now = []
+
+        async def agenda_view(self, summary, target_date, *, title, now=None):
+            self.seen_now.append(now)
+            lines = summary.splitlines()
+            return AssistantResponse(
+                title=lines[0],
+                summary="\n".join(lines[1:]).lstrip(),
+                actions=[
+                    {
+                        "label": "✅ Task 1",
+                        "action_id": "work:q:t:done:task-a",
+                        "row": 0,
+                    },
+                    {
+                        "label": "⏰ Task 1",
+                        "action_id": "work:q:t:due:task-a",
+                        "row": 0,
+                    },
+                ],
+            )
+
+    update_dict = deepcopy(COMMAND_UPDATE)
+    update_dict["message"]["text"] = "/today"
+    update_dict["message"]["entities"] = [
+        {"offset": 0, "length": 6, "type": "bot_command"}
+    ]
+    update = build_real_update(update_dict)
+    work_actions = FakeWorkActions()
+    remember_task_list = AsyncMock()
+    bot_data = {
+        "secretary_service": FakeSecretary(),
+        "work_action_service": work_actions,
+        "conversation_service": SimpleNamespace(
+            remember_task_list=remember_task_list,
+        ),
+    }
+    context = build_context(bot_data)
+    send_message = patch_send_message(monkeypatch, update)
+
+    await secretary_handler(update, context)
+    navigation = await _navigation_response("nav:work:today", context)
+    nav_text, nav_keyboard = present_response(navigation)
+
+    assert send_message.await_args.kwargs["text"] == nav_text
+    assert send_message.await_args.kwargs["reply_markup"].to_dict() == nav_keyboard.to_dict()
+    assert nav_text.count("Hôm nay") == 1
+    assert "Thứ Năm, 16/07/2026" in nav_text
+    assert "task-a" not in nav_text
+    remembered_now = remember_task_list.await_args.kwargs["now_utc"]
+    assert remembered_now is work_actions.seen_now[0]
+    assert work_actions.seen_now[1] is not None
 
 
 async def test_secretary_handler_accepts_briefing_command(monkeypatch):
