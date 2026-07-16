@@ -14,6 +14,7 @@ from memocore.services.entity_confirmation_service import EntityConfirmationServ
 from memocore.services.review_service import ReviewService
 from memocore.services.daily_closeout_service import DailyCloseoutService
 from memocore.services.timeline_query_service import TimelineQueryService
+from memocore.services.event_service import EventService
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ def create_bot(
     review_service: ReviewService | None = None,
     daily_closeout_service: DailyCloseoutService | None = None,
     timeline_query_service: TimelineQueryService | None = None,
+    event_service: EventService | None = None,
 ) -> Application:
     app = ApplicationBuilder().token(token).post_init(post_init).build()
     register_handlers(
@@ -58,5 +60,6 @@ def create_bot(
         review_service,
         daily_closeout_service,
         timeline_query_service,
+        event_service,
     )
     return app

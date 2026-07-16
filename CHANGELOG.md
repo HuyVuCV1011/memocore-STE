@@ -44,9 +44,18 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   gate.
 - Release metadata check and tag-triggered GitHub release gate for package version and changelog
   agreement.
+- Privacy-safe owner Telegram observation events with atomic once-per-local-day recording for the
+  production trust window.
+- A versioned production-regression registry that release-gates current severe feedback while
+  retaining valid historical evidence links.
 
 ### Changed
 
+- The V4 review window now uses an exact local-date interval ending today or yesterday and counts
+  verified owner-private Telegram use instead of arbitrary event activity; legacy days are not
+  backfilled.
+- Structured feedback now shares one allowlisted metadata schema between writers and release
+  validation, rejects unsafe top-level metadata, and never persists raw Telegram transport IDs.
 - `/today` is now a bounded factual agenda: it no longer promotes distant future work as a
   priority, shows at most five actionable tasks, keeps waiting work informational, preserves one
   dated heading, and maps numbered completion/reschedule actions to only the visible tasks.

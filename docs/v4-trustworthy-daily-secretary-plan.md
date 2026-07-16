@@ -179,11 +179,15 @@ or private content in quality metrics.
   durable write.
 
 Current V4 implementation: `memocore review-window --days 14` and `memocore doctor` report the
-review-window gate from structured event logs, including observed days, corrections, open
+review-window gate from structured event logs. Authenticated owner-private Telegram interactions
+create one atomic, privacy-safe observation per local day; unrelated events do not count. The gate
+uses an exact local-date interval ending today or yesterday and reports corrections, open
 corrections, failed clarifications, undo events, wrong-entity durable writes, unintended writes, and
-unresolved high/critical trust events. Add `--require-passed` when the command is used as a release
-gate. The gate remains collecting until real Telegram use provides the required consecutive
-observation days.
+unresolved high/critical trust events. The strict readiness gate also requires every qualifying
+production failure in the active interval to be linked in `qa/production_regressions.json`, while
+preserving valid historical links. Add `--require-passed` when the command is used as a release gate.
+No observation days are backfilled, so the gate remains collecting until real Telegram use provides
+the required consecutive days.
 
 ## W2: Unified Review Center
 

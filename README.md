@@ -170,13 +170,13 @@ ollama pull qwen3:14b
 | `.venv/bin/memocore backup` | Create a verified SQLite backup. |
 | `.venv/bin/memocore restore-drill` | Verify the latest backup by restoring it into a temporary database and recording the drill report. |
 | `.venv/bin/memocore export --format json --output exports/memocore.json --redacted` | Export recovery data without raw note text or Telegram identifiers. |
-| `python scripts/quality/v4_readiness_gate.py --strict --require-clean` | Final local V4 release gate after the review window reaches 14/14 days. |
+| `python scripts/quality/v4_readiness_gate.py --strict --require-clean` | Final local V4 release gate after the owner-observed review window reaches 14/14 days; resolves owner ID and timezone from flags or configured environment. |
 | `.\.venv\Scripts\memocore models` | List configured provider profiles on Windows. |
 | `.\.venv\Scripts\memocore doctor` | Check config, SQLite, Telegram slash menu, PM2, and runtime data on Windows. |
 | `.\.venv\Scripts\memocore review-window --days 14` | Report the production trust review-window gate on Windows; add `--require-passed` for release gating. |
 | `.\.venv\Scripts\memocore backup` | Create a verified SQLite backup on Windows. |
 | `.\.venv\Scripts\memocore restore-drill` | Run a restore drill on Windows. |
-| `.\.venv\Scripts\python.exe scripts\quality\v4_readiness_gate.py --strict --require-clean` | Final Windows V4 release-readiness gate. |
+| `.\.venv\Scripts\python.exe scripts\quality\v4_readiness_gate.py --strict --require-clean` | Final Windows V4 release-readiness gate; requires a positive owner ID and valid timezone from flags or configured environment. |
 | `.venv/bin/memocore run --provider ollama` | Run the bot with Ollama. |
 | `.venv/bin/memocore run --provider groq` | Run the bot with Groq. |
 | `.venv/bin/pytest -q` | Run the test suite on Linux/macOS. |

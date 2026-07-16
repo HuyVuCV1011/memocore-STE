@@ -338,11 +338,8 @@ async def test_memory_review_actions_record_structured_feedback(repos):
     assert accepted_feedback.payload["signal"] == "accepted"
     assert rejected_feedback.payload["signal"] == "rejected"
     assert accepted_feedback.payload["status"] == "resolved"
-    assert accepted_feedback.payload["turn"] == {
-        "key": "chat-memory:message-memory",
-        "source_chat_id": "chat-memory",
-        "source_message_id": "message-memory",
-    }
+    assert accepted_feedback.payload["provenance"] == "telegram_owner_private"
+    assert "turn" not in accepted_feedback.payload
 
 
 async def test_confirm_low_confidence_candidate_preserves_confidence(repos):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from zoneinfo import ZoneInfo
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -172,8 +173,12 @@ def _check_backups(settings: Settings) -> CheckResult:
 
 
 def _check_review_window(settings: Settings) -> CheckResult:
-    report = review_window_report(settings.database_path)
-    level = "OK" if report.gate_passed else "WARN"
+    report = review_window_report(
+        settings.database_path,
+        telegram_owner_id=settings.telegram_owner_id,
+        display_timezone=ZoneInfo(settings.user_timezone),
+    )
+    level = "OK" if report.gate_passed else ("FAIL" if report.status == "failed" else "WARN")
     return CheckResult(level, "Review window", report.summary())
 
 

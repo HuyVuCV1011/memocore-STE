@@ -270,11 +270,10 @@ async def test_correction_feedback_single_task_cancel(
     assert feedback.payload["signal"] == "correction"
     assert feedback.payload["status"] == "open"
     assert feedback.payload["artifact"] == {"type": "task", "id": task.id}
-    assert feedback.payload["turn"] == {
-        "key": "chat_corr:message-1",
-        "source_chat_id": "chat_corr",
-        "source_message_id": "message-1",
-    }
+    assert feedback.payload["provenance"] == "telegram_owner_private"
+    assert "turn" not in feedback.payload
+    assert "chat_corr" not in str(feedback.payload)
+    assert "message-1" not in str(feedback.payload)
     assert "Trời hôm nay đẹp" not in str(feedback.payload)
 
 

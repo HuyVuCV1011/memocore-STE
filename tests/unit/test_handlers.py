@@ -549,15 +549,78 @@ async def test_owner_guard_allows_only_owner_private_chat():
     await owner_only_handler(update, context)
 
 
+@pytest.mark.parametrize(
+    ("update_dict", "interaction_kind"),
+    (
+        (MESSAGE_UPDATE, "message"),
+        (COMMAND_UPDATE, "command"),
+        (
+            {
+                "update_id": 200001,
+                "callback_query": {
+                    "id": "callback-observation",
+                    "from": {"id": 9001, "is_bot": False, "first_name": "Huy"},
+                    "chat_instance": "private-instance",
+                    "data": "work:done:private-task-id",
+                    "message": deepcopy(COMMAND_UPDATE["message"]),
+                },
+            },
+            "callback",
+        ),
+    ),
+)
+async def test_owner_guard_records_privacy_safe_interaction_evidence(
+    update_dict,
+    interaction_kind,
+):
+    event_service = SimpleNamespace(record_owner_observation=AsyncMock())
+    update = build_real_update(deepcopy(update_dict))
+    context = build_context(
+        {
+            "telegram_owner_id": 9001,
+            "event_service": event_service,
+            "secretary_service": SimpleNamespace(display_timezone=UTC),
+        }
+    )
+
+    await owner_only_handler(update, context)
+
+    event_service.record_owner_observation.assert_awaited_once_with(
+        interaction_kind,
+        display_timezone=UTC,
+    )
+    assert "private-task-id" not in str(event_service.record_owner_observation.await_args)
+
+
+async def test_owner_guard_observation_failure_does_not_block_update():
+    event_service = SimpleNamespace(
+        record_owner_observation=AsyncMock(side_effect=RuntimeError("storage unavailable"))
+    )
+    update = build_real_update(MESSAGE_UPDATE)
+    context = build_context(
+        {
+            "telegram_owner_id": 9001,
+            "event_service": event_service,
+            "secretary_service": SimpleNamespace(display_timezone=UTC),
+        }
+    )
+
+    await owner_only_handler(update, context)
+
+
 async def test_owner_guard_rejects_unknown_user():
     update_dict = deepcopy(MESSAGE_UPDATE)
     update_dict["message"]["from"]["id"] = 6666
     update_dict["message"]["chat"]["id"] = 6666
     update = build_real_update(update_dict)
-    context = build_context({"telegram_owner_id": 9001})
+    event_service = SimpleNamespace(record_owner_observation=AsyncMock())
+    context = build_context(
+        {"telegram_owner_id": 9001, "event_service": event_service}
+    )
 
     with pytest.raises(ApplicationHandlerStop):
         await owner_only_handler(update, context)
+    event_service.record_owner_observation.assert_not_awaited()
 
 
 async def test_owner_guard_rejects_owner_inside_group_chat():
@@ -568,10 +631,14 @@ async def test_owner_guard_rejects_owner_inside_group_chat():
         "title": "Private data trap",
     }
     update = build_real_update(update_dict)
-    context = build_context({"telegram_owner_id": 9001})
+    event_service = SimpleNamespace(record_owner_observation=AsyncMock())
+    context = build_context(
+        {"telegram_owner_id": 9001, "event_service": event_service}
+    )
 
     with pytest.raises(ApplicationHandlerStop):
         await owner_only_handler(update, context)
+    event_service.record_owner_observation.assert_not_awaited()
 
 
 async def test_tag_prompt_reprocesses_without_deleting_raw_note(

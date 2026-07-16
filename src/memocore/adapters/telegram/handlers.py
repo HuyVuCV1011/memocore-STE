@@ -33,6 +33,7 @@ from memocore.services.entity_confirmation_service import EntityConfirmationServ
 from memocore.services.review_service import ReviewService
 from memocore.services.daily_closeout_service import DailyCloseoutService
 from memocore.services.timeline_query_service import TimelineQueryService
+from memocore.services.event_service import EventService
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,29 @@ async def owner_only_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             chat.type if chat else None,
         )
         raise ApplicationHandlerStop
+    event_service: EventService | None = context.application.bot_data.get("event_service")
+    if event_service is None:
+        return
+    try:
+        secretary_service: SecretaryService = context.application.bot_data["secretary_service"]
+        await event_service.record_owner_observation(
+            _interaction_kind(update),
+            display_timezone=secretary_service.display_timezone,
+        )
+    except Exception:
+        # Observation is evidence, not part of the user's command transaction. A
+        # telemetry failure must never make an otherwise valid update unusable.
+        logger.exception("Could not record Telegram owner interaction evidence")
+
+
+def _interaction_kind(update: Update) -> str:
+    if update.callback_query is not None:
+        return "callback"
+    message = update.effective_message
+    text = message.text if message is not None else None
+    if text and text.startswith("/"):
+        return "command"
+    return "message"
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -709,6 +733,7 @@ def register_handlers(
     review_service: ReviewService | None = None,
     daily_closeout_service: DailyCloseoutService | None = None,
     timeline_query_service: TimelineQueryService | None = None,
+    event_service: EventService | None = None,
 ) -> None:
     app.bot_data["telegram_owner_id"] = owner_id
     app.bot_data["capture_service"] = capture_service
@@ -721,6 +746,7 @@ def register_handlers(
     app.bot_data["review_service"] = review_service
     app.bot_data["daily_closeout_service"] = daily_closeout_service
     app.bot_data["timeline_query_service"] = timeline_query_service
+    app.bot_data["event_service"] = event_service
     app.add_error_handler(error_handler)
     app.add_handler(TypeHandler(Update, owner_only_handler), group=-1)
     app.add_handler(CallbackQueryHandler(memory_callback_handler, pattern=r"^mem:"))

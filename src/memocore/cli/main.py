@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import json
 import shutil
 import subprocess
+from zoneinfo import ZoneInfo
 
 from memocore.app import create_app, shutdown_app
 from memocore.adapters.llm.provider_factory import PROVIDER_DEFAULTS
@@ -236,7 +237,12 @@ def _run_export(settings: Settings, args: argparse.Namespace) -> None:
 
 
 def _run_review_window(settings: Settings, args: argparse.Namespace) -> None:
-    report = review_window_report(settings.database_path, required_days=args.days)
+    report = review_window_report(
+        settings.database_path,
+        required_days=args.days,
+        telegram_owner_id=settings.telegram_owner_id,
+        display_timezone=ZoneInfo(settings.user_timezone),
+    )
     print("MemoCore review window")
     print("")
     for line in report.lines():

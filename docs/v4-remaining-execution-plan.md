@@ -17,8 +17,12 @@ As of 2026-07-16, the local V4 readiness gate reports:
 - working tree: clean before this planning update;
 - large-module budgets: pass;
 - backup and restore: latest backup verified and a restore drill recorded; and
-- production review window: collecting at 11 of 14 observed days, with zero unresolved high
-  severity events, zero wrong-entity writes, and zero unintended writes.
+- the legacy production review counter reported 11 of 14 days, but the R0 audit showed those days
+  could be inferred from unrelated events and therefore were not valid normal-use evidence.
+
+W1 now records authenticated owner-private Telegram use at most once per local day and deliberately
+does not backfill the old counter. The trustworthy 14-day production window starts collecting only
+after this implementation is deployed.
 
 This snapshot is evidence, not a declaration that every product acceptance gate is complete. The
 remaining work starts with a gap audit so already-delivered behavior is verified rather than rebuilt.

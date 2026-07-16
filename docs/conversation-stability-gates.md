@@ -56,8 +56,9 @@ Every production failure must be added to this corpus before its fix is merged.
 4. Writes must be source-linked, auditable, idempotent, and reversible by batch.
 5. Project, person, organization, and decision retrieval must stay entity-constrained.
 6. Full offline tests, migration smoke tests, compile checks, and `memocore doctor` must pass.
-7. Real Telegram usage must complete a review window without unresolved high-severity routing or
-   wrong-entity writes.
+7. Real Telegram usage must complete an exact 14-local-day review window, evidenced by
+   authenticated owner-private interaction rather than unrelated events, without unresolved
+   high-severity routing or wrong-entity writes.
 8. Every production turn must preserve the assistant outcome and affected artifact ids so later
    corrections can refer to the exact prior operation.
 9. Clarification choices must remain active for numeric and exact-title replies and must never
@@ -72,7 +73,10 @@ Every production failure must be added to this corpus before its fix is merged.
     requires an explicit user choice.
 14. Task-reference metrics must omit raw messages, titles, and other user-authored content.
 15. Pull requests must pass the Python 3.12 offline quality gate on Windows and Linux, including
-    compilation, migration smoke tests, and the full non-provider test suite.
+   compilation, migration smoke tests, and the full non-provider test suite.
+16. Production feedback must retain only allowlisted structural metadata. Every current-window
+    high/critical or high-trust failure must link to a sanitized regression fixture; historical
+    valid links remain auditable after they leave the active window.
 
 ## Orchestration Hold
 

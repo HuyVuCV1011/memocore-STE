@@ -148,6 +148,7 @@ class EventType(StrEnum):
     CLARIFICATION_FAILED = "clarification_failed"
     USER_FEEDBACK_RECORDED = "user_feedback_recorded"
     USER_FEEDBACK_RESOLVED = "user_feedback_resolved"
+    TELEGRAM_OWNER_INTERACTION_OBSERVED = "telegram_owner_interaction_observed"
     BRIEFING_SENT = "briefing_sent"
     WEEKLY_REVIEW_SENT = "weekly_review_sent"
     NUDGE_SENT = "nudge_sent"

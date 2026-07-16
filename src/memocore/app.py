@@ -261,6 +261,7 @@ async def create_app(settings: Settings | None = None) -> Application:
         review_service,
         daily_closeout_service,
         timeline_query_service,
+        event_service,
     )
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(
