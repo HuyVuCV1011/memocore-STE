@@ -49,12 +49,16 @@ data/
 backups/
 exports/
 telegram_exports/
+telegram_live_qa_reports/
+.telegram-live-qa/
 browser-data/
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite3
+*.session
+*.session-journal
 *.dump
 *.backup
 logs/

@@ -26,6 +26,9 @@ dev = [
     "mypy>=1.13,<2.0",
     "detect-secrets>=1.5,<2.0",
 ]
+live-qa = [
+    "telethon>=1.36,<2.0",
+]
 
 [project.scripts]
 memocore = "memocore.cli.main:main"

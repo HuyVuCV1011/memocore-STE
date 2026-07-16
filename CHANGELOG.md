@@ -34,6 +34,8 @@ All notable user-visible changes to MemoCore are tracked here. This project foll
   folders.
 - Local V4 readiness gate that reports release metadata, working-tree cleanliness, module-size
   budgets, production review-window status, and verified backup/restore-drill evidence.
+- Live Telegram QA harness for sending read-only smoke cases through a secondary Telegram account
+  and capturing actual bot replies, inline buttons, and Markdown/JSON reports.
 - Runtime version descriptor in `memocore doctor`, including package version, Git commit, dirty
   flag, and latest applied SQLite schema migration.
 - Windows PM2 restart guard that blocks dirty deployments by default and stamps deploy commit,

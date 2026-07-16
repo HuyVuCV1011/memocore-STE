@@ -367,6 +367,7 @@ scripts/windows/                 # PM2 restart and log helpers for the Windows r
 | [Changelog](CHANGELOG.md) | User-visible behavior changes before release tags are cut. |
 | [Storage Migrations](docs/storage/README.md) | SQLite runtime and PostgreSQL/pgvector blueprint status. |
 | [V2 Manual Tests](docs/v2-manual-test-cases.md) | Telegram messages for conversational secretary verification. |
+| [Telegram Live QA](docs/telegram-live-qa.md) | Send cases through a real Telegram account and capture rendered bot replies. |
 | [Content Integration Bridge](docs/content_integration_bridge.md) | Read-only SQLite contract for the LinkedIn content engine. |
 | [Telegram Memory UX](docs/telegram-memory-ux-spec.md) | Dashboard, slice, and review model for high-volume Telegram memory browsing. |
 
