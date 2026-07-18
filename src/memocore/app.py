@@ -474,7 +474,7 @@ async def send_due_nudges(
 
     sent = 0
     if len(candidates) >= settings.proactive_nudge_bundle_threshold > 1:
-        text_body = "Nudge digest\n" + "\n\n".join(
+        text_body = "Dạ anh, em gom mấy việc cần nhắc lại nha:\n" + "\n\n".join(
             f"{index}. {body}" for index, (_, _, body) in enumerate(candidates, 1)
         )
         try:

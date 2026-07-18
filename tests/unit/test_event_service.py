@@ -126,6 +126,29 @@ async def test_owner_observation_concurrent_writes_are_atomic(repos):
     assert len(stored) == 1
 
 
+async def test_concurrent_transactions_are_serialized_on_single_sqlite_connection(repos):
+    database = repos["events"].database
+
+    async def write_event(index: int) -> None:
+        async with database.transaction():
+            await EventService(repos["events"]).append_event(
+                EventType.WORK_ITEM_CHANGED,
+                "task",
+                f"task-{index}",
+                {"index": index},
+                created_at=datetime(2026, 7, 17, 5, index, tzinfo=UTC),
+            )
+            await asyncio.sleep(0)
+
+    await asyncio.gather(*(write_event(index) for index in range(8)))
+
+    stored = await EventService(repos["events"]).list_recent(
+        EventType.WORK_ITEM_CHANGED,
+        limit=10,
+    )
+    assert len(stored) == 8
+
+
 async def test_owner_observation_rejects_poisoned_deterministic_key(repos):
     service = EventService(repos["events"])
     observation_day = "2026-07-17"

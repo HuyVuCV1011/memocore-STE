@@ -112,9 +112,10 @@ class BaseRepository:
         self.database = database
 
     async def _execute(self, query: str, params: tuple[Any, ...]) -> None:
-        conn = await self.database.connection()
-        await conn.execute(query, params)
-        await self.database.commit_if_needed()
+        async with self.database.write_operation():
+            conn = await self.database.connection()
+            await conn.execute(query, params)
+            await self.database.commit_if_needed()
 
 
 class NoteRepository(BaseRepository):

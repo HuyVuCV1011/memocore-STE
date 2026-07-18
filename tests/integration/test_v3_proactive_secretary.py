@@ -353,7 +353,7 @@ async def test_multiple_nudges_are_bundled_limited_and_audited_per_item(repos):
     assert bot.send_message.await_count == 2
     first_text = bot.send_message.await_args_list[0].kwargs["text"]
     second_text = bot.send_message.await_args_list[1].kwargs["text"]
-    assert first_text.startswith("Nudge digest")
+    assert first_text.startswith("Dạ anh, em gom mấy việc cần nhắc lại nha:")
     assert first_text.count("Task quá hạn") == 2
     assert second_text.count("Task quá hạn") == 1
     events = await event_service.list_recent(EventType.NUDGE_SENT, limit=10)
