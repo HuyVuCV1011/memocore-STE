@@ -43,6 +43,7 @@ from memocore.domain.models import (
     Task,
     TaskStatus,
 )
+from memocore.domain.recurrence import next_recurrence_occurrence
 from memocore.domain.schemas import (
     CaptureRequest,
     CaptureResponse,
@@ -1244,7 +1245,6 @@ def _meaningful_tokens(value: str) -> set[str]:
         "an",
         "the",
         "a",
-        "an",
         "and",
         "done",
         "finished",
@@ -1269,7 +1269,16 @@ def _parse_recurring_reminder(raw_text: str) -> tuple[str, datetime, str] | None
         return None
     recurrence_rule: str | None = None
     weekday: int | None = None
-    if any(signal in normalized for signal in ("moi ngay", "hang ngay", "every day", "daily")):
+    interval = re.search(
+        r"\b(?:moi|every)\s+(\d+)\s+(ngay|day|days|tuan|week|weeks)\b",
+        normalized,
+    )
+    if interval is not None:
+        count = int(interval.group(1))
+        unit = interval.group(2)
+        if count >= 1:
+            recurrence_rule = f"interval:{count}{'w' if unit in {'tuan', 'week', 'weeks'} else 'd'}"
+    elif any(signal in normalized for signal in ("moi ngay", "hang ngay", "every day", "daily")):
         recurrence_rule = "daily"
     else:
         weekdays = {
@@ -1316,7 +1325,7 @@ def _parse_recurring_reminder(raw_text: str) -> tuple[str, datetime, str] | None
         target_date = now.date() + timedelta(days=days_ahead)
     remind_at = datetime.combine(target_date, clock, tzinfo=now.tzinfo).astimezone(UTC)
     if remind_at <= datetime.now(UTC):
-        remind_at += timedelta(days=7 if recurrence_rule.startswith("weekly") else 1)
+        remind_at = next_recurrence_occurrence(remind_at, recurrence_rule)
     return (_recurring_title(raw_text), remind_at, recurrence_rule)
 
 
@@ -1341,6 +1350,7 @@ def _parse_recurring_clock(normalized: str) -> time | None:
 
 def _recurring_title(raw_text: str) -> str:
     title = re.sub(r"(?i)\b(nhắc tôi|nhac toi|remind me)\b", " ", raw_text)
+    title = re.sub(r"(?i)\b(mỗi|moi|every)\s+\d+\s+(ngày|ngay|day|days|tuần|tuan|week|weeks)\b", " ", title)
     title = re.sub(r"(?i)\b(mỗi ngày|moi ngay|hằng ngày|hang ngay|every day|daily)\b", " ", title)
     title = re.sub(r"(?i)\b(mỗi tuần|moi tuan|hằng tuần|hang tuan|weekly|every week)\b", " ", title)
     title = re.sub(r"(?i)\b(mỗi|moi|hằng|hang|every)\s+(thứ\s+\d|thu\s+\d|thứ hai|thu hai|thứ ba|thu ba|thứ tư|thu tu|thứ năm|thu nam|thứ sáu|thu sau|thứ bảy|thu bay|chủ nhật|chu nhat|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", " ", title)

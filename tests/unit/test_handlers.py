@@ -13,7 +13,9 @@ from telegram.ext import ApplicationBuilder, ApplicationHandlerStop, CallbackCon
 from memocore.adapters.telegram.handlers import (
     _apply_light_tone,
     _is_capture_confirmation,
+    _navigation_response,
     clarification_callback_handler,
+    entity_callback_handler,
     format_capture_response,
     memory_callback_handler,
     message_handler,
@@ -22,6 +24,7 @@ from memocore.adapters.telegram.handlers import (
     start_handler,
     tag_prompt_callback_handler,
 )
+from memocore.adapters.telegram.presenter import present_response
 from datetime import UTC
 from memocore.domain.models import Note
 from memocore.domain.schemas import NoteExtraction
@@ -42,6 +45,83 @@ def build_context(bot_data: dict[str, Any] | None = None) -> CallbackContext:
     if bot_data:
         app.bot_data.update(bot_data)
     return CallbackContext(application=app)
+
+
+@pytest.mark.parametrize(
+    ("action", "method_name"),
+    (("n", "reject"), ("i", "ignore")),
+)
+async def test_entity_callback_persists_negative_decision(
+    monkeypatch,
+    action,
+    method_name,
+):
+    event_id = "12345678-1234-1234-1234-123456789012"
+    service = SimpleNamespace(
+        prompt=AsyncMock(),
+        confirm=AsyncMock(),
+        reject=AsyncMock(return_value=AssistantResponse(title="Đã xử lý")),
+        ignore=AsyncMock(return_value=AssistantResponse(title="Đã xử lý")),
+    )
+    update_dict = {
+        "update_id": 1002,
+        "callback_query": {
+            "id": "callback-entity",
+            "from": {"id": 42, "is_bot": False, "first_name": "Vu"},
+            "chat_instance": "chat-instance",
+            "data": f"entity:{action}:{event_id}",
+            "message": deepcopy(COMMAND_UPDATE["message"]),
+        },
+    }
+    update = build_real_update(update_dict)
+    context = build_context({"entity_confirmation_service": service})
+    bot_type = type(update.callback_query.get_bot())
+    monkeypatch.setattr(
+        bot_type,
+        "answer_callback_query",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        bot_type,
+        "edit_message_text",
+        AsyncMock(return_value=True),
+    )
+
+    await entity_callback_handler(update, context)
+
+    getattr(service, method_name).assert_awaited_once_with(event_id)
+
+
+async def test_review_navigation_lists_and_resolves_feedback():
+    event_id = "12345678-1234-1234-1234-123456789012"
+    review_service = SimpleNamespace(
+        feedback=AsyncMock(return_value=AssistantResponse(title="Phản hồi")),
+        commitments=AsyncMock(return_value=AssistantResponse(title="Commitment cần rà")),
+        quality_report=AsyncMock(return_value=AssistantResponse(title="Báo cáo chất lượng")),
+        resolve_feedback=AsyncMock(
+            return_value=AssistantResponse(title="Đã đánh dấu xử lý")
+        ),
+    )
+    context = build_context(
+        {
+            "secretary_service": object(),
+            "review_service": review_service,
+        }
+    )
+
+    listed = await _navigation_response("nav:review:feedback", context)
+    commitments = await _navigation_response("nav:review:commitments", context)
+    quality = await _navigation_response("nav:review:quality", context)
+    resolved = await _navigation_response(f"nav:rf:{event_id}", context)
+
+    assert listed is not None and listed.title == "Phản hồi"
+    assert commitments is not None and commitments.title == "Commitment cần rà"
+    assert quality is not None and quality.title == "Báo cáo chất lượng"
+    assert resolved is not None and resolved.title == "Đã đánh dấu xử lý"
+    review_service.feedback.assert_awaited_once()
+    review_service.commitments.assert_awaited_once()
+    review_service.quality_report.assert_awaited_once()
+    review_service.resolve_feedback.assert_awaited_once_with(event_id)
 
 
 def build_real_update(update_dict: dict[str, Any]) -> Update:
@@ -182,6 +262,68 @@ async def test_secretary_handler_accepts_todays_alias(monkeypatch):
     send_message.assert_awaited_once()
     assert send_message.await_args.kwargs["chat_id"] == 9001
     assert send_message.await_args.kwargs["text"] == "today view"
+
+
+async def test_today_command_and_navigation_share_response_and_actions(monkeypatch):
+    class FakeSecretary:
+        display_timezone = UTC
+
+        async def today(self, now=None) -> str:
+            return "Hôm nay - Thứ Năm, 16/07/2026\n\nCần làm\n1. 09:00 · Việc A"
+
+    class FakeWorkActions:
+        seen_now = []
+
+        async def agenda_view(self, summary, target_date, *, title, now=None):
+            self.seen_now.append(now)
+            lines = summary.splitlines()
+            return AssistantResponse(
+                title=lines[0],
+                summary="\n".join(lines[1:]).lstrip(),
+                actions=[
+                    {
+                        "label": "✅ Task 1",
+                        "action_id": "work:q:t:done:task-a",
+                        "row": 0,
+                    },
+                    {
+                        "label": "⏰ Task 1",
+                        "action_id": "work:q:t:due:task-a",
+                        "row": 0,
+                    },
+                ],
+            )
+
+    update_dict = deepcopy(COMMAND_UPDATE)
+    update_dict["message"]["text"] = "/today"
+    update_dict["message"]["entities"] = [
+        {"offset": 0, "length": 6, "type": "bot_command"}
+    ]
+    update = build_real_update(update_dict)
+    work_actions = FakeWorkActions()
+    remember_task_list = AsyncMock()
+    bot_data = {
+        "secretary_service": FakeSecretary(),
+        "work_action_service": work_actions,
+        "conversation_service": SimpleNamespace(
+            remember_task_list=remember_task_list,
+        ),
+    }
+    context = build_context(bot_data)
+    send_message = patch_send_message(monkeypatch, update)
+
+    await secretary_handler(update, context)
+    navigation = await _navigation_response("nav:work:today", context)
+    nav_text, nav_keyboard = present_response(navigation)
+
+    assert send_message.await_args.kwargs["text"] == nav_text
+    assert send_message.await_args.kwargs["reply_markup"].to_dict() == nav_keyboard.to_dict()
+    assert nav_text.count("Hôm nay") == 1
+    assert "Thứ Năm, 16/07/2026" in nav_text
+    assert "task-a" not in nav_text
+    remembered_now = remember_task_list.await_args.kwargs["now_utc"]
+    assert remembered_now is work_actions.seen_now[0]
+    assert work_actions.seen_now[1] is not None
 
 
 async def test_secretary_handler_accepts_briefing_command(monkeypatch):
@@ -407,15 +549,78 @@ async def test_owner_guard_allows_only_owner_private_chat():
     await owner_only_handler(update, context)
 
 
+@pytest.mark.parametrize(
+    ("update_dict", "interaction_kind"),
+    (
+        (MESSAGE_UPDATE, "message"),
+        (COMMAND_UPDATE, "command"),
+        (
+            {
+                "update_id": 200001,
+                "callback_query": {
+                    "id": "callback-observation",
+                    "from": {"id": 9001, "is_bot": False, "first_name": "Huy"},
+                    "chat_instance": "private-instance",
+                    "data": "work:done:private-task-id",
+                    "message": deepcopy(COMMAND_UPDATE["message"]),
+                },
+            },
+            "callback",
+        ),
+    ),
+)
+async def test_owner_guard_records_privacy_safe_interaction_evidence(
+    update_dict,
+    interaction_kind,
+):
+    event_service = SimpleNamespace(record_owner_observation=AsyncMock())
+    update = build_real_update(deepcopy(update_dict))
+    context = build_context(
+        {
+            "telegram_owner_id": 9001,
+            "event_service": event_service,
+            "secretary_service": SimpleNamespace(display_timezone=UTC),
+        }
+    )
+
+    await owner_only_handler(update, context)
+
+    event_service.record_owner_observation.assert_awaited_once_with(
+        interaction_kind,
+        display_timezone=UTC,
+    )
+    assert "private-task-id" not in str(event_service.record_owner_observation.await_args)
+
+
+async def test_owner_guard_observation_failure_does_not_block_update():
+    event_service = SimpleNamespace(
+        record_owner_observation=AsyncMock(side_effect=RuntimeError("storage unavailable"))
+    )
+    update = build_real_update(MESSAGE_UPDATE)
+    context = build_context(
+        {
+            "telegram_owner_id": 9001,
+            "event_service": event_service,
+            "secretary_service": SimpleNamespace(display_timezone=UTC),
+        }
+    )
+
+    await owner_only_handler(update, context)
+
+
 async def test_owner_guard_rejects_unknown_user():
     update_dict = deepcopy(MESSAGE_UPDATE)
     update_dict["message"]["from"]["id"] = 6666
     update_dict["message"]["chat"]["id"] = 6666
     update = build_real_update(update_dict)
-    context = build_context({"telegram_owner_id": 9001})
+    event_service = SimpleNamespace(record_owner_observation=AsyncMock())
+    context = build_context(
+        {"telegram_owner_id": 9001, "event_service": event_service}
+    )
 
     with pytest.raises(ApplicationHandlerStop):
         await owner_only_handler(update, context)
+    event_service.record_owner_observation.assert_not_awaited()
 
 
 async def test_owner_guard_rejects_owner_inside_group_chat():
@@ -426,10 +631,14 @@ async def test_owner_guard_rejects_owner_inside_group_chat():
         "title": "Private data trap",
     }
     update = build_real_update(update_dict)
-    context = build_context({"telegram_owner_id": 9001})
+    event_service = SimpleNamespace(record_owner_observation=AsyncMock())
+    context = build_context(
+        {"telegram_owner_id": 9001, "event_service": event_service}
+    )
 
     with pytest.raises(ApplicationHandlerStop):
         await owner_only_handler(update, context)
+    event_service.record_owner_observation.assert_not_awaited()
 
 
 async def test_tag_prompt_reprocesses_without_deleting_raw_note(

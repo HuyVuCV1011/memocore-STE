@@ -5,6 +5,9 @@
 - Current package version: `0.4.1`.
 - Current branch baseline: V1-V4 are documented as delivered.
 - Automated verification on June 21, 2026: `279 passed, 1 skipped`.
+- Current local verification on July 15, 2026: `434 passed, 1 skipped`.
+- Current W1 trust-evidence verification on July 16, 2026: `504 passed, 1 skipped`.
+- Current W3 fail-safe recovery verification on July 16, 2026: `561 passed, 1 skipped`.
 - Python compilation check: passed for `src` and `tests`.
 - Live provider benchmark and live Telegram polling were not exercised because they require
   external services and credentials.
@@ -21,9 +24,9 @@
 | Commitments and meeting retrieval | Ready | Storage, linked views, and V4 integration tests are present. |
 | People/meeting/follow-up/commitment ingestion | Ready | Typed extraction and transactional capture persistence are implemented with ambiguity guards. |
 | Organization and decision knowledge | Ready | First-class SQLite models, repositories, extraction candidates, links, and retrieval evidence. |
-| Transcript evaluation | Active | Fixture-driven multi-turn regressions cover contextual entity priority, scoped updates, and batch rollback; real Telegram review is still required. |
-| Runtime operations | Ready | PM2 single-process guidance exists; `memocore doctor` checks config, SQLite, Telegram commands, runtime data, provider config, and PM2 before restart. |
-| Release automation | Missing | Migration smoke coverage exists locally, but hosted CI, release tags, and a coverage threshold remain missing. |
+| Transcript evaluation | Active | Fixture-driven multi-turn regressions cover contextual entity priority, scoped updates, and batch rollback. Current severe production feedback is release-gated against a versioned regression registry; a new owner-observed 14-day Telegram window is still required. |
+| Runtime operations | Ready | PM2 single-process guidance exists; `memocore doctor` checks runtime version, config, SQLite, verified backups, latest restore drill, Telegram commands, runtime data, provider config, and PM2 before restart. |
+| Release automation | Partial | Hosted CI workflow now runs Python 3.12 compile, ruff source lint, targeted mypy, module-size guard, Markdown link check, clean and previous-release migration smoke tests, coverage-gated offline tests, pip-audit, tracked-file secret scan, and release metadata checks on Windows and Linux. `scripts/quality/v4_readiness_gate.py --strict --require-clean` reports the local release-only gates, including an exact owner-observed review interval, current production-regression coverage, and backup/restore evidence. Tag pushes matching `v*` run the release gate and require the tag to match the package version plus a matching changelog section. Final release still requires a clean committed candidate and the newly collected production review-window gate. |
 | V5 harness/orchestration | Missing | Direction is documented, but there are no run, tool, policy, approval, or worker contracts. |
 
 ## Release Decision
@@ -50,7 +53,7 @@ registered read-only calendar source. It must not introduce external writes or s
    fallback.
 7. Add unit and integration coverage for malformed calls, denied tools, timeout, audit trace,
    fallback, and successful meeting-prep enrichment.
-8. Add CI for Python 3.12 with install, compile, and offline test jobs.
+8. Keep CI active for Python 3.12 with install, compile, migration smoke, and offline test jobs.
 9. Add a migration smoke test that upgrades an existing `0.4.1` SQLite database.
 
 ### V4 Baseline

@@ -12,7 +12,7 @@ def present_response(response: AssistantResponse) -> tuple[str, InlineKeyboardMa
     for section in response.sections:
         if section.heading:
             lines.extend(["", section.heading])
-        lines.extend(f"- {line}" for line in section.lines)
+        lines.extend(_present_section_line(line) for line in section.lines)
     if response.footer:
         lines.extend(["", response.footer])
 
@@ -25,3 +25,14 @@ def present_response(response: AssistantResponse) -> tuple[str, InlineKeyboardMa
             )
         keyboard = InlineKeyboardMarkup([rows[index] for index in sorted(rows)])
     return "\n".join(lines), keyboard
+
+
+def _present_section_line(line: str) -> str:
+    stripped = line.lstrip()
+    if not stripped:
+        return line
+    if stripped.startswith(("- ", "• ")):
+        return stripped
+    if stripped[0].isdigit() and ". " in stripped[:4]:
+        return stripped
+    return f"- {line}"

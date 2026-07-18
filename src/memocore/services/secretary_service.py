@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+import re
 
 from memocore.adapters.storage.repositories import (
     ActivityLinkRepository,
@@ -15,10 +16,13 @@ from memocore.adapters.storage.repositories import (
     ReminderRepository,
     TaskRepository,
 )
-from memocore.domain.models import EventType, MemoryBucket, MemoryKind, MemoryStatus, ProjectStatus, ProjectType
+from memocore.domain.models import EventType, MemoryBucket, MemoryKind, MemoryStatus, Project, ProjectStatus, ProjectType
 from memocore.domain.schemas import AssistantAction, AssistantResponse, AssistantSection
+from memocore.services.briefing_judgment_service import briefing_assessment, briefing_signals
 from memocore.services.event_service import EventService
 from memocore.services.presentation_labels import person_note_lines, relationship_label
+from memocore.services.project_health_service import ProjectHealthService
+from memocore.services.work_state_service import WorkStateService
 
 
 PEOPLE_PAGE_SIZE = 6
@@ -52,6 +56,8 @@ class SecretaryService:
         self.note_repo = note_repo
         self.event_service = event_service
         self.activity_link_repo = activity_link_repo
+        self.work_state_service = WorkStateService(display_timezone)
+        self.project_health_service = ProjectHealthService(display_timezone)
 
     async def today(self, now: datetime | None = None) -> str:
         now = now or datetime.now(UTC)
@@ -82,18 +88,21 @@ class SecretaryService:
             target_date, time.max, tzinfo=self.display_timezone
         ).astimezone(UTC)
         tasks = await self.task_repo.list_active()
+        state = self.work_state_service.classify(tasks, now)
         due = [
             task
             for task in tasks
             if task.due_at and day_start <= task.due_at <= day_end
         ]
-        if target_date <= now.astimezone(self.display_timezone).date():
-            due = [
-                task
-                for task in tasks
-                if task.due_at and (task.due_at <= now or day_start <= task.due_at <= day_end)
-            ]
-        waiting = [task for task in tasks if task.status in {"waiting", "blocked"}]
+        local_today = now.astimezone(self.display_timezone).date()
+        is_today = target_date == local_today
+        if target_date <= local_today:
+            due = state.actionable_today
+        waiting = [
+            task
+            for task in [*state.waiting, *state.blocked]
+            if task.due_at and task.due_at <= day_end
+        ]
         reminders = [
             reminder
             for reminder in await self.reminder_repo.list_recent(limit=100)
@@ -121,16 +130,19 @@ class SecretaryService:
                 and not any(_meeting_duplicates_task(meeting, task) for task in due)
             ]
         conflicts = _schedule_conflicts(due, meetings, self.display_timezone)
-        heading = title or _day_label(target_date, now.astimezone(self.display_timezone).date()).capitalize()
+        heading = title or _day_label(target_date, local_today).capitalize()
         lines = [f"{heading} - {_weekday_label(target_date)}, {target_date:%d/%m/%Y}"]
+        visible_due = due[:5]
         if due:
             lines.append("")
             lines.append("Cần làm")
-            lines.extend(_agenda_task_lines(due, display_timezone=self.display_timezone))
+            lines.extend(_agenda_task_lines(visible_due, display_timezone=self.display_timezone))
+            if len(due) > len(visible_due):
+                lines.append(f"Còn {len(due) - len(visible_due)} task cần làm khác.")
         else:
             lines.append("")
             lines.append("Cần làm")
-            lines.append(f"Không có task nào đến hạn {_day_label(target_date, now.astimezone(self.display_timezone).date())}.")
+            lines.append(f"Không có task nào đến hạn {_day_label(target_date, local_today)}.")
         if reminders:
             lines.append("")
             lines.append("Nhắc nhở")
@@ -144,18 +156,22 @@ class SecretaryService:
             lines.extend(f"- {conflict}" for conflict in conflicts)
         if waiting:
             lines.append("")
-            lines.append("Đang chờ hoặc bị chặn")
-            lines.extend(_agenda_task_lines(waiting, display_timezone=self.display_timezone))
-        if not due and not reminders and not meetings:
+            lines.append("Đang chờ có hạn")
+            lines.extend(_agenda_task_lines(waiting[:3], display_timezone=self.display_timezone))
+        if is_today and not due and not reminders and not meetings:
             upcoming = sorted(
-                [task for task in tasks if task.due_at and task.due_at > day_end],
+                [
+                    task
+                    for task in state.upcoming
+                    if task.due_at and task.due_at <= now + timedelta(hours=48)
+                ],
                 key=lambda item: item.due_at,
             )
             if upcoming:
                 lines.extend(
                     [
                         "",
-                        "Tiếp theo",
+                        "Mốc tiếp theo trong 48 giờ",
                         f"- {upcoming[0].title} · {_format_due(upcoming[0].due_at, self.display_timezone)}",
                     ]
                 )
@@ -164,26 +180,37 @@ class SecretaryService:
     async def work_dashboard(self, now: datetime | None = None) -> str:
         now = now or datetime.now(UTC)
         tasks = await self.task_repo.list_active()
-        top = await self._top_priority_tasks(tasks, now, limit=5)
-        overdue = [task for task in tasks if task.due_at and task.due_at < now]
-        waiting = [task for task in tasks if str(task.status) in {"waiting", "blocked"}]
+        state = self.work_state_service.classify(tasks, now)
         commitments = await self.commitment_repo.list_open() if self.commitment_repo else []
-        lines = ["Work dashboard"]
+        lines = ["Công việc"]
         lines.append(
-            f"Tổng quan: {len(tasks)} task mở, {len(overdue)} quá hạn, {len(waiting)} đang chờ/bị chặn, {len(commitments)} commitment mở."
+            f"{state.open_loop_count} task mở · {len(state.overdue)} quá hạn · "
+            f"{len(state.waiting) + len(state.blocked)} đang chờ/bị chặn · {len(commitments)} commitment mở."
         )
-        lines.extend(["", "Top priorities"])
-        lines.extend(_scored_task_lines(top, self.display_timezone) if top else ["Không có task mở."])
-        lines.extend(["", "Overdue"])
-        lines.extend(_task_lines(overdue[:5], self.display_timezone) if overdue else ["Không có task quá hạn."])
-        lines.extend(["", "Waiting on people"])
+        next_actions = state.next_actions[:5]
+        next_action_ids = _ranked_task_ids(next_actions)
+        lines.extend(["", "Nên xử lý tiếp"])
+        lines.extend(
+            _ranked_task_lines(next_actions, self.display_timezone, state.local_today)
+            if next_actions
+            else ["Không có việc nào cần ưu tiên ngay."]
+        )
+        overdue_other = _tasks_excluding(state.overdue, next_action_ids)
+        lines.extend(["", "Quá hạn"])
+        lines.extend(
+            _task_lines(overdue_other[:5], self.display_timezone)
+            if overdue_other
+            else ["Không có task quá hạn khác."]
+        )
+        lines.extend(["", "Đang chờ/bị chặn"])
+        waiting = [*state.waiting, *state.blocked]
         lines.extend(_task_lines(waiting[:5], self.display_timezone) if waiting else ["Không có task đang chờ hoặc bị chặn."])
-        lines.extend(["", "Commitments"])
+        lines.extend(["", "Cam kết"])
         lines.extend(_commitment_lines(commitments[:5], self.display_timezone) if commitments else ["Không có commitment đang mở."])
-        lines.extend(["", "Quick actions"])
-        lines.append("- /tasks để thao tác nhanh với task")
-        lines.append("- /reminders để thao tác nhanh với reminder")
-        lines.append("- /prep <person/project> trước cuộc họp")
+        lines.extend(["", "Hành động nhanh"])
+        lines.append("- Mở Task để đánh dấu xong, đổi hạn hoặc đổi ưu tiên.")
+        lines.append("- Mở Đang chờ khi anh muốn follow-up người khác.")
+        lines.append("- Dùng /prep <người hoặc dự án> trước cuộc họp.")
         return "\n".join(lines)
 
     async def tasks(self) -> str:
@@ -323,25 +350,11 @@ class SecretaryService:
         normalized = source_view.removeprefix("query_")
         tasks = await self.task_repo.list_active()
         if normalized == "briefing":
-            top = await self._top_priority_tasks(tasks, now, limit=3)
-            return [task.id for task, _score, _reasons in top]
+            state = self.work_state_service.classify(tasks, now)
+            return [item.task.id for item in state.next_actions[:3]]
         if normalized in {"today", "todays"}:
-            local_today = now.astimezone(self.display_timezone).date()
-            day_start = datetime.combine(
-                local_today, time.min, tzinfo=self.display_timezone
-            ).astimezone(UTC)
-            day_end = datetime.combine(
-                local_today, time.max, tzinfo=self.display_timezone
-            ).astimezone(UTC)
-            due = [
-                task
-                for task in tasks
-                if task.due_at and (task.due_at <= now or day_start <= task.due_at <= day_end)
-            ]
-            waiting = [
-                task for task in tasks if str(task.status) in {"waiting", "blocked"}
-            ]
-            return list(dict.fromkeys([task.id for task in [*due, *waiting]]))
+            state = self.work_state_service.classify(tasks, now)
+            return [task.id for task in state.actionable_today[:5]]
         if normalized == "tasks":
             return [task.id for task in tasks[:5]]
         return []
@@ -396,16 +409,22 @@ class SecretaryService:
         day_start = datetime.combine(local_now.date(), time.min, tzinfo=self.display_timezone).astimezone(UTC)
         day_end = datetime.combine(local_now.date(), time.max, tzinfo=self.display_timezone).astimezone(UTC)
         tasks = await self.task_repo.list_active()
-        top = await self._top_priority_tasks(tasks, now, limit=3)
-        overdue = [task for task in tasks if task.due_at and task.due_at < day_start]
-        due_today = [task for task in tasks if task.due_at and day_start <= task.due_at <= day_end]
+        state = self.work_state_service.classify(tasks, now)
+        overdue = state.overdue
+        due_today = state.due_today
+        action_items = state.next_actions[:3]
+        action_item_ids = _ranked_task_ids(action_items)
+        signal_overdue = _tasks_excluding(overdue, action_item_ids)
+        signal_due_today = _tasks_excluding(due_today, action_item_ids)
         upcoming_top = [
             task
-            for task, _score, _reasons in top
-            if task.due_at and task.due_at > day_end
-        ]
-        undated_priority = [task for task in tasks if task.due_at is None][:5]
-        waiting = [task for task in tasks if task.status in {"waiting", "blocked"}]
+            for task in state.upcoming
+            if task.due_at
+            and task.due_at <= now + timedelta(days=1)
+            and task.id not in action_item_ids
+        ][:3]
+        undated_priority = state.unscheduled[:5]
+        waiting = [*state.waiting, *state.blocked]
         reminders = [
             reminder
             for reminder in await self.reminder_repo.list_recent(limit=100)
@@ -429,41 +448,56 @@ class SecretaryService:
             for item in commitments
             if item.due_at is not None and item.due_at <= day_end
         ]
+        goal_memories = await self._goal_memories()
         lines = [f"Briefing hôm nay - {local_now.date():%d/%m/%Y}", ""]
         lines.append("Nhận định")
         lines.append(
-            _briefing_assessment(
+            briefing_assessment(
                 overdue=overdue,
                 due_today=due_today,
                 meetings=meetings,
                 waiting=waiting,
                 overdue_followups=overdue_followups,
                 due_commitments=due_commitments,
+                action_items=action_items,
+                routine_count=len(routines := _tasks_excluding(state.routine_today, action_item_ids)),
+                undated_count=len(undated_priority),
                 display_timezone=self.display_timezone,
                 reference_date=local_now.date(),
             )
         )
         lines.extend(["", "Điểm cần chú ý"])
-        signals = _briefing_signals(
-            overdue=overdue,
-            due_today=due_today,
+        signals = briefing_signals(
+            overdue=signal_overdue,
+            due_today=signal_due_today,
             reminders=reminders,
             meetings=meetings,
             waiting=waiting,
             overdue_followups=overdue_followups,
             due_commitments=due_commitments,
             upcoming_top=upcoming_top,
+            collision_tasks=due_today,
+            action_items=action_items,
+            goals=goal_memories,
             display_timezone=self.display_timezone,
             reference_date=local_now.date(),
         )
         lines.extend(signals or ["- Chưa thấy deadline, meeting hay open loop cấp bách hôm nay."])
-        lines.extend(["", "Nên làm tiếp"])
-        if top:
+        if waiting:
+            lines.extend(["", "Việc đang chờ"])
             lines.extend(
-                _briefing_action_lines(
-                    top, self.display_timezone, reference_date=local_now.date()
-                )
+                f"- {task.title}{_task_recurrence_badge(task)} - {_waiting_action_label(task)}"
+                for task in waiting[:3]
             )
+        if routines:
+            lines.extend(["", "Routine hôm nay"])
+            lines.extend(
+                f"- {task.title}{_task_recurrence_badge(task)} - giữ nhịp nếu còn năng lượng."
+                for task in routines[:3]
+            )
+        lines.extend(["", "Nên làm tiếp"])
+        if action_items:
+            lines.extend(_ranked_task_lines(action_items, self.display_timezone, local_now.date()))
         elif meetings:
             lines.append(f"1. Chuẩn bị trước cho meeting “{meetings[0].title}”.")
         elif followups:
@@ -668,6 +702,18 @@ class SecretaryService:
         lines.append("")
         lines.append(f"Tổng quan: {len(tasks)} task, {len(commitments)} commitment, {len(followups)} follow-up, {len(meetings)} meeting, {len(memories)} memory.")
         lines.append("")
+        lines.append("Project health")
+        lines.extend(
+            self.project_health_service.health_lines(
+                project=project,
+                tasks=tasks,
+                commitments=commitments,
+                followups=followups,
+                memories=memories,
+                now=datetime.now(UTC),
+            )
+        )
+        lines.append("")
         lines.append("Task đang mở")
         lines.extend(_task_lines(tasks, self.display_timezone, note_map) if tasks else ["Không có task đang mở."])
         lines.append("")
@@ -783,9 +829,29 @@ class SecretaryService:
         overdue = [task for task in active if task.due_at and task.due_at < now]
         top = await self._top_priority_tasks(active, now, limit=5)
         projects = await self.project_repo.list_all()
+        children_by_parent: dict[str, list] = defaultdict(list)
+        for project in projects:
+            if project.parent_project_id:
+                children_by_parent[project.parent_project_id].append(project)
+        active_container_ids = {
+            parent_id
+            for parent_id, children in children_by_parent.items()
+            if any(str(child.status) == ProjectStatus.ACTIVE.value for child in children)
+        }
         task_project_ids = {task.project_id for task in active if task.project_id}
         projects_without_next_action = [
-            project for project in projects if str(project.status) == "active" and project.id not in task_project_ids
+            project
+            for project in projects
+            if str(project.status) == ProjectStatus.ACTIVE.value
+            and project.project_type
+            in {
+                ProjectType.PRODUCT,
+                ProjectType.INITIATIVE,
+                ProjectType.CLIENT_PROJECT,
+                ProjectType.INDEPENDENT_PROJECT,
+            }
+            and project.id not in active_container_ids
+            and not _project_has_task_in_tree(project.id, children_by_parent, task_project_ids)
         ]
         lines = [f"Weekly review - tuần kết thúc {local_now.date():%d/%m/%Y}"]
         lines.append("")
@@ -839,6 +905,7 @@ class SecretaryService:
         self,
         now: datetime | None = None,
         stale_followup_days: int = 3,
+        predeadline_warning_hours: int = 0,
     ) -> list[tuple[str, str, str]]:
         now = now or datetime.now(UTC)
         local_now = now.astimezone(self.display_timezone)
@@ -852,6 +919,18 @@ class SecretaryService:
                         "task",
                         task.id,
                         f"Task quá hạn: {task.title}\nHạn: {_format_due(task.due_at, self.display_timezone)}",
+                    )
+                )
+            elif (
+                predeadline_warning_hours > 0
+                and task.due_at
+                and task.due_at <= now + timedelta(hours=predeadline_warning_hours)
+            ):
+                nudges.append(
+                    (
+                        "task_deadline_warning",
+                        task.id,
+                        f"Task sắp đến hạn: {task.title}\nHạn: {_format_due(task.due_at, self.display_timezone)}",
                     )
                 )
         stale_before = now - timedelta(days=stale_followup_days)
@@ -942,125 +1021,6 @@ class SecretaryService:
         ]
 
 
-def _briefing_assessment(
-    *,
-    overdue,
-    due_today,
-    meetings,
-    waiting,
-    overdue_followups,
-    due_commitments,
-    display_timezone: tzinfo,
-    reference_date=None,
-) -> str:
-    pressure = (
-        len(overdue) * 3
-        + len(overdue_followups) * 2
-        + len(due_commitments) * 2
-        + len(due_today)
-        + len(meetings)
-        + len(waiting)
-    )
-    if pressure == 0:
-        return (
-            "Hôm nay chưa có áp lực bắt buộc trong hệ thống. Đây là khoảng trống tốt để "
-            "chọn một ưu tiên chủ động thay vì chỉ phản ứng theo deadline."
-        )
-    if overdue or overdue_followups or due_commitments:
-        overdue_names = _task_title_list(overdue)
-        if overdue_names:
-            return (
-                f"Rủi ro lớn nhất là {overdue_names} đã quá hạn. Nên xử lý hoặc chốt lại "
-                "cam kết trước khi mở thêm việc mới."
-            )
-        return (
-            "Ngày có rủi ro trễ cam kết. Nên xử lý phần đã quá hạn hoặc liên quan người khác "
-            "trước khi mở thêm việc mới."
-        )
-    if len(due_today) >= 2:
-        task_names = _task_title_list(due_today)
-        return (
-            f"Các deadline hôm nay là {task_names}. Em chưa biết mỗi việc tốn bao lâu, "
-            "nên anh chọn thứ tự và chừa buffer nha."
-        )
-    if len(due_today) == 1:
-        task = due_today[0]
-        return (
-            f"Việc cần chốt hôm nay là “{task.title}”, hạn "
-            f"{_format_due(task.due_at, display_timezone, reference_date)}. Khối lượng hiện vẫn ở mức "
-            "kiểm soát được nếu anh bảo vệ thời gian cho việc này."
-        )
-    if pressure >= 5:
-        return (
-            "Khối lượng hôm nay tương đối dày. Nên khóa một việc quan trọng trước, rồi mới "
-            "chuyển sang meeting và các việc nhỏ."
-        )
-    return (
-        "Khối lượng hôm nay ở mức kiểm soát được. Chọn một kết quả chính và bảo vệ thời gian "
-        "để hoàn thành nó."
-    )
-
-
-def _briefing_signals(
-    *,
-    overdue,
-    due_today,
-    reminders,
-    meetings,
-    waiting,
-    overdue_followups,
-    due_commitments,
-    upcoming_top,
-    display_timezone: tzinfo,
-    reference_date=None,
-) -> list[str]:
-    signals: list[str] = []
-    if overdue:
-        signals.append(
-            f"- Quá hạn: {_task_title_list(overdue)}."
-        )
-    if overdue_followups:
-        signals.append(f"- {len(overdue_followups)} follow-up đã qua hạn, dễ làm đứt mạch phối hợp.")
-    if due_commitments:
-        signals.append(f"- {len(due_commitments)} cam kết đến hạn hoặc đã trễ, nên phản hồi sớm.")
-    if due_today:
-        signals.append(
-            f"- Hôm nay: {_task_due_list(due_today, display_timezone, reference_date)}."
-        )
-    if upcoming_top:
-        signals.append(
-            f"- Sắp tới: {_task_due_list(upcoming_top, display_timezone, reference_date)}."
-        )
-    if meetings:
-        first = min(
-            meetings,
-            key=lambda item: item.starts_at or datetime.max.replace(tzinfo=UTC),
-        )
-        signals.append(
-            f"- {len(meetings)} meeting; lịch gần nhất là “{first.title}” lúc "
-            f"{_format_time(first.starts_at, display_timezone)}."
-        )
-    if reminders:
-        signals.append(f"- {len(reminders)} lời nhắc sẽ đến trong ngày.")
-    if waiting:
-        signals.append(f"- {len(waiting)} task đang chờ hoặc bị chặn; cần quyết định có thúc đẩy không.")
-    return signals
-
-
-def _task_title_list(tasks) -> str:
-    titles = [f"“{task.title}”" for task in tasks]
-    if len(titles) <= 1:
-        return titles[0] if titles else ""
-    return ", ".join(titles[:-1]) + f" và {titles[-1]}"
-
-
-def _task_due_list(tasks, display_timezone: tzinfo, reference_date=None) -> str:
-    return "; ".join(
-        f"“{task.title}” hạn {_format_due(task.due_at, display_timezone, reference_date)}"
-        for task in tasks
-    )
-
-
 def _briefing_action_lines(
     scored_tasks, display_timezone: tzinfo, reference_date=None
 ) -> list[str]:
@@ -1072,6 +1032,37 @@ def _briefing_action_lines(
             f"{index}. {task.title}{_task_recurrence_badge(task)} — {reason}; hạn {due}."
         )
     return lines
+
+
+def _ranked_task_lines(
+    ranked_tasks, display_timezone: tzinfo, reference_date=None
+) -> list[str]:
+    lines: list[str] = []
+    for index, item in enumerate(ranked_tasks, 1):
+        task = item.task
+        due = _format_due(task.due_at, display_timezone, reference_date)
+        lines.append(
+            f"{index}. {task.title}{_task_recurrence_badge(task)} - {item.reason}; hạn {due}."
+        )
+    return lines
+
+
+def _ranked_task_ids(ranked_tasks) -> set[str]:
+    return {
+        item.task.id
+        for item in ranked_tasks
+        if getattr(getattr(item, "task", None), "id", None)
+    }
+
+
+def _tasks_excluding(tasks, excluded_ids: set[str]) -> list:
+    return [task for task in tasks if getattr(task, "id", None) not in excluded_ids]
+
+
+def _waiting_action_label(task) -> str:
+    if str(task.status) == "blocked":
+        return "cần quyết định cách gỡ chặn, chưa nên xem là việc làm ngay"
+    return "đang chờ người khác, chỉ cần follow-up nếu đã đến hạn"
 
 
 def _briefing_reason(reasons: list[str]) -> str:
@@ -1132,18 +1123,33 @@ def _agenda_task_lines(tasks, display_timezone: tzinfo = UTC) -> list[str]:
 
 def _scored_task_lines(scored_tasks, display_timezone: tzinfo = UTC) -> list[str]:
     lines: list[str] = []
-    for index, (task, score, reasons) in enumerate(scored_tasks, 1):
+    for index, (task, _score, reasons) in enumerate(scored_tasks, 1):
         lines.append(f"{index}. {task.title}{_task_recurrence_badge(task)}")
         lines.append(
-            f"   Score: {score} | Lý do: {', '.join(reasons)} | Hạn: {_format_due(task.due_at, display_timezone)}"
+            f"   Lý do: {_briefing_reason(reasons)} | Hạn: {_format_due(task.due_at, display_timezone)}"
         )
     return lines
 
 
 def _task_recurrence_badge(task) -> str:
-    labels = {"daily": "Hằng ngày", "weekly": "Hằng tuần"}
-    label = labels.get(task.recurrence_rule)
+    label = _recurrence_label(task.recurrence_rule)
     return f" · 🔁 {label}" if label else ""
+
+
+def _recurrence_label(rule: str | None) -> str | None:
+    if rule is None:
+        return None
+    labels = {"daily": "Hằng ngày", "weekly": "Hằng tuần"}
+    if rule in labels:
+        return labels[rule]
+    if rule.startswith("weekly:"):
+        return "Hằng tuần"
+    match = re.fullmatch(r"interval:(\d+)([dw])", rule)
+    if match:
+        count = int(match.group(1))
+        unit = "ngày" if match.group(2) == "d" else "tuần"
+        return f"Mỗi {count} {unit}"
+    return None
 
 
 def _format_time(value: datetime | None, display_timezone: tzinfo) -> str:
@@ -1283,6 +1289,19 @@ def _next_dated_task(tasks):
     if not dated:
         return None
     return min(dated, key=lambda task: task.due_at)
+
+
+def _project_has_task_in_tree(
+    project_id: str,
+    children_by_parent: dict[str, list],
+    task_project_ids: set[str],
+) -> bool:
+    if project_id in task_project_ids:
+        return True
+    return any(
+        _project_has_task_in_tree(child.id, children_by_parent, task_project_ids)
+        for child in children_by_parent.get(project_id, [])
+    )
 
 
 def _day_label(value: date, today: date) -> str:

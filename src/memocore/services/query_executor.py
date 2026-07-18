@@ -5,6 +5,7 @@ from datetime import datetime
 
 from memocore.services.conversation_executor import ExecutorResult
 from memocore.services.secretary_service import SecretaryService
+from memocore.services.timeline_query_service import TimelineQueryService
 
 
 AsyncText = Callable[[], Awaitable[str]]
@@ -19,10 +20,16 @@ class QueryExecutor:
         "query_tasks_due", "query_task_recurrence", "query_reminders",
         "query_projects", "query_people", "query_commitments", "query_context",
         "query_meeting_prep", "query_memory", "query_profile",
+        "query_search", "query_timeline", "query_origin", "query_decisions",
     }
 
-    def __init__(self, secretary_service: SecretaryService):
+    def __init__(
+        self,
+        secretary_service: SecretaryService,
+        timeline_query_service: TimelineQueryService | None = None,
+    ):
         self.secretary_service = secretary_service
+        self.timeline_query_service = timeline_query_service
 
     async def execute(
         self,
@@ -79,6 +86,19 @@ class QueryExecutor:
                 reply = await self.secretary_service.meeting_prep(context_query)
         elif intent == "query_memory":
             reply = await self.secretary_service.memories(bucket=memory_bucket)
+        elif intent in {"query_search", "query_timeline", "query_origin", "query_decisions"}:
+            if self.timeline_query_service is None:
+                reply = "Dạ, phần search/timeline chưa sẵn sàng trong runtime này."
+            elif not context_query:
+                reply = "Anh muốn tra gì? Ví dụ: /search MemoCore tuần trước."
+            elif intent == "query_origin":
+                reply = await self.timeline_query_service.why(context_query)
+            elif intent == "query_decisions":
+                reply = await self.timeline_query_service.decisions(context_query)
+            elif intent == "query_timeline":
+                reply = await self.timeline_query_service.timeline(context_query)
+            else:
+                reply = await self.timeline_query_service.answer(context_query)
         else:
             return None
         return ExecutorResult(intent, reply)

@@ -18,8 +18,10 @@ from memocore.domain.models import (
     ChatContext,
     ClarificationRequest,
     EventType,
+    FeedbackSignal,
     Note,
     Reminder,
+    ReminderStatus,
     Task,
     TaskStatus,
 )
@@ -27,7 +29,6 @@ from memocore.domain.schemas import CaptureRequest, CaptureResponse
 from memocore.services.capture_service import CaptureService
 from memocore.services.clarification_service import parse_clarification_datetime
 from memocore.services.event_service import EventService
-from memocore.services.feedback_log import write_feedback_signal
 from memocore.services.memory_service import MemoryService
 from memocore.services.secretary_service import SecretaryService
 from memocore.services.intent_classifier_service import IntentClassifierService
@@ -67,9 +68,11 @@ from memocore.services.task_reference_resolver import (
     TaskSelectionSource,
 )
 from memocore.services.query_executor import QueryExecutor
+from memocore.services.timeline_query_service import TimelineQueryService
 from memocore.services.task_mutation_executor import TaskMutationExecutor
 from memocore.services.memory_lifecycle_executor import MemoryLifecycleExecutor
 from memocore.services.clarification_workflow import ClarificationWorkflow
+from memocore.services.commitment_lifecycle_service import CommitmentLifecycleService
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,8 @@ class ConversationService:
         clarification_workflow: ClarificationWorkflow | None = None,
         conversation_frame_builder: ConversationFrameBuilder | None = None,
         task_reference_resolver: TaskReferenceResolver | None = None,
+        timeline_query_service: TimelineQueryService | None = None,
+        commitment_lifecycle_service: CommitmentLifecycleService | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ):
         self.capture_service = capture_service
@@ -158,7 +163,10 @@ class ConversationService:
         )
         self.conversation_executor = conversation_executor or ConversationExecutor()
         self.conversation_composer = conversation_composer or ConversationComposer()
-        self.query_executor = query_executor or QueryExecutor(secretary_service)
+        self.query_executor = query_executor or QueryExecutor(
+            secretary_service, timeline_query_service
+        )
+        self.commitment_lifecycle_service = commitment_lifecycle_service
         self.task_mutation_executor = task_mutation_executor or TaskMutationExecutor()
         self.memory_lifecycle_executor = (
             memory_lifecycle_executor or MemoryLifecycleExecutor()
@@ -228,6 +236,8 @@ class ConversationService:
                 return "query_context"
             if command == "prep":
                 return "query_meeting_prep"
+            if command == "search":
+                return "query_search"
             if command == "waiting":
                 return "query_tasks"
 
@@ -276,11 +286,26 @@ class ConversationService:
         if _is_task_recurrence_update(normalized):
             return "update_task_recurrence"
 
+        if _is_reminder_snooze(normalized):
+            return "snooze_reminder"
+
         if _is_task_recurrence_query(normalized):
             return "query_task_recurrence"
 
         if _is_daily_schedule_query(normalized):
             return "query_task_recurrence"
+
+        if _is_origin_query(normalized):
+            return "query_origin"
+
+        if _is_decision_timeline_query(normalized):
+            return "query_decisions"
+
+        if _is_timeline_query(normalized):
+            return "query_timeline"
+
+        if _is_search_query(normalized):
+            return "query_search"
 
         if _is_task_completion(normalized):
             return "mark_task_done"
@@ -431,6 +456,19 @@ class ConversationService:
             if self.reference_resolver is not None
             else ResolvedReference()
         )
+        if self.commitment_lifecycle_service is not None:
+            lifecycle = await self.commitment_lifecycle_service.handle_text(
+                request.raw_text,
+                source_chat_id=request.source_chat_id,
+                source_message_id=request.source_message_id,
+                now=turn.now_utc,
+            )
+            if lifecycle.handled:
+                return ConversationResult(
+                    intent="close_open_loop",
+                    reply=lifecycle.reply,
+                    result_entity_ids=lifecycle.entity_ids,
+                )
         # Check for task rename request before any other routing/classification
         rename_info = _parse_task_rename(request.raw_text)
         if rename_info:
@@ -462,7 +500,6 @@ class ConversationService:
             conversation_context=frame.prompt_context(),
         )
         intent = decision.intent
-        confidence = decision.confidence
         ambiguity_detected = decision.ambiguity_detected
         clarification_question = decision.clarification_question
         target_entity_hints = decision.target_entity_hints
@@ -669,7 +706,9 @@ class ConversationService:
                 "create_task_check_reminder": lambda: self._create_task_check_reminder(
                     request.raw_text, note.id, turn.now_utc
                 ),
-                "delete_all_tasks": lambda: self._delete_all_tasks(request.raw_text),
+                "delete_all_tasks": lambda: self._delete_all_tasks(
+                    request.raw_text, note.id
+                ),
                 "cancel_task": lambda: self._cancel_task(
                     request.raw_text, note.id, request, turn.now_utc
                 ),
@@ -691,6 +730,11 @@ class ConversationService:
                     request,
                     target_entity_hints,
                     ambiguity_detected,
+                    turn.now_utc,
+                ),
+                "snooze_reminder": lambda: self._snooze_reminder(
+                    request.raw_text,
+                    request,
                     turn.now_utc,
                 ),
             },
@@ -1148,7 +1192,7 @@ class ConversationService:
         )
         return created
 
-    async def _delete_all_tasks(self, raw_text: str) -> str:
+    async def _delete_all_tasks(self, raw_text: str, note_id: str) -> str:
         if not _is_delete_all_tasks(_normalize_text(raw_text)):
             return _localized(
                 raw_text,
@@ -1157,12 +1201,9 @@ class ConversationService:
             )
         active_tasks = await self.task_repo.list_active()
         for task in active_tasks:
-            await self.task_repo.update_status(task.id, TaskStatus.CANCELLED.value)
-            await self.event_service.append_event(
-                EventType.USER_FEEDBACK_RECORDED,
-                "task",
+            await self.task_operation_service.cancel(
                 task.id,
-                {"pattern": raw_text, "action": "bulk_cancel_task"},
+                source_note_id=note_id,
             )
         return _localized(
             raw_text,
@@ -1374,16 +1415,9 @@ class ConversationService:
                 )
             return question
         task = selection.tasks[0]
-        await self.task_repo.update_status(task.id, TaskStatus.CANCELLED.value)
-        await self.event_service.append_event(
-            EventType.USER_FEEDBACK_RECORDED,
-            "task",
+        await self.task_operation_service.cancel(
             task.id,
-            {
-                "source_note_id": note_id,
-                "pattern": raw_text,
-                "action": "cancel_task",
-            },
+            source_note_id=note_id,
         )
         return f"Đã bỏ task: {task.title}."
 
@@ -1463,7 +1497,10 @@ class ConversationService:
         async with self.task_repo.database.transaction():
             await self.task_repo.create(merged)
             for task in selected:
-                await self.task_repo.update_status(task.id, TaskStatus.CANCELLED.value)
+                await self.task_operation_service.cancel(
+                    task.id,
+                    source_note_id=note_id,
+                )
             reconciler = self.task_operation_service.activity_reconciliation_service
             if reconciler is not None:
                 await reconciler.transfer_task_links(
@@ -1921,6 +1958,113 @@ class ConversationService:
             f"Updated deadline: {task.title} -> {formatted_due}",
         )
 
+    async def _snooze_reminder(
+        self,
+        raw_text: str,
+        request: CaptureRequest,
+        now_utc: datetime | None = None,
+    ) -> str:
+        remind_at = _extract_snooze_at(
+            raw_text,
+            self.secretary_service.display_timezone,
+            now=now_utc,
+        )
+        if remind_at is None:
+            return _localized(
+                raw_text,
+                "Em hiểu là anh muốn nhắc lại, nhưng chưa đọc được mốc mới. Anh nói kiểu 'chiều mai', 'mai 9h' hoặc '2 tiếng sau' giúp em nha.",
+                "I understand you want to snooze a reminder, but I could not read the new time.",
+            )
+        reminder = await self._resolve_reminder_for_snooze(raw_text)
+        if reminder is None:
+            return _localized(
+                raw_text,
+                "Em chưa tìm thấy reminder khớp để nhắc lại. Anh nói rõ tên reminder cần dời giúp em nha.",
+                "I could not find a matching reminder to snooze.",
+            )
+        before = {
+            "title": reminder.title,
+            "status": str(reminder.status),
+            "remind_at": reminder.remind_at.isoformat() if reminder.remind_at else None,
+        }
+        await self.secretary_service.reminder_repo.update_schedule(
+            reminder.id,
+            remind_at,
+            ReminderStatus.SCHEDULED,
+        )
+        after_reminder = await self.secretary_service.reminder_repo.get_by_id(reminder.id)
+        after = {
+            "title": after_reminder.title if after_reminder else reminder.title,
+            "status": str(after_reminder.status if after_reminder else ReminderStatus.SCHEDULED),
+            "remind_at": (
+                after_reminder.remind_at.isoformat()
+                if after_reminder and after_reminder.remind_at
+                else remind_at.isoformat()
+            ),
+        }
+        await self.event_service.append_event(
+            EventType.WORK_ITEM_CHANGED,
+            "reminder",
+            reminder.id,
+            {
+                "action": "snooze_reminder",
+                "before": before,
+                "after": after,
+                "source_chat_id": request.source_chat_id,
+                "source_message_id": request.source_message_id,
+            },
+            created_at=now_utc,
+        )
+        formatted = _format_local_datetime(remind_at, self.secretary_service.display_timezone)
+        return _localized(
+            raw_text,
+            f"Đã dời reminder '{reminder.title}' sang {formatted}.",
+            f"Snoozed reminder '{reminder.title}' to {formatted}.",
+        )
+
+    async def _resolve_reminder_for_snooze(self, raw_text: str) -> Reminder | None:
+        query = _reminder_snooze_query(raw_text)
+        reminders = [
+            reminder
+            for reminder in await self.secretary_service.reminder_repo.list_all()
+            if str(reminder.status) in {
+                ReminderStatus.CANDIDATE.value,
+                ReminderStatus.SCHEDULED.value,
+                ReminderStatus.SENT.value,
+                "candidate",
+                "scheduled",
+                "sent",
+            }
+        ]
+        if not reminders:
+            return None
+        if query:
+            matches = [
+                reminder
+                for reminder in reminders
+                if _is_strong_match(query, reminder.title)
+                or _token_overlap_score(query, reminder.title) >= 0.5
+            ]
+            if matches:
+                matches.sort(
+                    key=lambda item: (
+                        item.remind_at or item.updated_at,
+                        item.updated_at,
+                    ),
+                    reverse=True,
+                )
+                return matches[0]
+        if _has_contextual_snooze_reference(_normalize_text(raw_text)):
+            reminders.sort(
+                key=lambda item: (
+                    item.remind_at or item.updated_at,
+                    item.updated_at,
+                ),
+                reverse=True,
+            )
+            return reminders[0]
+        return None
+
     async def _record_task_completion(
         self,
         task: Task | None,
@@ -2071,20 +2215,23 @@ class ConversationService:
             tasks = await self.task_repo.list_recent_active(limit=3)
             if len(tasks) == 1:
                 task = tasks[0]
-                await self.task_repo.update_status(task.id, TaskStatus.CANCELLED.value)
+                await self.task_operation_service.cancel(
+                    task.id,
+                    source_note_id=note_id,
+                )
                 await self.event_service.append_event(
                     EventType.NOTE_PROCESSED,
                     "note",
                     note_id,
                     {"conversation_intent": "memory_correction", "cancelled_task_id": task.id},
                 )
-                await self.event_service.append_event(
-                    EventType.USER_FEEDBACK_RECORDED,
+                await self._record_correction_feedback(
                     "task",
                     task.id,
-                    {"pattern": raw_text, "action": "cancel_task"},
+                    note_id,
+                    request,
+                    "cancel_misclassified_task",
                 )
-                write_feedback_signal("correction_feedback", raw_text, {"cancelled_task_id": task.id, "title": task.title})
                 return _localized(
                     raw_text,
                     f"Đã hủy task gần nhất: {task.title}",
@@ -2114,13 +2261,13 @@ class ConversationService:
             if memories:
                 mem = memories[0]
                 await self.memory_service.reject(mem.id)
-                await self.event_service.append_event(
-                    EventType.USER_FEEDBACK_RECORDED,
+                await self._record_correction_feedback(
                     "memory_item",
                     mem.id,
-                    {"pattern": raw_text, "action": "reject_memory"},
+                    note_id,
+                    request,
+                    "reject_misclassified_memory",
                 )
-                write_feedback_signal("correction_feedback", raw_text, {"rejected_memory_id": mem.id, "content": mem.content})
                 return _localized(
                     raw_text,
                     f"Đã bỏ memory gần nhất: {mem.content}",
@@ -2147,13 +2294,13 @@ class ConversationService:
                 
             if target == "task":
                 await self.task_repo.update_status(task.id, TaskStatus.CANCELLED.value)
-                await self.event_service.append_event(
-                    EventType.USER_FEEDBACK_RECORDED,
+                await self._record_correction_feedback(
                     "task",
                     task.id,
-                    {"pattern": raw_text, "action": "cancel_task"},
+                    note_id,
+                    request,
+                    "undo_recent_task_capture",
                 )
-                write_feedback_signal("correction_feedback", raw_text, {"cancelled_task_id": task.id, "title": task.title})
                 return _localized(
                     raw_text,
                     f"Đã hủy task gần nhất: {task.title}",
@@ -2161,13 +2308,13 @@ class ConversationService:
                 )
             elif target == "memory":
                 await self.memory_service.reject(mem.id)
-                await self.event_service.append_event(
-                    EventType.USER_FEEDBACK_RECORDED,
+                await self._record_correction_feedback(
                     "memory_item",
                     mem.id,
-                    {"pattern": raw_text, "action": "reject_memory"},
+                    note_id,
+                    request,
+                    "undo_recent_memory_capture",
                 )
-                write_feedback_signal("correction_feedback", raw_text, {"rejected_memory_id": mem.id, "content": mem.content})
                 return _localized(
                     raw_text,
                     f"Đã bỏ memory gần nhất: {mem.content}",
@@ -2178,6 +2325,24 @@ class ConversationService:
             raw_text,
             "Em chưa đủ ngữ cảnh để sửa đúng mục. Anh nói rõ task hoặc memory nào cần sửa nha?",
             "I need a little more context. Which task or memory should I correct?",
+        )
+
+    async def _record_correction_feedback(
+        self,
+        artifact_type: str,
+        artifact_id: str,
+        note_id: str,
+        request: CaptureRequest,
+        action: str,
+    ) -> None:
+        await self.event_service.record_feedback(
+            FeedbackSignal.CORRECTION,
+            artifact_type,
+            artifact_id,
+            source_chat_id=request.source_chat_id,
+            source_message_id=request.source_message_id,
+            source_note_id=note_id,
+            action=action,
         )
 
 
@@ -2331,6 +2496,8 @@ def classify_intent(raw_text: str) -> str:
         return "update_task_priority"
     if _is_task_recurrence_update(normalized):
         return "update_task_recurrence"
+    if _is_reminder_snooze(normalized):
+        return "snooze_reminder"
     if _is_task_recurrence_query(normalized):
         return "query_task_recurrence"
     if _is_daily_schedule_query(normalized):
@@ -2367,6 +2534,14 @@ def classify_intent(raw_text: str) -> str:
         return "query_commitments"
     if _is_meeting_prep_query(normalized):
         return "query_meeting_prep"
+    if _is_origin_query(normalized):
+        return "query_origin"
+    if _is_decision_timeline_query(normalized):
+        return "query_decisions"
+    if _is_timeline_query(normalized):
+        return "query_timeline"
+    if _is_search_query(normalized):
+        return "query_search"
     if _is_context_query(normalized):
         return "query_context"
     if _is_reminder_query(normalized):
@@ -2485,6 +2660,53 @@ def _task_due_update_query(raw_text: str) -> str:
     return " ".join(query.split())
 
 
+def _reminder_snooze_query(raw_text: str) -> str:
+    query = _normalize_text(raw_text)
+    cleanup_patterns = (
+        r"\b\d{1,3}\s*(?:phut|tieng|gio|ngay|minute|minutes|hour|hours|day|days)\s*(?:sau)?\b",
+        r"\b\d{1,2}(?:h\d{0,2}|:\d{2})?\s*(?:am|pm)?\b",
+        r"\b(?:nhac|nhac lai|remind|reminder|snooze|doi|doi lich|doi gio|dời|defer|again)\b",
+        r"\b(?:lai|cho|giup|em|anh|vao|luc|sang|chieu|toi|trua|hom nay|ngay mai|mai|today|tomorrow|nay)\b",
+    )
+    for pattern in cleanup_patterns:
+        query = re.sub(pattern, " ", query)
+    return " ".join(query.split())
+
+
+def _extract_snooze_at(
+    raw_text: str,
+    display_timezone,
+    *,
+    now: datetime | None = None,
+) -> datetime | None:
+    normalized = _normalize_text(raw_text)
+    text = raw_text
+    has_clock = _parse_clock_time(normalized) is not None
+    has_relative = re.search(
+        r"\b\d{1,3}\s*(?:phut|tieng|gio|ngay|minute|minutes|hour|hours|day|days)\s*(?:sau)?\b",
+        normalized,
+    ) is not None
+    if not has_clock and not has_relative:
+        if any(marker in normalized for marker in ("chieu", "afternoon")):
+            text = f"{raw_text} 15h"
+        elif any(marker in normalized for marker in ("toi", "evening", "tonight")):
+            text = f"{raw_text} 19h"
+        elif any(marker in normalized for marker in ("trua", "noon")):
+            text = f"{raw_text} 12h"
+        elif any(marker in normalized for marker in ("sang", "morning")):
+            text = f"{raw_text} 9h"
+    local_now = (
+        now.astimezone(display_timezone)
+        if now is not None
+        else datetime.now(display_timezone)
+    )
+    return parse_clarification_datetime(
+        text,
+        now=local_now,
+        default_timezone=display_timezone,
+    )
+
+
 def _task_cancel_query(raw_text: str) -> str:
     query = _normalize_text(raw_text)
     query = re.sub(
@@ -2510,7 +2732,7 @@ def _task_recurrence_update_query(raw_text: str) -> str:
     query = _normalize_text(raw_text)
     query = re.sub(
         r"\b(?:cho|dat|doi|sua|cap nhat|task|viec|lap|dinh ky|recurring|"
-        r"hang ngay|hang tuan|moi ngay|moi tuan|daily|weekly)\b",
+        r"hang ngay|hang tuan|moi ngay|moi tuan|daily|weekly|every|ngay|tuan|day|days|week|weeks)\b",
         " ",
         query,
     )
@@ -2550,6 +2772,15 @@ def _task_number_reference(raw_text: str) -> int | None:
 
 def _requested_recurrence_rule(raw_text: str) -> str | None:
     normalized = _normalize_text(raw_text)
+    interval = re.search(
+        r"\b(?:moi|every)\s+(\d+)\s+(ngay|day|days|tuan|week|weeks)\b",
+        normalized,
+    )
+    if interval:
+        count = int(interval.group(1))
+        if count >= 1:
+            unit = interval.group(2)
+            return f"interval:{count}{'w' if unit in {'tuan', 'week', 'weeks'} else 'd'}"
     if any(value in normalized for value in ("hang ngay", "moi ngay", "daily")):
         return "daily"
     if any(value in normalized for value in ("hang tuan", "moi tuan", "weekly")):
@@ -2809,7 +3040,15 @@ def _priority_label(value: str) -> str:
 
 
 def _recurrence_label(value: str) -> str:
-    return {"daily": "hằng ngày", "weekly": "hằng tuần"}.get(value, value)
+    if value in {"daily", "weekly"}:
+        return {"daily": "hằng ngày", "weekly": "hằng tuần"}[value]
+    if value.startswith("weekly:"):
+        return "hằng tuần"
+    match = re.fullmatch(r"interval:(\d+)([dw])", value)
+    if match:
+        unit = "ngày" if match.group(2) == "d" else "tuần"
+        return f"mỗi {int(match.group(1))} {unit}"
+    return value
 
 
 def _extract_task_due_at(
@@ -2968,6 +3207,101 @@ def _is_today_query(normalized: str) -> bool:
 def _is_tomorrow_query(normalized: str) -> bool:
     return any(day in normalized for day in ("mai", "ngay mai", "tomorrow")) and any(
         signal in normalized for signal in ("can lam gi", "lich", "agenda", "viec gi", "thu may", "what")
+    )
+
+
+def _is_reminder_snooze(normalized: str) -> bool:
+    if not any(
+        signal in normalized
+        for signal in (
+            "nhac lai",
+            "doi lich nhac",
+            "doi gio nhac",
+            "dời lich nhac",
+            "snooze",
+            "remind me again",
+            "remind again",
+        )
+    ):
+        return False
+    return any(
+        signal in normalized
+        for signal in (
+            "mai",
+            "hom nay",
+            "toi nay",
+            "sang",
+            "chieu",
+            "toi",
+            "trua",
+            "phut sau",
+            "tieng sau",
+            "gio sau",
+            "ngay sau",
+            "tomorrow",
+            "today",
+            "hour",
+            "minute",
+            "day",
+        )
+    )
+
+
+def _has_contextual_snooze_reference(normalized: str) -> bool:
+    query = _reminder_snooze_query(normalized)
+    return not query or query in {"no", "nay", "do", "cai nay", "reminder nay"}
+
+
+def _is_search_query(normalized: str) -> bool:
+    return any(
+        signal in normalized
+        for signal in (
+            "tim kiem",
+            "tim lai",
+            "search",
+            "cho toi xem moi thu lien quan",
+            "tat ca lien quan",
+            "lien quan den",
+        )
+    )
+
+
+def _is_timeline_query(normalized: str) -> bool:
+    return any(
+        signal in normalized
+        for signal in (
+            "timeline",
+            "lich su",
+            "da thay doi",
+            "thay doi deadline",
+            "lan gan nhat",
+            "tuan truoc",
+            "thang nay",
+            "thang truoc",
+            "da noi gi ve",
+        )
+    )
+
+
+def _is_origin_query(normalized: str) -> bool:
+    return any(
+        signal in normalized
+        for signal in (
+            "vi sao",
+            "tai sao",
+            "why was",
+            "duoc tao vi",
+            "nguon goc",
+            "task nay duoc tao",
+            "cai nay duoc tao",
+        )
+    )
+
+
+def _is_decision_timeline_query(normalized: str) -> bool:
+    return "quyet dinh" in normalized and any(
+        signal in normalized
+        for signal in ("gi ve", "nao ve", "da quyet", "decision", "decisions")
     )
 
 
@@ -3311,7 +3645,6 @@ def _meaningful_tokens(value: str) -> set[str]:
         "an",
         "the",
         "a",
-        "an",
         "and",
         "done",
         "finished",
@@ -3331,6 +3664,15 @@ def _is_strong_match(query: str, title: str) -> bool:
     if not q_tokens or not t_tokens:
         return False
     return q_tokens.issubset(t_tokens)
+
+
+def _token_overlap_score(query: str, title: str) -> float:
+    q_tokens = _clean_task_name_query(query)
+    t_tokens = _clean_task_name_query(title)
+    if not q_tokens or not t_tokens:
+        return 0.0
+    overlap = q_tokens & t_tokens
+    return len(overlap) / max(1, min(len(q_tokens), len(t_tokens)))
 
 
 def _clean_task_name_query(text: str) -> set[str]:

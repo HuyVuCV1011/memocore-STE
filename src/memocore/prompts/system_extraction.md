@@ -18,7 +18,7 @@ The JSON object must have exactly these keys:
 - followups: list of follow-up actions involving another person
 - commitments: list of promises/obligations between the user and another person
 
-Task fields: title, description, priority (low/medium/high), due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), recurrence_rule (daily/weekly/null), duration_minutes (positive integer or null), confidence (0.0-1.0).
+Task fields: title, description, priority (low/medium/high), due_at (ISO 8601 or null), person_name (string or null), project_name (string or null), recurrence_rule (daily/weekly/weekly:<0-6>/interval:<N>d/interval:<N>w/null), duration_minutes (positive integer or null), confidence (0.0-1.0).
 Reminder fields: title, remind_at (ISO 8601 or null), confidence (0.0-1.0).
 Project fields: name, confidence (0.0-1.0).
 Memory fields: bucket, kind, content, person_name (string or null), project_name (string or null), confidence (0.0-1.0).
@@ -38,6 +38,7 @@ Classification rules:
 - "I need to" or "tôi cần" → create a task.
 - “đặt lịch”, “lên lịch”, or a future time followed by an action such as “hoàn thành” → create task(s), never mark an existing task done.
 - A multiline schedule/checklist creates one task per bullet. Preserve relative dates per bullet: “tối nay” is today, “tối mai” is tomorrow, and “tối ngày mốt” is two days after today.
+- Interval recurrence must stay structured: “mỗi 2 ngày” -> `interval:2d`; “every 3 weeks” -> `interval:3w`.
 - A meeting, call, "họp", or "gặp" with explicit evidence → create a meeting. Also create a reminder only if the user asks to be reminded.
 - Only create a project if the note explicitly names one.
 - Only create a person when a specific person name is explicitly present. Do not create people from vague roles like client, customer, partner, boss, team, someone, or "khách hàng".

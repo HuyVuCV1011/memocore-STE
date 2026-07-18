@@ -1,17 +1,28 @@
 from datetime import UTC, datetime, timedelta
+import json
 
 from memocore.domain.models import (
     ClarificationRequest,
+    Commitment,
     EventType,
+    FeedbackSignal,
+    FeedbackStatus,
+    FollowUp,
     Meeting,
     MemoryBucket,
     MemoryItem,
     MemoryKind,
+    MemoryStatus,
     Note,
     Person,
+    ProjectStatus,
+    ProjectType,
+    Reminder,
     Task,
+    TaskStatus,
 )
 from memocore.services.event_service import EventService
+from memocore.services.backup_service import BackupService
 from memocore.services.review_service import ReviewService
 from memocore.services.secretary_service import SecretaryService
 
@@ -28,6 +39,66 @@ def _secretary(repos) -> SecretaryService:
         commitment_repo=repos["commitments"],
         activity_link_repo=repos["activity_links"],
     )
+
+
+async def test_review_system_surfaces_critical_recovery_report_without_event(repos, tmp_path):
+    backup_service = BackupService(tmp_path / "missing.db", tmp_path / "backups")
+    backup_service.backup_dir.mkdir()
+    (backup_service.backup_dir / "latest-restore.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "status": "rollback_failed",
+                "phase": "rollback_failed",
+                "failure_code": "rollback_failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+        repos["commitments"],
+        repos["followups"],
+        backup_service,
+    )
+
+    response = await service.system()
+
+    text = "\n".join(response.sections[0].lines)
+    assert "rollback_failed" in text
+
+
+async def test_review_system_surfaces_failed_restore_without_false_healthy_line(repos, tmp_path):
+    backup_service = BackupService(tmp_path / "missing.db", tmp_path / "backups")
+    backup_service.backup_dir.mkdir()
+    (backup_service.backup_dir / "latest-restore.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "status": "failed",
+                "phase": "migration",
+                "failure_code": "migration_failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        backup_service=backup_service,
+    )
+
+    response = await service.system()
+
+    text = "\n".join(response.sections[0].lines)
+    assert "failed · migration · migration_failed" in text
+    assert "Không có lỗi backup" not in text
 
 
 async def test_people_view_is_paginated_and_never_leaks_internal_relationship_codes(repos):
@@ -71,7 +142,7 @@ async def test_person_context_hides_evidence_and_translates_relationship(repos):
     assert "tin cậy:" not in context
 
 
-async def test_agenda_surfaces_conflicts_and_a_useful_next_item(repos):
+async def test_agenda_surfaces_conflicts_without_inventing_a_distant_priority(repos):
     note_a = await repos["notes"].create(Note(raw_text="Task A"))
     note_b = await repos["notes"].create(Note(raw_text="Meeting B"))
     start = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
@@ -93,14 +164,119 @@ async def test_agenda_surfaces_conflicts_and_a_useful_next_item(repos):
     )
     service = _secretary(repos)
 
-    agenda = await service.agenda_for_date(start.date(), "Ngày kiểm thử")
-    empty_day = await service.agenda_for_date(start.date() - timedelta(days=1), "Ngày trống")
+    agenda = await service.agenda_for_date(
+        start.date(), "Ngày kiểm thử", now=start - timedelta(hours=2)
+    )
+    empty_day = await service.today(now=start - timedelta(days=10))
 
     assert "⚠️ Xung đột lịch" in agenda
     assert "Chấm bài APM10" in agenda
     assert "Review giáo trình" in agenda
-    assert "Tiếp theo" in empty_day
-    assert "Chấm bài APM10" in empty_day
+    assert "Ưu tiên nổi bật" not in empty_day
+    assert "Mốc tiếp theo" not in empty_day
+    assert "Chấm bài APM10" not in empty_day
+
+
+async def test_today_only_surfaces_a_next_milestone_inside_48_hours(repos):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="upcoming agenda"))
+    await repos["tasks"].create(
+        Task(
+            title="Gửi bản nháp gần",
+            due_at=now + timedelta(hours=47),
+            source_note_id=note.id,
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Gửi bản nháp xa",
+            due_at=now + timedelta(hours=49),
+            source_note_id=note.id,
+        )
+    )
+
+    today = await _secretary(repos).today(now)
+
+    assert "Mốc tiếp theo trong 48 giờ" in today
+    assert "Gửi bản nháp gần" in today
+    assert "Gửi bản nháp xa" not in today
+    assert "Ưu tiên" not in today
+
+
+async def test_today_caps_actionable_tasks_and_keeps_waiting_factual(repos):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="busy agenda"))
+    for index in range(7):
+        await repos["tasks"].create(
+            Task(
+                title=f"Việc trực tiếp {index + 1}",
+                due_at=now - timedelta(hours=index + 1),
+                source_note_id=note.id,
+            )
+        )
+    await repos["tasks"].create(
+        Task(
+            title="Chờ Alex phản hồi",
+            status=TaskStatus.WAITING,
+            due_at=now - timedelta(hours=1),
+            source_note_id=note.id,
+        )
+    )
+
+    today = await _secretary(repos).today(now)
+    direct_block = today.split("Cần làm", 1)[1].split("Đang chờ có hạn", 1)[0]
+
+    assert direct_block.count("Việc trực tiếp") == 5
+    assert "Còn 2 task cần làm khác." in direct_block
+    assert "Chờ Alex phản hồi" not in direct_block
+    assert "Chờ Alex phản hồi" in today.split("Đang chờ có hạn", 1)[1]
+
+
+async def test_today_mixed_agenda_keeps_each_factual_signal_visible(repos):
+    now = datetime(2030, 1, 2, 8, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="mixed agenda"))
+    task = await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo",
+            due_at=now + timedelta(hours=1),
+            source_note_id=note.id,
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Chờ số liệu",
+            status=TaskStatus.WAITING,
+            due_at=now + timedelta(hours=2),
+            source_note_id=note.id,
+        )
+    )
+    await repos["reminders"].create(
+        Reminder(
+            title="Nhắc gọi khách hàng",
+            remind_at=now + timedelta(hours=3),
+            source_note_id=note.id,
+        )
+    )
+    await repos["meetings"].create(
+        Meeting(
+            title="Họp kế hoạch",
+            starts_at=now + timedelta(hours=4),
+            ends_at=now + timedelta(hours=5),
+            source_note_id=note.id,
+        )
+    )
+
+    today = await _secretary(repos).today(now)
+
+    assert all(
+        heading in today
+        for heading in ("Cần làm", "Nhắc nhở", "Lịch/meeting", "Đang chờ có hạn")
+    )
+    assert "Gửi báo cáo" in today
+    assert "Nhắc gọi khách hàng" in today
+    assert "Họp kế hoạch" in today
+    assert "Chờ số liệu" in today
+    assert task.id not in today
 
 
 async def test_review_center_combines_uncertain_state_and_quality_signals(repos):
@@ -115,6 +291,15 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
     )
     await repos["tasks"].create(
         Task(title="Task chưa có hạn", source_note_id=note.id)
+    )
+    project_without_next_action = await repos["projects"].find_or_create(
+        "Project chưa có next action"
+    )
+    await repos["projects"].update_taxonomy(
+        project_without_next_action.id,
+        ProjectType.INDEPENDENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
     )
     await repos["clarifications"].create(
         ClarificationRequest(
@@ -132,20 +317,647 @@ async def test_review_center_combines_uncertain_state_and_quality_signals(repos)
         memory.id,
     )
     await events.append_event(
-        EventType.USER_FEEDBACK_RECORDED,
+        EventType.BACKUP_FAILED,
+        "database",
+        "memocore.db",
+        {"error": "disk full"},
+    )
+    feedback = await events.record_feedback(
+        FeedbackSignal.CORRECTION,
         "memory_item",
         memory.id,
+        source_chat_id="review-chat",
+        source_message_id="message-1",
+        source_note_id=note.id,
+        action="reject_misclassified_memory",
     )
     service = ReviewService(
-        repos["memory"], repos["tasks"], repos["clarifications"], events
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        events,
+        repos["projects"],
+        repos["commitments"],
     )
 
     overview = await service.overview()
     pending = await service.clarifications()
+    system = await service.system()
+    project_health = await service.project_health()
 
     assert "1 ghi nhớ" in overview.summary
-    assert "1 câu hỏi đang chờ" in overview.summary
-    assert "1 task chưa có hạn" in overview.summary
-    assert "Gợi ý trùng: 1" in overview.sections[0].lines
-    assert "Lần người dùng sửa hệ thống: 1" in overview.sections[0].lines
+    assert "1 câu hỏi" in overview.summary
+    assert "1 phản hồi" in overview.summary
+    assert "1 cảnh báo hệ thống" in overview.summary
+    assert "1 task chưa có hạn" in overview.sections[0].lines
+    assert "0 commitment thiếu hạn/ngữ cảnh" in overview.sections[0].lines
+    assert "1 project cần chọn next action trước" in overview.sections[0].lines
+    assert "0 project khác trong backlog hygiene" in overview.sections[0].lines
+    assert "Gợi ý trùng: 1" in overview.sections[1].lines
+    assert "Project health backlog: 1" in overview.sections[1].lines
+    assert "Cảnh báo hệ thống: 1" in overview.sections[1].lines
+    assert any("1 sửa sai" in line for line in overview.sections[1].lines)
     assert "Anh muốn hoàn thành task nào?" in pending.sections[0].lines
+    assert "1 cảnh báo backup/recovery" in system.summary
+    assert "disk full" not in "\n".join(system.sections[0].lines)
+    assert "1 project cần quyết định trước" in project_health.summary
+    assert any(
+        "Project chưa có next action" in line
+        for line in project_health.sections[0].lines
+    )
+
+    quality = await service.feedback()
+    assert "1 mục đang mở" in quality.summary
+    assert quality.actions[0].action_id == f"nav:rf:{feedback.id}"
+
+    resolved = await service.resolve_feedback(feedback.id)
+    assert resolved is not None
+    assert "0 mục đang mở" in resolved.summary
+
+
+async def test_review_surfaces_commitment_hygiene_without_backend_noise(repos):
+    note = await repos["notes"].create(Note(raw_text="commitment hygiene"))
+    person = await repos["people"].create(Person(display_name="Alex"))
+    await repos["commitments"].create(
+        Commitment(
+            title="Gửi outline sảng văn",
+            source_note_id=note.id,
+        )
+    )
+    await repos["commitments"].create(
+        Commitment(
+            title="Gửi lịch gym",
+            source_note_id=note.id,
+            person_id=person.id,
+            due_at=datetime(2026, 7, 20, 10, 0, tzinfo=UTC),
+        )
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+        repos["commitments"],
+    )
+
+    overview = await service.overview()
+    commitments = await service.commitments()
+    text = "\n".join(commitments.sections[0].lines)
+
+    assert "1 commitment thiếu hạn/ngữ cảnh" in overview.sections[0].lines
+    assert any(action.action_id == "nav:review:commitments" for action in overview.actions)
+    assert commitments.summary == "1 commitment cần bổ sung metadata."
+    assert "Gửi outline sảng văn" in text
+    assert "chưa có hạn" in text
+    assert "chưa gắn người/project" in text
+    assert "Gửi lịch gym" not in text
+    assert note.id not in text
+    assert person.id not in text
+    assert commitments.actions[0].action_id == "nav:work:commitments"
+
+
+async def test_review_quality_report_shows_weekly_trends_and_open_items(repos):
+    now = datetime.now(UTC)
+    note = await repos["notes"].create(Note(raw_text="quality report source"))
+    await repos["clarifications"].create(
+        ClarificationRequest(
+            source_chat_id="quality-chat",
+            entity_type="memory_item",
+            entity_id="memory-1",
+            field_name="bucket",
+            question="Thông tin này thuộc nhóm nào?",
+        )
+    )
+    events = EventService(repos["events"])
+    open_feedback = await events.append_event(
+        EventType.USER_FEEDBACK_RECORDED,
+        "memory_item",
+        note.id,
+        {
+            "schema_version": 1,
+            "signal": FeedbackSignal.CORRECTION.value,
+            "status": FeedbackStatus.OPEN.value,
+        },
+        created_at=now - timedelta(days=1),
+    )
+    await events.append_event(
+        EventType.CLARIFICATION_FAILED,
+        "clarification_request",
+        "clar-1",
+        created_at=now - timedelta(days=2),
+    )
+    await events.append_event(
+        EventType.MODEL_OUTPUT_INVALID,
+        "llm_output",
+        "output-1",
+        created_at=now - timedelta(days=3),
+    )
+    await events.append_event(
+        EventType.BACKUP_FAILED,
+        "database",
+        "backup-1",
+        created_at=now - timedelta(days=4),
+    )
+    await events.append_event(
+        EventType.CLARIFICATION_FAILED,
+        "clarification_request",
+        "older-clar-1",
+        created_at=now - timedelta(days=10),
+    )
+    await events.append_event(
+        EventType.ENTITY_ALIAS_SUGGESTED,
+        "person",
+        "person-1",
+        {"candidate": "Alex"},
+        created_at=now - timedelta(days=1),
+    )
+    changed = await events.append_event(
+        EventType.WORK_ITEM_CHANGED,
+        "task",
+        "task-1",
+        {"action": "reschedule"},
+        created_at=now - timedelta(hours=6),
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        events,
+        repos["projects"],
+        repos["commitments"],
+    )
+
+    overview = await service.overview()
+    report = await service.quality_report()
+    text = "\n".join(
+        line for section in report.sections for line in section.lines
+    )
+
+    assert any(action.action_id == "nav:review:quality" for action in overview.actions)
+    assert "4 tín hiệu cần chú ý" in report.summary
+    assert "tăng 3" in report.summary
+    assert "Phản hồi đã ghi nhận: 1" in text
+    assert "1 sửa sai" in text
+    assert "Clarification fail: 1" in text
+    assert "Lỗi backup/runtime: 1" in text
+    assert "Model/extraction cần soi: 1" in text
+    assert "1 phản hồi cần xử lý" in text
+    assert "1 clarification đang chờ" in text
+    assert "1 liên kết tên chưa chốt" in text
+    assert "1 thao tác còn có thể undo" in text
+    assert open_feedback.id not in text
+    assert changed.id not in text
+
+
+async def test_review_project_health_uses_descendant_tasks_and_skips_portfolio_noise(repos):
+    note = await repos["notes"].create(Note(raw_text="portfolio tree"))
+    portfolio = await repos["projects"].find_or_create("STE")
+    await repos["projects"].update_taxonomy(
+        portfolio.id,
+        ProjectType.PORTFOLIO,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    child = await repos["projects"].find_or_create("STEDATA")
+    await repos["projects"].update_taxonomy(
+        child.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        portfolio.id,
+    )
+    quiet = await repos["projects"].find_or_create("Quiet Client")
+    await repos["projects"].update_taxonomy(
+        quiet.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["tasks"].create(
+        Task(title="Ship STEDATA dashboard", source_note_id=note.id, project_id=child.id)
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "STE" not in text
+    assert "STEDATA" not in text
+    assert "Quiet Client" in text
+
+
+async def test_review_project_health_focuses_actionable_leaf_projects(repos):
+    parent = await repos["projects"].find_or_create("MemoCore")
+    await repos["projects"].update_taxonomy(
+        parent.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    child = await repos["projects"].find_or_create("MemoCore Telegram UX")
+    await repos["projects"].update_taxonomy(
+        child.id,
+        ProjectType.INITIATIVE,
+        ProjectStatus.ACTIVE,
+        parent.id,
+    )
+    unknown = await repos["projects"].find_or_create("Unclassified context")
+    await repos["projects"].update_taxonomy(
+        unknown.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["projects"]._execute(
+        "UPDATE projects SET project_type = NULL WHERE id = ?",
+        (unknown.id,),
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "MemoCore Telegram UX" in text
+    assert "MemoCore ·" not in text
+    assert "Unclassified context" not in text
+    assert "1 project cần quyết định trước" in health.summary
+
+
+async def test_review_project_health_flags_project_risks_even_with_existing_tasks(repos):
+    now = datetime.now(UTC)
+    note = await repos["notes"].create(Note(raw_text="project risk health"))
+    project = await repos["projects"].find_or_create("Risky Launch")
+    await repos["projects"].update_taxonomy(
+        project.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    healthy = await repos["projects"].find_or_create("Healthy Launch")
+    await repos["projects"].update_taxonomy(
+        healthy.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Fix launch blocker",
+            source_note_id=note.id,
+            project_id=project.id,
+            due_at=now - timedelta(days=1),
+            priority="high",
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Wait vendor answer",
+            source_note_id=note.id,
+            project_id=project.id,
+            status=TaskStatus.WAITING,
+            due_at=now + timedelta(days=1),
+        )
+    )
+    await repos["commitments"].create(
+        Commitment(
+            title="Client owes signoff",
+            source_note_id=note.id,
+            project_id=project.id,
+            due_at=now - timedelta(hours=2),
+        )
+    )
+    await repos["followups"].create(
+        FollowUp(
+            title="Ask vendor again",
+            source_note_id=note.id,
+            project_id=project.id,
+            due_at=now - timedelta(hours=1),
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Healthy next action",
+            source_note_id=note.id,
+            project_id=healthy.id,
+            due_at=now + timedelta(days=2),
+        )
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+        repos["commitments"],
+        repos["followups"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "Risky Launch" in text
+    assert "task quá hạn" in text
+    assert "việc chờ/bị chặn" in text
+    assert "commitment quá hạn" in text
+    assert "follow-up quá hạn" in text
+    assert "Healthy Launch" not in text
+    assert "thiếu next action" not in text
+
+
+async def test_weekly_review_project_health_uses_actionable_leaf_projects(repos):
+    note = await repos["notes"].create(Note(raw_text="weekly project health"))
+    parent = await repos["projects"].find_or_create("MemoCore Weekly")
+    await repos["projects"].update_taxonomy(
+        parent.id,
+        ProjectType.PRODUCT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    child = await repos["projects"].find_or_create("MemoCore Weekly Child")
+    await repos["projects"].update_taxonomy(
+        child.id,
+        ProjectType.INITIATIVE,
+        ProjectStatus.ACTIVE,
+        parent.id,
+    )
+    covered = await repos["projects"].find_or_create("Covered Client")
+    await repos["projects"].update_taxonomy(
+        covered.id,
+        ProjectType.CLIENT_PROJECT,
+        ProjectStatus.ACTIVE,
+        None,
+    )
+    await repos["tasks"].create(
+        Task(title="Ship covered work", source_note_id=note.id, project_id=covered.id)
+    )
+
+    weekly = await _secretary(repos).weekly_review(datetime(2026, 7, 15, 10, 0, tzinfo=UTC))
+    lines = weekly.splitlines()
+
+    assert "MemoCore Weekly Child" in weekly
+    assert "- MemoCore Weekly" not in lines
+    assert "Covered Client" not in weekly
+
+
+async def test_review_project_health_groups_large_backlog(repos):
+    for index in range(7):
+        project = await repos["projects"].find_or_create(f"Backlog project {index + 1}")
+        await repos["projects"].update_taxonomy(
+            project.id,
+            ProjectType.INDEPENDENT_PROJECT,
+            ProjectStatus.ACTIVE,
+            None,
+        )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        EventService(repos["events"]),
+        repos["projects"],
+    )
+
+    health = await service.project_health()
+    text = "\n".join(health.sections[0].lines)
+
+    assert "7 project cần quyết định trước" in health.summary
+    assert text.count("Backlog project") == 5
+    assert "Còn 2 project cần quyết định khác" in text
+
+
+async def test_review_surfaces_recent_undoable_operations(repos):
+    events = EventService(repos["events"])
+    changed = await events.append_event(
+        EventType.WORK_ITEM_CHANGED,
+        "task",
+        "task-1",
+        {"action": "reschedule"},
+        created_at=datetime(2026, 7, 15, 20, 0, tzinfo=UTC),
+    )
+    undone = await events.append_event(
+        EventType.DAILY_CLOSEOUT_APPLIED,
+        "clarification_request",
+        "closeout-1",
+        {"due_at": datetime(2026, 7, 16, 9, 0, tzinfo=UTC).isoformat(), "items": {}},
+        created_at=datetime(2026, 7, 15, 19, 0, tzinfo=UTC),
+    )
+    await events.append_event(
+        EventType.WORK_ITEM_UNDONE,
+        "work_event",
+        undone.id,
+        {"restored_count": 0},
+    )
+    service = ReviewService(
+        repos["memory"],
+        repos["tasks"],
+        repos["clarifications"],
+        events,
+        repos["projects"],
+    )
+
+    overview = await service.overview()
+    recent = await service.recent_operations()
+
+    assert "Gần đây có thể hoàn tác: 1" in overview.sections[1].lines
+    assert any(action.action_id == "nav:review:recent" for action in overview.actions)
+    assert recent.summary == "1 thao tác còn trong vùng an toàn để undo."
+    assert "Cập nhật công việc" in recent.sections[0].lines[0]
+    assert recent.actions[0].action_id == f"work:u:e:{changed.id}"
+
+
+async def test_work_views_share_priority_logic_and_keep_waiting_out_of_next_actions(repos):
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="work state"))
+    await repos["tasks"].create(
+        Task(
+            title="Follow up Alex",
+            source_note_id=note.id,
+            status=TaskStatus.WAITING,
+            due_at=now - timedelta(hours=1),
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Finish BI report",
+            source_note_id=note.id,
+            due_at=now - timedelta(hours=2),
+            priority="high",
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            source_note_id=note.id,
+            due_at=now + timedelta(hours=3),
+            recurrence_rule="daily",
+        )
+    )
+    service = _secretary(repos)
+
+    dashboard = await service.work_dashboard(now)
+    briefing = await service.daily_briefing(now)
+    next_action_block = briefing.split("Nên làm tiếp", 1)[1]
+    routine_block = briefing.split("Routine hôm nay", 1)[1].split("Nên làm tiếp", 1)[0]
+
+    assert "Score:" not in dashboard
+    assert "Top priorities" not in dashboard
+    assert "Finish BI report" in next_action_block
+    assert "Tập gym" not in next_action_block
+    assert "Tập gym" in routine_block
+    assert "Follow up Alex" not in next_action_block
+    assert "Việc đang chờ" in briefing
+
+
+async def test_briefing_does_not_repeat_attention_tasks_as_next_actions(repos):
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="briefing dedupe"))
+    await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo BI",
+            source_note_id=note.id,
+            due_at=now - timedelta(hours=2),
+            priority="high",
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            source_note_id=note.id,
+            due_at=now - timedelta(hours=1),
+            recurrence_rule="daily",
+        )
+    )
+    service = _secretary(repos)
+
+    briefing = await service.daily_briefing(now)
+    attention_block = briefing.split("Điểm cần chú ý", 1)[1].split("Routine hôm nay", 1)[0]
+    next_action_block = briefing.split("Nên làm tiếp", 1)[1]
+
+    assert "Gửi báo cáo BI" not in attention_block
+    assert "Gửi báo cáo BI" in next_action_block
+    assert "Tập gym" in briefing.split("Routine hôm nay", 1)[1].split("Nên làm tiếp", 1)[0]
+    assert "Tập gym" not in next_action_block
+
+
+async def test_briefing_treats_routine_only_day_as_rhythm_not_main_priority(repos):
+    now = datetime(2026, 7, 15, 6, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="routine-only briefing"))
+    await repos["tasks"].create(
+        Task(
+            title="Tập gym",
+            source_note_id=note.id,
+            due_at=now + timedelta(hours=1),
+            recurrence_rule="daily",
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    assessment = briefing.split("Nhận định", 1)[1].split("Điểm cần chú ý", 1)[0]
+
+    assert "routine “Tập gym”" in assessment
+    assert "chưa thấy một kết quả chính" in assessment
+    assert "Việc cần chốt hôm nay" not in assessment
+
+
+async def test_briefing_waiting_only_day_recommends_closing_loop_not_doing_work(repos):
+    now = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="waiting-only briefing"))
+    await repos["tasks"].create(
+        Task(
+            title="Chờ Alex gửi brief",
+            source_note_id=note.id,
+            status=TaskStatus.WAITING,
+            due_at=now - timedelta(hours=1),
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    assessment = briefing.split("Nhận định", 1)[1].split("Điểm cần chú ý", 1)[0]
+    next_action_block = briefing.split("Nên làm tiếp", 1)[1]
+
+    assert "open loop đang chờ/bị chặn" in assessment
+    assert "follow-up, tiếp tục chờ, hoặc đóng loop" in assessment
+    assert "Chờ Alex gửi brief" not in next_action_block
+
+
+async def test_briefing_warns_when_deadline_and_meeting_are_too_close(repos):
+    now = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="briefing collision"))
+    await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo BI",
+            source_note_id=note.id,
+            due_at=datetime(2026, 7, 15, 10, 0, tzinfo=UTC),
+        )
+    )
+    await repos["meetings"].create(
+        Meeting(
+            title="Review dashboard",
+            source_note_id=note.id,
+            starts_at=datetime(2026, 7, 15, 11, 30, tzinfo=UTC),
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    attention_block = briefing.split("Điểm cần chú ý", 1)[1].split("Nên làm tiếp", 1)[0]
+
+    assert "Cụm lịch/deadline dày" in attention_block
+    assert "Gửi báo cáo BI" in attention_block
+    assert "Review dashboard" in attention_block
+    assert "chừa buffer" in attention_block
+
+
+async def test_briefing_compares_recommendations_with_active_goal(repos):
+    now = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="goal alignment briefing"))
+    await repos["memory"].create(
+        MemoryItem(
+            bucket=MemoryBucket.PROFILE,
+            kind=MemoryKind.GOAL,
+            content="Goal: hoàn thiện MemoCore V4 thành daily secretary đáng tin",
+            source_note_id=note.id,
+            status=MemoryStatus.ACTIVE,
+        )
+    )
+    await repos["tasks"].create(
+        Task(
+            title="Gửi báo cáo BI",
+            source_note_id=note.id,
+            due_at=datetime(2026, 7, 15, 10, 0, tzinfo=UTC),
+        )
+    )
+
+    briefing = await _secretary(repos).daily_briefing(now)
+    attention_block = briefing.split("Điểm cần chú ý", 1)[1].split("Nên làm tiếp", 1)[0]
+
+    assert "Goal:" in attention_block
+    assert "chưa thấy việc ưu tiên hôm nay nối trực tiếp" in attention_block
+    assert "MemoCore V4" in attention_block
+
+
+async def test_weekly_review_hides_raw_priority_scores(repos):
+    note = await repos["notes"].create(Note(raw_text="weekly no score"))
+    await repos["tasks"].create(
+        Task(
+            title="Prepare trust report",
+            source_note_id=note.id,
+            due_at=datetime.now(UTC) - timedelta(days=1),
+            priority="high",
+        )
+    )
+
+    weekly = await _secretary(repos).weekly_review()
+
+    assert "Score:" not in weekly
+    assert "Prepare trust report" in weekly

@@ -1,10 +1,9 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
 from memocore.domain.models import ClarificationStatus, ReminderStatus
 from memocore.domain.schemas import CaptureRequest
 from memocore.services.clarification_service import ClarificationService, parse_clarification_datetime
-from tests.conftest import FakeProvider
 from tests.fixtures.extraction_responses import MISSING_REMINDER_TIME
 
 
@@ -23,6 +22,18 @@ def test_parse_clarification_datetime_uses_explicit_timezone():
     parsed = parse_clarification_datetime("tomorrow 9am", now=now, default_timezone=vietnam)
 
     assert parsed == datetime(2026, 6, 4, 2, 0, tzinfo=UTC)
+
+
+def test_parse_clarification_datetime_uses_configured_default_time():
+    now = datetime(2026, 6, 3, 10, 0, tzinfo=UTC)
+
+    parsed = parse_clarification_datetime(
+        "tomorrow",
+        now=now,
+        default_time=time(14, 30),
+    )
+
+    assert parsed == datetime(2026, 6, 4, 14, 30, tzinfo=UTC)
 
 
 def test_parse_clarification_datetime_relative_duration_before_clock_time():

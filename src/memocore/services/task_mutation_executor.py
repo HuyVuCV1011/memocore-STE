@@ -16,6 +16,7 @@ class TaskMutationExecutor:
         "assign_task_to_person", "create_task_check_reminder", "delete_all_tasks",
         "cancel_task", "update_task", "update_task_due", "rename_task",
         "merge_tasks",
+        "snooze_reminder",
         "undo_last_action",
     }
     CAPTURED_INTENTS = {"assign_task_to_person", "create_task_check_reminder"}

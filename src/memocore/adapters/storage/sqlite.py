@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from importlib.resources import files
 
 import aiosqlite
@@ -12,7 +14,11 @@ class Database:
     def __init__(self, db_path: Path | str):
         self.db_path = Path(db_path)
         self._connection: aiosqlite.Connection | None = None
-        self._transaction_depth = 0
+        self._transaction_depth: ContextVar[int] = ContextVar(
+            f"memocore_transaction_depth_{id(self)}",
+            default=0,
+        )
+        self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         if str(self.db_path) != ":memory:":
@@ -104,27 +110,40 @@ class Database:
         await conn.execute("UPDATE projects SET status = 'active' WHERE status = 'candidate'")
 
     async def commit_if_needed(self) -> None:
-        if self._transaction_depth == 0:
+        if self._transaction_depth.get() == 0:
             await (await self.connection()).commit()
 
     @asynccontextmanager
+    async def write_operation(self) -> AsyncIterator[None]:
+        if self._transaction_depth.get() > 0:
+            yield
+            return
+        async with self._write_lock:
+            yield
+
+    @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
-        conn = await self.connection()
-        outermost = self._transaction_depth == 0
+        depth = self._transaction_depth.get()
+        outermost = depth == 0
         if outermost:
-            await conn.execute("BEGIN")
-        self._transaction_depth += 1
+            await self._write_lock.acquire()
+        token = self._transaction_depth.set(depth + 1)
         try:
+            conn = await self.connection()
+            if outermost:
+                await conn.execute("BEGIN")
             yield
         except Exception:
-            self._transaction_depth -= 1
             if outermost:
                 await conn.rollback()
             raise
         else:
-            self._transaction_depth -= 1
             if outermost:
                 await conn.commit()
+        finally:
+            self._transaction_depth.reset(token)
+            if outermost:
+                self._write_lock.release()
 
 
 MIGRATION_LEDGER_SCHEMA = """

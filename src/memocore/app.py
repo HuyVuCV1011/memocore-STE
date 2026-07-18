@@ -36,7 +36,9 @@ from memocore.config import Settings, get_settings
 from memocore.domain.models import EventType
 from memocore.services.capture_service import CaptureService
 from memocore.services.clarification_service import ClarificationService
+from memocore.services.commitment_lifecycle_service import CommitmentLifecycleService
 from memocore.services.conversation_service import ConversationService
+from memocore.services.daily_closeout_service import DailyCloseoutService
 from memocore.services.event_service import EventService
 from memocore.services.memory_service import MemoryService
 from memocore.services.memory_view_service import MemoryViewService
@@ -49,9 +51,11 @@ from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
 from memocore.services.reference_resolver import ReferenceResolver
 from memocore.services.task_operation_service import TaskOperationService
+from memocore.services.timeline_query_service import TimelineQueryService
 from memocore.services.activity_reconciliation_service import (
     ActivityReconciliationService,
 )
+from memocore.services.backup_service import BackupService
 from memocore.services.review_service import ReviewService
 
 logger = logging.getLogger(__name__)
@@ -130,7 +134,10 @@ async def create_app(settings: Settings | None = None) -> Application:
         event_service,
         default_timezone=ZoneInfo(settings.user_timezone),
         task_repo=task_repo,
+        followup_repo=followup_repo,
+        commitment_repo=commitment_repo,
         task_operation_service=task_operation_service,
+        default_reminder_time=_parse_clock(settings.reminder_default_time),
     )
     capture_service = CaptureService(
         note_repo,
@@ -170,17 +177,54 @@ async def create_app(settings: Settings | None = None) -> Application:
         event_service,
         display_timezone=ZoneInfo(settings.user_timezone),
         task_operation_service=task_operation_service,
+        followup_repo=followup_repo,
+        commitment_repo=commitment_repo,
     )
     entity_confirmation_service = EntityConfirmationService(
         person_repo,
         project_repo,
         event_service,
+        note_repo,
     )
     review_service = ReviewService(
         memory_repo,
         task_repo,
         clarification_repo,
         event_service,
+        project_repo,
+        commitment_repo,
+        followup_repo,
+        BackupService(settings.database_path, settings.backup_dir),
+    )
+    daily_closeout_service = DailyCloseoutService(
+        task_repo,
+        clarification_repo,
+        event_service,
+        followup_repo=followup_repo,
+        commitment_repo=commitment_repo,
+        display_timezone=ZoneInfo(settings.user_timezone),
+    )
+    timeline_query_service = TimelineQueryService(
+        note_repo,
+        task_repo,
+        reminder_repo,
+        project_repo,
+        person_repo,
+        meeting_repo,
+        followup_repo,
+        commitment_repo,
+        memory_repo,
+        event_repo,
+        decision_repo,
+        display_timezone=ZoneInfo(settings.user_timezone),
+    )
+    commitment_lifecycle_service = CommitmentLifecycleService(
+        task_repo=task_repo,
+        followup_repo=followup_repo,
+        commitment_repo=commitment_repo,
+        person_repo=person_repo,
+        event_service=event_service,
+        display_timezone=ZoneInfo(settings.user_timezone),
     )
     reference_resolver = ReferenceResolver(
         chat_context_repo,
@@ -201,6 +245,8 @@ async def create_app(settings: Settings | None = None) -> Application:
         task_list_context_repo=task_list_context_repo,
         reference_resolver=reference_resolver,
         task_operation_service=task_operation_service,
+        timeline_query_service=timeline_query_service,
+        commitment_lifecycle_service=commitment_lifecycle_service,
     )
 
     app = create_bot(
@@ -214,6 +260,9 @@ async def create_app(settings: Settings | None = None) -> Application:
         work_action_service,
         entity_confirmation_service,
         review_service,
+        daily_closeout_service,
+        timeline_query_service,
+        event_service,
     )
     app.bot_data["database"] = database
     app.bot_data["reminder_task"] = asyncio.create_task(
@@ -227,6 +276,9 @@ async def create_app(settings: Settings | None = None) -> Application:
     )
     app.bot_data["weekly_review_task"] = asyncio.create_task(
         scheduled_weekly_review_loop(secretary_service, event_service, app.bot, settings)
+    )
+    app.bot_data["backup_task"] = asyncio.create_task(
+        scheduled_backup_loop(event_service, settings)
     )
     return app
 
@@ -295,6 +347,16 @@ async def scheduled_weekly_review_loop(
 ) -> None:
     while True:
         await send_due_weekly_reviews(secretary_service, event_service, bot, settings)
+        await asyncio.sleep(interval)
+
+
+async def scheduled_backup_loop(
+    event_service: EventService,
+    settings: Settings,
+    interval: int = 60,
+) -> None:
+    while True:
+        await send_due_backups(event_service, settings)
         await asyncio.sleep(interval)
 
 
@@ -385,15 +447,50 @@ async def send_due_nudges(
         return 0
     now = now or datetime.now(UTC)
     timezone = ZoneInfo(settings.user_timezone)
-    if _is_in_quiet_hours(now.astimezone(timezone).time(), settings.quiet_hours_start, settings.quiet_hours_end):
+    local_time = now.astimezone(timezone).time()
+    if _is_in_quiet_hours(local_time, settings.quiet_hours_start, settings.quiet_hours_end):
         return 0
     cooldown_since = now - timedelta(hours=settings.proactive_nudge_cooldown_hours)
-    sent = 0
+    candidates = []
+    followup_window_open = _is_in_optional_window(
+        local_time,
+        settings.followup_nudge_window_start,
+        settings.followup_nudge_window_end,
+    )
     for entity_type, entity_id, text_body in await secretary_service.deadline_nudges(
-        now, stale_followup_days=settings.stale_followup_days
+        now,
+        stale_followup_days=settings.stale_followup_days,
+        predeadline_warning_hours=settings.proactive_deadline_warning_hours,
     ):
+        if entity_type == "followup" and not followup_window_open:
+            continue
         if await event_service.exists_recent(EventType.NUDGE_SENT, entity_type, entity_id, cooldown_since):
             continue
+        candidates.append((entity_type, entity_id, text_body))
+    if settings.proactive_nudge_max_per_run > 0:
+        candidates = candidates[: settings.proactive_nudge_max_per_run]
+    if not candidates:
+        return 0
+
+    sent = 0
+    if len(candidates) >= settings.proactive_nudge_bundle_threshold > 1:
+        text_body = "Dạ anh, em gom mấy việc cần nhắc lại nha:\n" + "\n\n".join(
+            f"{index}. {body}" for index, (_, _, body) in enumerate(candidates, 1)
+        )
+        try:
+            await bot.send_message(chat_id=settings.telegram_owner_id, text=text_body)
+        except Exception:
+            logger.exception(
+                "Failed to send nudge digest with %s item(s) to owner chat %s",
+                len(candidates),
+                settings.telegram_owner_id,
+            )
+            return 0
+        for entity_type, entity_id, _ in candidates:
+            await event_service.append_event(EventType.NUDGE_SENT, entity_type, entity_id, created_at=now)
+        return 1
+
+    for entity_type, entity_id, text_body in candidates:
         try:
             await bot.send_message(chat_id=settings.telegram_owner_id, text=text_body)
         except Exception:
@@ -409,9 +506,75 @@ async def send_due_nudges(
     return sent
 
 
+async def send_due_backups(
+    event_service: EventService,
+    settings: Settings,
+    now: datetime | None = None,
+) -> int:
+    if not settings.backup_enabled:
+        return 0
+    now = now or datetime.now(UTC)
+    timezone = ZoneInfo(settings.user_timezone)
+    local_now = now.astimezone(timezone)
+    if local_now.time() < _parse_clock(settings.backup_time):
+        return 0
+    day_start = datetime.combine(local_now.date(), time.min, tzinfo=timezone).astimezone(UTC)
+    entity_id = settings.database_path.name
+    if await event_service.exists_recent(
+        EventType.BACKUP_CREATED,
+        "database",
+        entity_id,
+        day_start,
+    ):
+        return 0
+    try:
+        backup_service = BackupService(settings.database_path, settings.backup_dir)
+        result = backup_service.create_backup(verify=True)
+        removed_backups = backup_service.prune_backups(
+            keep_count=settings.backup_retention_count,
+            max_age_days=settings.backup_retention_days,
+            now=now,
+        )
+    except Exception as exc:
+        logger.exception("Failed to create scheduled backup")
+        await event_service.append_event(
+            EventType.BACKUP_FAILED,
+            "database",
+            entity_id,
+            {"error": str(exc)[:500]},
+            created_at=now,
+        )
+        return 0
+    await event_service.append_event(
+        EventType.BACKUP_CREATED,
+        "database",
+        entity_id,
+        {
+            "backup_id": result.backup_id,
+            "size_bytes": result.database_path.stat().st_size,
+            "verified": result.verified,
+            "pruned": removed_backups,
+        },
+        created_at=now,
+    )
+    return 1
+
+
 def _parse_clock(value: str) -> time:
     hour, minute = value.split(":", 1)
     return time(int(hour), int(minute))
+
+
+def _is_in_optional_window(current: time, start: str | None, end: str | None) -> bool:
+    if not start and not end:
+        return True
+    if not start or not end:
+        return False
+    start_time = _parse_clock(start)
+    end_time = _parse_clock(end)
+    if start_time <= end_time:
+        return start_time <= current <= end_time
+    return current >= start_time or current <= end_time
 
 
 def _is_in_quiet_hours(current: time, start: str | None, end: str | None) -> bool:
@@ -430,6 +593,7 @@ async def shutdown_app(app: Application) -> None:
         "morning_briefing_task",
         "nudge_task",
         "weekly_review_task",
+        "backup_task",
     ):
         task = app.bot_data.get(task_name)
         if task:

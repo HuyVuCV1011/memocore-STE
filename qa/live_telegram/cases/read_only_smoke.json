@@ -1,0 +1,23 @@
+{
+  "name": "read_only_smoke",
+  "description": "Read-only smoke case for checking real Telegram rendering without mutating MemoCore data.",
+  "bot_username": "@memocore_ste_bot",
+  "timeout_seconds": 30,
+  "quiet_seconds": 2,
+  "messages": [
+    "/today",
+    "/work",
+    "/briefing"
+  ],
+  "expect": {
+    "min_bot_messages": 3,
+    "max_bot_messages": 9,
+    "must_not_include": [
+      "confidence",
+      "source_chat_id",
+      "task_id",
+      "memory_id",
+      "Traceback"
+    ]
+  }
+}

@@ -20,7 +20,14 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0,<7.0",
     "pip-audit>=2.10,<3.0",
+    "ruff>=0.8,<1.0",
+    "mypy>=1.13,<2.0",
+    "detect-secrets>=1.5,<2.0",
+]
+live-qa = [
+    "telethon>=1.36,<2.0",
 ]
 
 [project.scripts]
@@ -37,4 +44,41 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "ollama: tests that call a live Ollama or configured provider",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/memocore"]
+
+[tool.coverage.report]
+fail_under = 55
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+files = [
+    "src/memocore/domain",
+    "src/memocore/services/timeline_query_service.py",
+    "src/memocore/services/backup_service.py",
+    "src/memocore/services/commitment_lifecycle_service.py",
+    "src/memocore/services/daily_closeout_service.py",
+    "src/memocore/services/project_health_service.py",
+    "src/memocore/services/work_state_service.py",
 ]

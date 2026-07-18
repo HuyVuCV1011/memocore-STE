@@ -54,8 +54,8 @@ V3 makes MemoCore proactive:
 
 Delivered V3 scope includes manual and scheduled briefings, weekly reviews, daily/weekly recurring
 reminders, stale-loop nudges, quiet hours, cooldowns, audit events, and an end-of-day review.
-Interval recurrence, bundled nudge digests, explicit suggestion feedback signals, and pre-deadline
-warnings are intentionally deferred.
+Bundled nudge digests, pre-deadline warnings, natural reminder snooze, and interval recurrence have
+moved into the active V4 deepening track.
 
 ## V4: People, Projects, And Meetings
 
@@ -76,8 +76,9 @@ remains review-gated and separate from live database writes.
 
 The active V4 deepening track adds:
 
-- A compact six-command Telegram menu with inline hubs and hidden power-user shortcuts.
-- Ranked `/today`, `/work`, `/briefing`, and `/weekly` views for priorities and open loops.
+- A compact five-command Telegram menu with inline hubs and hidden power-user shortcuts.
+- Ranked `/today`, `/work`, `/briefing`, and `/weekly` views for priorities and open loops, with
+  routine work separated from harder next-action commitments in the Telegram briefing.
 - Evidence-backed storage with clean person, project, context, and meeting-preparation views;
   source/confidence metadata stays behind an explicit detail action.
 - Paginated Vietnamese people/context navigation with human relationship labels.
@@ -85,7 +86,15 @@ The active V4 deepening track adds:
   undo snapshots.
 - A unified "Cần xem lại" inbox for uncertain memory, aliases, pending clarification, undated
   work, and recent conversation-quality signals.
+- Structured accepted, edited, rejected, ignored, and correction feedback with artifact/turn
+  provenance and explicit resolution.
 - Review-gated person/project alias hygiene; no silent entity merges.
+- Verified SQLite backup, restore, and export before V4 is called complete.
+- Interval recurrence for scheduled work, including every N days and every N weeks.
+- Unified `/search` and natural timeline/origin/decision queries that show human-readable sources
+  without leaking backend ids.
+- Pre-deadline task warnings and bundled/limited proactive nudge delivery.
+- Natural-language reminder snooze for existing reminders.
 - Paginated memory overview, topic slices, review/stale queues, and audited memory actions.
 - Morning, end-of-day, and weekly rituals plus lightweight goal-aware prioritization.
 - `memocore doctor` as the runtime/SQLite/Telegram preflight before PM2 restart.
@@ -113,7 +122,7 @@ V5 is intentionally held while V4 is deepened. When resumed, it introduces bound
 V6 makes the system easier to operate and share:
 
 - Richer entity modeling for people, projects, topics, decisions, and recurring concepts.
-- Backup, restore, import, export, privacy controls, and setup flows.
+- Import, privacy controls, setup flows, and packaging polish after the V4 recovery gate.
 - Web dashboard or mobile-friendly overview after core secretary workflows are proven.
 - PostgreSQL and `pgvector` only when measured retrieval, concurrency, or backup needs justify
   them.

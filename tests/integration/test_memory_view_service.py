@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from memocore.domain.models import (
+    EventType,
     MemoryBucket,
     MemoryItem,
     MemoryKind,
@@ -103,6 +104,11 @@ async def test_conflict_review_shows_source_confidence_and_selects_canonical(rep
     old_after = await repos["memory"].get_by_id(old.id)
     assert str(old_after.status) == "superseded"
     assert old_after.canonical_memory_id == new.id
+    events = await repos["events"].list_by_entity("memory_item", new.id)
+    feedback = next(
+        event for event in events if event.event_type == EventType.USER_FEEDBACK_RECORDED
+    )
+    assert feedback.payload["signal"] == "edited"
 
 
 async def test_memory_topic_deduplicates_and_paginates(repos):
@@ -278,6 +284,62 @@ async def test_confirm_candidate_makes_it_disappear_from_review(repos):
     review_after = await service.topic("review", 0)
     assert review_after is not None
     assert not any(item.content in line for line in review_after.sections[0].lines)
+
+
+async def test_memory_review_actions_record_structured_feedback(repos):
+    from memocore.services.event_service import EventService
+
+    note = await repos["notes"].create(
+        Note(
+            raw_text="source",
+            source_chat_id="chat-memory",
+            source_message_id="message-memory",
+        )
+    )
+    accepted = await repos["memory"].create(
+        MemoryItem(
+            bucket=MemoryBucket.PROFILE,
+            kind=MemoryKind.FACT,
+            content="Candidate to accept.",
+            source_note_id=note.id,
+        )
+    )
+    rejected = await repos["memory"].create(
+        MemoryItem(
+            bucket=MemoryBucket.PROFILE,
+            kind=MemoryKind.FACT,
+            content="Candidate to reject.",
+            source_note_id=note.id,
+        )
+    )
+    service = MemoryViewService(
+        repos["memory"],
+        repos["projects"],
+        repos["people"],
+        EventService(repos["events"]),
+        repos["notes"],
+    )
+
+    await service.confirm(accepted.id)
+    await service.reject(rejected.id)
+
+    accepted_events = await repos["events"].list_by_entity("memory_item", accepted.id)
+    rejected_events = await repos["events"].list_by_entity("memory_item", rejected.id)
+    accepted_feedback = next(
+        event
+        for event in accepted_events
+        if event.event_type == EventType.USER_FEEDBACK_RECORDED
+    )
+    rejected_feedback = next(
+        event
+        for event in rejected_events
+        if event.event_type == EventType.USER_FEEDBACK_RECORDED
+    )
+    assert accepted_feedback.payload["signal"] == "accepted"
+    assert rejected_feedback.payload["signal"] == "rejected"
+    assert accepted_feedback.payload["status"] == "resolved"
+    assert accepted_feedback.payload["provenance"] == "telegram_owner_private"
+    assert "turn" not in accepted_feedback.payload
 
 
 async def test_confirm_low_confidence_candidate_preserves_confidence(repos):

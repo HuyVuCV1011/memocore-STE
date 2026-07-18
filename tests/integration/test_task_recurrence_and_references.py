@@ -869,6 +869,32 @@ async def test_batch_undo_removes_created_recurrence_occurrence(
     )
 
 
+async def test_interval_recurrence_completion_creates_next_occurrence(capture_service, repos):
+    note = await repos["notes"].create(Note(raw_text="interval recurrence"))
+    task = await repos["tasks"].create(
+        Task(
+            title="Water plants",
+            due_at=datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+            source_note_id=note.id,
+            recurrence_rule="interval:2d",
+            recurrence_series_id="plants",
+            recurrence_occurrence_at=datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+        )
+    )
+    service = _service(capture_service, repos)
+
+    result = await service.task_operation_service.complete(
+        task.id,
+        transition="test_interval_recurrence",
+        now=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+    )
+
+    assert result.next_created is True
+    assert result.next_task is not None
+    assert result.next_task.due_at == datetime(2026, 7, 3, 9, 0, tzinfo=UTC)
+    assert result.next_task.recurrence_rule == "interval:2d"
+
+
 @pytest.mark.parametrize(
     "answer",
     [
@@ -1074,6 +1100,51 @@ async def test_number_reference_supports_priority_done_and_cancel(capture_servic
     assert (await repos["tasks"].get_by_id(second.id)).priority == "high"
     assert str((await repos["tasks"].get_by_id(second.id)).status) == "done"
     assert str((await repos["tasks"].get_by_id(first.id)).status) == "cancelled"
+
+
+async def test_today_context_only_remembers_five_visible_actionable_tasks(
+    capture_service, repos
+):
+    now = datetime(2030, 1, 2, 10, 0, tzinfo=UTC)
+    note = await repos["notes"].create(Note(raw_text="today context"))
+    tasks = []
+    for index in range(7):
+        tasks.append(
+            await repos["tasks"].create(
+                Task(
+                    title=f"Task visible order {index + 1}",
+                    due_at=now - timedelta(hours=index + 1),
+                    source_note_id=note.id,
+                )
+            )
+        )
+    waiting = await repos["tasks"].create(
+        Task(
+            title="Waiting must not be numbered",
+            status=TaskStatus.WAITING,
+            due_at=now - timedelta(hours=1),
+            source_note_id=note.id,
+        )
+    )
+    service = _service(capture_service, repos, now=now)
+
+    await service.remember_task_list(
+        "chat-today",
+        await service.secretary_service.today(now),
+        "today",
+        now_utc=now,
+    )
+    context = await service.task_list_context_repo.get_context(
+        "chat-today",
+        now=now,
+    )
+
+    expected = [task.id for task in sorted(tasks, key=lambda item: item.due_at)[:5]]
+    assert context is not None
+    assert list(context.task_ids) == expected
+    assert tasks[0].id not in context.task_ids
+    assert tasks[1].id not in context.task_ids
+    assert waiting.id not in context.task_ids
 
 
 async def test_task_name_answer_is_consumed_by_selection_clarification(

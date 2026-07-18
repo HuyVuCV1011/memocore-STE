@@ -126,3 +126,34 @@ async def test_initialize_normalizes_legacy_candidate_project_status(tmp_path):
 
     assert row["status"] == "active"
     await reopened.close()
+
+
+async def test_initialize_upgrades_previous_release_schema(tmp_path):
+    db_path = tmp_path / "previous-release.db"
+    database = Database(db_path)
+    await database.initialize()
+    conn = await database.connection()
+    await conn.execute("DROP TABLE activity_links")
+    await conn.execute(
+        "DELETE FROM schema_migrations WHERE version = '008_activity_links.sql'"
+    )
+    await conn.commit()
+    await database.close()
+
+    reopened = Database(db_path)
+    await reopened.initialize()
+    conn = await reopened.connection()
+    activity_links = await (
+        await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_links'"
+        )
+    ).fetchone()
+    migration = await (
+        await conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = '008_activity_links.sql'"
+        )
+    ).fetchone()
+
+    assert activity_links is not None
+    assert migration is not None
+    await reopened.close()

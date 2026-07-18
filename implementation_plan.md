@@ -74,12 +74,11 @@ Delivered foundations:
 - Quiet hours and per-entity cooldowns for proactive nudges.
 - Event logs for briefing, weekly review, nudge, reminder sent, and reminder reschedule events.
 
-Deferred from V3:
+Deferred from V3 but now handled in V4:
 
-- Interval recurrence such as "every 2 days" or "every 3 weeks".
-- Bundling many low-priority nudges into one digest.
-- Explicit accepted, edited, ignored, and rejected suggestion feedback signals beyond existing correction feedback.
 - Pre-deadline warnings before a task becomes overdue.
+- Bundling many due nudges into one digest with a per-run limit.
+- Natural-language reminder snooze for existing reminders.
 
 ## Active V4: Trustworthy Daily Secretary
 
@@ -103,14 +102,25 @@ Delivered foundations:
 - Ambiguous or low-confidence V4 operational candidates are skipped with audit warnings instead
   of silently mutating durable state.
 - Failed transactional derived writes can be retried using the same source message id.
-- Compact visible Telegram menu: `/today`, `/work`, `/memory`, `/context`, `/briefing`, and
-  `/capture`; existing specialist commands remain available as hidden shortcuts.
+- Compact visible Telegram menu: `/today`, `/work`, `/context`, `/search`, and `/review`;
+  existing specialist commands such as `/briefing`, `/memory`, and `/capture` remain available
+  as hidden shortcuts.
 - Inline hubs for work, context, capture, and high-volume memory navigation.
 - Ranked open-loop views, including top priorities, overdue work, waiting items, commitments, and
   goal-aware daily selection.
 - Evidence metadata in person, project, context, meeting-preparation, and memory review views.
 - Review-gated person/project alias decisions without automatic silent merges.
+- Cross-domain `/search` and natural timeline/origin/decision queries over notes, tasks,
+  reminders, meetings, follow-ups, commitments, memory, decisions, and audit events.
+- Pre-deadline task warnings plus bundled/limited proactive nudge delivery with per-item audit
+  events.
+- Reminder snooze through conversation, including contextual phrases like "nhắc lại chiều mai".
 - Memory review/stale/topic slices with pagination and audited keep/reject/stale/supersede actions.
+- Structured accepted, edited, rejected, ignored, and correction feedback linked to the originating
+  turn reference and affected artifact, with resolvable quality-review items.
+- Verified SQLite backup, restore, and export as a V4 data-safety gate before wider productization.
+- Interval recurrence for scheduled work, using structured rules such as `interval:2d` and
+  `interval:3w`.
 - Morning briefing, end-of-day review, weekly review, and lightweight goal tracking.
 - Runtime preflight through `memocore doctor` before PM2 restart.
 
@@ -152,7 +162,7 @@ See `docs/version-0.5-readiness.md` for the verified baseline and release gates.
 
 1. Add richer entity modeling for people, projects, topics, decisions, and recurring concepts.
 2. Add graph-like relationships only when measured retrieval value justifies them.
-3. Add backup, restore, export, privacy controls, installability, and setup flows.
+3. Add privacy controls, installability, setup flows, and packaging polish after V4 recovery proves reliable.
 4. Add a web dashboard or mobile-friendly overview after core secretary workflows are proven.
 5. Add PostgreSQL and pgvector only when retrieval, concurrency, or backup needs justify them.
 

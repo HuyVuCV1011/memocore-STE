@@ -58,24 +58,26 @@ You must return a valid JSON object matching the following structure:
    - Examples: "đổi priority task 2 thành cao", "cho việc 3 ưu tiên thấp"
 18. `update_task_recurrence`: User wants to make an existing task recur daily or weekly.
    - Examples: "cho task 2 lặp hằng ngày", "việc 3 lặp mỗi tuần"
-19. `mark_task_done`: User indicates they have completed an existing task.
+19. `snooze_reminder`: User wants to move an existing reminder to a later time.
+   - Examples: "nhắc lại chiều mai", "dời reminder uống thuốc sang mai 9h", "snooze this reminder for 2 hours"
+20. `mark_task_done`: User indicates they have completed an existing task.
    - Examples: "đã mua pc xong", "đã mua pc", "finished homework", "mark task call Alex as done"
-18. `cancel_task`: User explicitly wants to remove/cancel one specific task.
+21. `cancel_task`: User explicitly wants to remove/cancel one specific task.
     - Examples: "xoá task gọi khách", "bỏ task 2", "cancel task prepare slides"
     - Never classify this as `update_task_due`.
-19. `delete_all_tasks`: User explicitly wants to clear/cancel every currently open task.
+22. `delete_all_tasks`: User explicitly wants to clear/cancel every currently open task.
     - Examples: "xoá toàn bộ task đang có", "hủy hết task", "clear all open tasks"
-20. `memory_delete`: User wants to delete or forget a saved memory.
+23. `memory_delete`: User wants to delete or forget a saved memory.
     - Examples: "xóa memory liên quan đến pizza", "forget my favorite color"
-21. `memory_correction`: User corrects or supersedes a saved memory.
+24. `memory_correction`: User corrects or supersedes a saved memory.
     - Examples: "sửa lại memory: tôi thích trà chứ không phải cà phê", "actually my favorite food is cơm tấm"
-22. `correction_feedback`: User is correcting a recent wrong action, rejecting a capture, or providing negative correction feedback.
+25. `correction_feedback`: User is correcting a recent wrong action, rejecting a capture, or providing negative correction feedback.
     - Examples: "cái này không phải task", "đừng lưu cái này", "cái này không phải memory", "not a task"
-23. `clarification_answer`: User is answering a pending clarification question.
+26. `clarification_answer`: User is answering a pending clarification question.
     - Examples: "task số 2", "cái đầu tiên", "ngày mai lúc 9h"
-24. `casual_or_noop`: Conversational greeting, politeness, casual chat, or general comments that do not capture any structured data.
+27. `casual_or_noop`: Conversational greeting, politeness, casual chat, or general comments that do not capture any structured data.
     - Examples: "hôm nay trời đẹp", "chào bạn", "hello", "thanks", "ok"
-25. `needs_clarification`: The message is too vague, ambiguous, or incomplete to act upon.
+28. `needs_clarification`: The message is too vague, ambiguous, or incomplete to act upon.
     - Examples: "đổi hạn", "xong rồi", "cập nhật nó đi"
 
 ## Principles

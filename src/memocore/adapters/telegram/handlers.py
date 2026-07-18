@@ -31,6 +31,9 @@ from memocore.services.secretary_service import SecretaryService
 from memocore.services.work_action_service import WorkActionService
 from memocore.services.entity_confirmation_service import EntityConfirmationService
 from memocore.services.review_service import ReviewService
+from memocore.services.daily_closeout_service import DailyCloseoutService
+from memocore.services.timeline_query_service import TimelineQueryService
+from memocore.services.event_service import EventService
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,29 @@ async def owner_only_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             chat.type if chat else None,
         )
         raise ApplicationHandlerStop
+    event_service: EventService | None = context.application.bot_data.get("event_service")
+    if event_service is None:
+        return
+    try:
+        secretary_service: SecretaryService = context.application.bot_data["secretary_service"]
+        await event_service.record_owner_observation(
+            _interaction_kind(update),
+            display_timezone=secretary_service.display_timezone,
+        )
+    except Exception:
+        # Observation is evidence, not part of the user's command transaction. A
+        # telemetry failure must never make an otherwise valid update unusable.
+        logger.exception("Could not record Telegram owner interaction evidence")
+
+
+def _interaction_kind(update: Update) -> str:
+    if update.callback_query is not None:
+        return "callback"
+    message = update.effective_message
+    text = message.text if message is not None else None
+    if text and text.startswith("/"):
+        return "command"
+    return "message"
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -68,8 +94,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _safe_reply_text(
             update,
             "MemoCore đã sẵn sàng.\n\n"
-            "Gõ / để mở 7 cửa chính: /today, /work, /memory, /context, /briefing, /capture, /review.\n"
-            "Anh vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /task, /prep <tên>, /person <tên>.",
+            "Gõ / để mở 5 cửa chính: /today, /work, /context, /search, /review.\n"
+            "Anh vẫn có thể nhắn tự nhiên hoặc dùng shortcut ẩn như /briefing, /memory, /task, /prep <tên>.",
             reply_markup=keyboard,
         )
 
@@ -110,25 +136,21 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
     if command in {"today", "todays", "tomorrow"} and work_action_service is not None:
-        local_today = datetime.now(UTC).astimezone(service.display_timezone).date()
-        target_date = (
-            local_today + timedelta(days=1)
-            if command == "tomorrow"
-            else local_today
-        )
-        summary = (
-            await service.tomorrow()
-            if command == "tomorrow"
-            else await service.today()
-        )
-        response = await work_action_service.agenda_view(
-            summary,
-            target_date,
-            title="Ngày mai" if command == "tomorrow" else "Hôm nay",
+        now = datetime.now(UTC)
+        response, summary = await _agenda_response(
+            service,
+            work_action_service,
+            command,
+            now=now,
         )
         text, keyboard = present_response(response)
         if conversation_service is not None:
-            await conversation_service.remember_task_list(source_chat_id, summary, command)
+            await conversation_service.remember_task_list(
+                source_chat_id,
+                summary,
+                command,
+                now_utc=now,
+            )
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
     if command == "capture":
@@ -139,12 +161,39 @@ async def secretary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         text, keyboard = present_response(_help_response())
         await _safe_reply_text(update, text, reply_markup=keyboard)
         return
+    if command == "search":
+        query = update.message.text.partition(" ")[2].strip() if update.message.text else ""
+        timeline_query_service: TimelineQueryService | None = context.application.bot_data.get(
+            "timeline_query_service"
+        )
+        if timeline_query_service is None:
+            await _safe_reply_text(update, "Dạ, phần search/timeline chưa sẵn sàng trong runtime này.")
+            return
+        if not query:
+            await _safe_reply_text(update, "Anh muốn tra gì? Ví dụ: /search MemoCore tuần trước.")
+            return
+        await _safe_reply_text(update, await timeline_query_service.answer(query))
+        return
     if command == "review":
         review_service: ReviewService | None = context.application.bot_data.get(
             "review_service"
         )
         if review_service is not None:
             text, keyboard = present_response(await review_service.overview())
+            await _safe_reply_text(update, text, reply_markup=keyboard)
+            return
+    if command == "endday":
+        daily_closeout_service: DailyCloseoutService | None = context.application.bot_data.get(
+            "daily_closeout_service"
+        )
+        if daily_closeout_service is not None:
+            response = await daily_closeout_service.preview(
+                source_chat_id=source_chat_id,
+                source_message_id=(
+                    str(update.message.message_id) if update.message else None
+                ),
+            )
+            text, keyboard = present_response(response)
             await _safe_reply_text(update, text, reply_markup=keyboard)
             return
     if command == "memory":
@@ -414,6 +463,38 @@ async def clarification_callback_handler(
         )
 
 
+async def closeout_callback_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    service: ClarificationService | None = context.application.bot_data.get(
+        "clarification_service"
+    )
+    if (
+        query is None
+        or not query.data
+        or service is None
+        or update.effective_chat is None
+    ):
+        return
+    if query.data == "closeout:confirm":
+        answer = "xác nhận"
+    elif query.data == "closeout:cancel":
+        answer = "không"
+    else:
+        answer = query.data
+    result = await service.answer_pending(str(update.effective_chat.id), answer)
+    if not result.handled:
+        await query.answer("Closeout này đã hết hiệu lực. Hãy mở lại /endday.", show_alert=False)
+        return
+    await query.answer()
+    try:
+        await query.edit_message_text(result.message)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+
+
 async def entity_callback_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -433,7 +514,9 @@ async def entity_callback_handler(
     elif action == "x":
         response = await service.confirm(event_id)
     elif action == "n":
-        response = AssistantResponse(title="Đã bỏ qua", summary="Em không lưu biệt danh này.")
+        response = await service.reject(event_id)
+    elif action == "i":
+        response = await service.ignore(event_id)
     else:
         response = None
     if response is None:
@@ -648,6 +731,9 @@ def register_handlers(
     work_action_service: WorkActionService | None = None,
     entity_confirmation_service: EntityConfirmationService | None = None,
     review_service: ReviewService | None = None,
+    daily_closeout_service: DailyCloseoutService | None = None,
+    timeline_query_service: TimelineQueryService | None = None,
+    event_service: EventService | None = None,
 ) -> None:
     app.bot_data["telegram_owner_id"] = owner_id
     app.bot_data["capture_service"] = capture_service
@@ -658,6 +744,9 @@ def register_handlers(
     app.bot_data["work_action_service"] = work_action_service
     app.bot_data["entity_confirmation_service"] = entity_confirmation_service
     app.bot_data["review_service"] = review_service
+    app.bot_data["daily_closeout_service"] = daily_closeout_service
+    app.bot_data["timeline_query_service"] = timeline_query_service
+    app.bot_data["event_service"] = event_service
     app.add_error_handler(error_handler)
     app.add_handler(TypeHandler(Update, owner_only_handler), group=-1)
     app.add_handler(CallbackQueryHandler(memory_callback_handler, pattern=r"^mem:"))
@@ -665,6 +754,7 @@ def register_handlers(
     app.add_handler(
         CallbackQueryHandler(clarification_callback_handler, pattern=r"^clar:scope:")
     )
+    app.add_handler(CallbackQueryHandler(closeout_callback_handler, pattern=r"^closeout:"))
     app.add_handler(CallbackQueryHandler(entity_callback_handler, pattern=r"^entity:"))
     app.add_handler(CallbackQueryHandler(tag_prompt_callback_handler, pattern=r"^tag_prompt:"))
     app.add_handler(CallbackQueryHandler(navigation_callback_handler, pattern=r"^nav:"))
@@ -694,6 +784,7 @@ def register_handlers(
         "prep",
         "capture",
         "review",
+        "search",
     ):
         app.add_handler(CommandHandler(command, secretary_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
@@ -752,17 +843,38 @@ async def _navigation_response(
     if callback_data == "nav:work:reminders" and work_action_service is not None:
         return await work_action_service.reminders_view()
     if callback_data == "nav:work:today":
+        if work_action_service is not None:
+            response, _ = await _agenda_response(service, work_action_service, "today")
+            return response
         return AssistantResponse(title="Hôm nay", summary=await service.today())
     if callback_data == "nav:work":
         return _work_hub_response(await service.work_dashboard())
     if callback_data == "nav:work:waiting":
+        if work_action_service is not None:
+            return await work_action_service.waiting_view()
         return AssistantResponse(title="Đang chờ", summary=await service.waiting())
     if callback_data == "nav:work:commitments":
+        if work_action_service is not None:
+            return await work_action_service.commitments_view()
         return AssistantResponse(title="Cam kết", summary=await service.commitments())
     if callback_data == "nav:memory" and memory_view_service is not None:
         return await memory_view_service.overview()
     if callback_data == "nav:review" and review_service is not None:
         return await review_service.overview()
+    if callback_data == "nav:review:feedback" and review_service is not None:
+        return await review_service.feedback()
+    if callback_data == "nav:review:system" and review_service is not None:
+        return await review_service.system()
+    if callback_data == "nav:review:recent" and review_service is not None:
+        return await review_service.recent_operations()
+    if callback_data == "nav:review:project-health" and review_service is not None:
+        return await review_service.project_health()
+    if callback_data == "nav:review:commitments" and review_service is not None:
+        return await review_service.commitments()
+    if callback_data == "nav:review:quality" and review_service is not None:
+        return await review_service.quality_report()
+    if callback_data.startswith("nav:rf:") and review_service is not None:
+        return await review_service.resolve_feedback(callback_data.removeprefix("nav:rf:"))
     if callback_data == "nav:review:clarifications" and review_service is not None:
         return await review_service.clarifications()
     if callback_data == "nav:review:people" and entity_confirmation_service is not None:
@@ -777,11 +889,34 @@ async def _navigation_response(
     return action() if action else None
 
 
+async def _agenda_response(
+    service: SecretaryService,
+    work_action_service: WorkActionService,
+    command: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[AssistantResponse, str]:
+    now = now or datetime.now(UTC)
+    local_today = now.astimezone(service.display_timezone).date()
+    is_tomorrow = command == "tomorrow"
+    target_date = local_today + timedelta(days=1) if is_tomorrow else local_today
+    summary = await (
+        service.tomorrow(now) if is_tomorrow else service.today(now)
+    )
+    response = await work_action_service.agenda_view(
+        summary,
+        target_date,
+        title="Ngày mai" if is_tomorrow else "Hôm nay",
+        now=now,
+    )
+    return response, summary
+
+
 def _work_hub_response(summary: str | None = None) -> AssistantResponse:
     return AssistantResponse(
         title="Công việc",
         summary=summary
-        or "Chọn phần anh muốn xem. Các shortcut cũ như /tasks, /reminders, /waiting vẫn dùng được.",
+        or "Dạ, đây là nơi xử lý việc mở, nhắc nhở, chờ người khác và cam kết.",
         actions=[
             AssistantAction(label="Hôm nay", action_id="nav:work:today", row=0),
             AssistantAction(label="Task", action_id="nav:work:tasks", row=1),
@@ -844,17 +979,16 @@ def _capture_detail_response(kind: str) -> AssistantResponse:
 def _help_response() -> AssistantResponse:
     return AssistantResponse(
         title="MemoCore help",
-        summary="Menu / chỉ hiện các cửa chính. Các shortcut vẫn dùng được khi anh nhớ chính xác.",
+        summary="Menu / chỉ hiện 5 cửa chính. Shortcut cũ vẫn dùng được khi anh cần đi thẳng.",
         sections=[
             AssistantSection(
                 heading="Cửa chính",
                 lines=[
-                    "/today - top việc hôm nay",
-                    "/work - dashboard work/open loops",
-                    "/memory - review bộ nhớ",
-                    "/context - people/projects/prep",
-                    "/briefing - briefing trong ngày",
-                    "/capture - cách lưu nhanh",
+                    "/today - trách nhiệm trong ngày",
+                    "/work - xử lý công việc và open loops",
+                    "/context - người, dự án, meeting prep",
+                    "/search <câu hỏi> - tìm timeline/source",
+                    "/review - nơi MemoCore cần anh quyết định",
                 ],
             ),
             AssistantSection(
@@ -862,7 +996,7 @@ def _help_response() -> AssistantResponse:
                 lines=[
                     "/task <nội dung>, /mem <nội dung>, /li <nội dung>",
                     "/prep <person/project>, /person <tên>, /project <tên>",
-                    "/people review, /projects review, /memory stale, /goals, /endday",
+                    "/briefing, /memory, /people review, /projects review, /goals, /endday",
                 ],
             ),
         ],

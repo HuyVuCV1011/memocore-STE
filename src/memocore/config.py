@@ -30,13 +30,26 @@ class Settings(BaseSettings):
     user_timezone: str = "UTC"
     morning_briefing_enabled: bool = True
     morning_briefing_time: str = "08:00"
+    reminder_default_time: str = "09:00"
     weekly_review_enabled: bool = True
     weekly_review_weekday: int = 0
     weekly_review_time: str = "08:30"
+    backup_enabled: bool = True
+    backup_time: str = "03:30"
+    backup_dir: Path = Path("backups")
+    backup_retention_count: int = 14
+    backup_retention_days: int | None = None
     proactive_nudges_enabled: bool = True
     proactive_nudge_interval_minutes: int = 60
     proactive_nudge_cooldown_hours: int = 24
+    proactive_deadline_warning_hours: int = 4
+    proactive_nudge_bundle_threshold: int = 2
+    proactive_nudge_max_per_run: int = 5
     stale_followup_days: int = 3
+    followup_nudge_window_start: str | None = None
+    followup_nudge_window_end: str | None = None
+    focus_window_start: str | None = None
+    focus_window_end: str | None = None
     quiet_hours_start: str | None = "22:00"
     quiet_hours_end: str | None = "07:00"
     model: ModelConfig = Field(default_factory=ModelConfig)

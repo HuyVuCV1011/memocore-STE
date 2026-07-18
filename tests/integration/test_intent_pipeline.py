@@ -1,5 +1,4 @@
 import os
-import json
 from datetime import UTC, datetime
 import pytest
 
@@ -237,7 +236,7 @@ async def test_mark_task_done_single_weak_match(capture_service, repos):
 
 
 async def test_correction_feedback_single_task_cancel(
-    capture_service, repos, isolate_feedback_log
+    capture_service, repos
 ):
     # Setup a recent task
     note = await repos["notes"].create(Note(raw_text="wrong capture"))
@@ -253,7 +252,8 @@ async def test_correction_feedback_single_task_cancel(
     
     result = await service.handle_text(CaptureRequest(
         raw_text="Cái này không phải task",
-        source_chat_id="chat_corr"
+        source_chat_id="chat_corr",
+        source_message_id="message-1",
     ))
     
     assert "Đã hủy task gần nhất: Trời hôm nay đẹp" in result.reply
@@ -262,18 +262,19 @@ async def test_correction_feedback_single_task_cancel(
     t = await repos["tasks"].get_by_id(task.id)
     assert t.status == "cancelled"
     
-    # Check feedback written to the isolated test log, not the live runtime log.
-    assert isolate_feedback_log.exists()
-    with isolate_feedback_log.open("r", encoding="utf-8") as f:
-        lines = f.readlines()
-        last_line = json.loads(lines[-1])
-        assert last_line["intent"] == "correction_feedback"
-        assert last_line["context"]["cancelled_task_id"] == task.id
-        assert last_line["context"]["title"] == "Trời hôm nay đẹp"
-
-    # Check event created
+    # Check structured feedback is linked without copying private text into metrics.
     events = await repos["events"].list_by_entity("task", task.id)
-    assert any(ev.event_type == EventType.USER_FEEDBACK_RECORDED for ev in events)
+    feedback = next(
+        ev for ev in events if ev.event_type == EventType.USER_FEEDBACK_RECORDED
+    )
+    assert feedback.payload["signal"] == "correction"
+    assert feedback.payload["status"] == "open"
+    assert feedback.payload["artifact"] == {"type": "task", "id": task.id}
+    assert feedback.payload["provenance"] == "telegram_owner_private"
+    assert "turn" not in feedback.payload
+    assert "chat_corr" not in str(feedback.payload)
+    assert "message-1" not in str(feedback.payload)
+    assert "Trời hôm nay đẹp" not in str(feedback.payload)
 
 
 async def test_correction_feedback_multiple_tasks_selection(capture_service, repos):
